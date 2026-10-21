@@ -48,11 +48,13 @@ class ContextCacheTransport(ProductionShapeTransport):
 class InterleavedContextTransport(ContextCacheTransport):
     max_view_calls = 4
 
-    def __init__(self, held_path, outcome=(200, 0), *, update_cookies=False):
+    def __init__(self, held_path, outcome=(200, 0), *, update_cookies=False,
+                 distinct_contexts=False):
         super().__init__()
         self.held_path = held_path
         self.outcome = outcome
         self.update_cookies = update_cookies
+        self.distinct_contexts = distinct_contexts
         self.entered = threading.Event()
         self.release = threading.Event()
         self.response_lock = threading.Lock()
@@ -69,6 +71,20 @@ class InterleavedContextTransport(ContextCacheTransport):
                     'buvid3', 'offline-late-buvid3' if held else 'offline-current-buvid3',
                     domain='.bilibili.com', path='/', secure=True,
                 )
+            if self.distinct_contexts:
+                late = threading.current_thread().name == 'held-parse'
+                if path == '/':
+                    response.cookies.set(
+                        'buvid3', 'offline-late-context' if late else 'offline-winning-context',
+                        domain='.bilibili.com', path='/', secure=True,
+                    )
+                elif path == NAV:
+                    response.close()
+                    image, sub = ('a', 'b') if late else ('c', 'd')
+                    response = json_response(request, {'code': -101, 'data': {'wbi_img': {
+                        'img_url': f'https://i0.hdslb.com/bfs/wbi/{image * 32}.png',
+                        'sub_url': f'https://i0.hdslb.com/bfs/wbi/{sub * 32}.png',
+                    }}})
         # Hold only the response, allowing another parse to finish its own HTTP path.
         if held:
             self.entered.set()
@@ -138,11 +154,14 @@ class BilibiliAnonymousContextCacheTests(SimpleTestCase):
             self.assertLessEqual(call.kwargs['timeout'], 10)
 
     def start_parse(self, name):
+        return self.start_operation(name, self.parse)
+
+    def start_operation(self, name, operation):
         results, errors = [], []
 
         def run():
             try:
-                results.append(self.parse())
+                results.append(operation())
             except Exception as error:
                 errors.append(error)
 
@@ -359,35 +378,324 @@ class BilibiliAnonymousContextCacheTests(SimpleTestCase):
                     self.assertEqual(self.paths(), ['/', SPI, NAV, view, PLAY])
                     self.assert_original_deadline()
 
-    def test_parallel_cold_parses_initialize_home_spi_and_nav_only_once(self):
-        self.transport = InterleavedContextTransport('/')
-        second_entered = threading.Event()
-        original_context = bilibili.anonymous_cookie_context
+    def test_parallel_parse_finishes_before_blocked_home_spi_or_nav_response(self):
+        for held_path in ('/', SPI, NAV):
+            with self.subTest(held_path=held_path):
+                bilibili.clear_anonymous_context_cache()
+                self.deadline = time.monotonic() + 10
+                self.transport = InterleavedContextTransport(held_path)
+                self.reset_observations()
+                workers = []
+                with offline_requests(self.transport.send):
+                    try:
+                        workers.append(self.start_parse('held-parse'))
+                        self.assertTrue(self.transport.entered.wait(timeout=3),
+                                        'First parse did not reach the held HTTP response')
+                        second = self.start_parse('parallel-parse')
+                        workers.append(second)
+                        second[0].join(timeout=1)
+                        self.assertFalse(
+                            second[0].is_alive(),
+                            'Second parse waited behind a blocked initialization response',
+                        )
+                        self.assertFalse(self.transport.release.is_set())
+                        self.assert_workers_succeeded([second])
+                    finally:
+                        self.transport.release.set()
+                        for worker, _, _ in workers:
+                            worker.join(timeout=10)
+                    self.assert_workers_succeeded(workers)
+                self.assertEqual(Counter(self.paths())[WBI_VIEW], 2)
+                self.assertEqual(Counter(self.paths())[PLAY], 2)
+                self.assert_original_deadline()
 
-        def observe_context(**kwargs):
-            if threading.current_thread().name == 'parallel-parse':
-                second_entered.set()
-            return original_context(**kwargs)
+    def test_first_completed_cold_context_and_wbi_survive_late_initialization(self):
+        for held_path in ('/', SPI, NAV):
+            with self.subTest(held_path=held_path):
+                bilibili.clear_anonymous_context_cache()
+                self.deadline = time.monotonic() + 10
+                self.transport = InterleavedContextTransport(
+                    held_path, distinct_contexts=True,
+                )
+                workers = []
+                with offline_requests(self.transport.send):
+                    try:
+                        workers.append(self.start_parse('held-parse'))
+                        self.assertTrue(self.transport.entered.wait(timeout=3))
+                        second = self.start_parse('parallel-parse')
+                        workers.append(second)
+                        second[0].join(timeout=1)
+                        self.assert_workers_succeeded([second])
+                        self.assertFalse(self.transport.release.is_set())
+                        winner_generation = bilibili._context_generation
+                        winner_cookies = bilibili._cookie_cache.get_dict()
+                        winner_mixin = bilibili._wbi_cache
+                        winner_expiry = (bilibili._cookie_expires, bilibili._wbi_expires)
+                        winner_query = parse_qs(urlsplit(next(
+                            request.url for request in self.transport.requests
+                            if urlsplit(request.url).path == WBI_VIEW
+                        )).query)
+                        if held_path != NAV:
+                            self.assertEqual(winner_cookies['buvid3'], 'offline-winning-context')
+                    finally:
+                        self.transport.release.set()
+                        for worker, _, _ in workers:
+                            worker.join(timeout=10)
+                    self.assert_workers_succeeded(workers)
+                    self.assertIs(bilibili._context_generation, winner_generation)
+                    self.assertFalse(winner_generation.is_set())
+                    self.assertEqual(bilibili._cookie_cache.get_dict(), winner_cookies)
+                    self.assertEqual(bilibili._wbi_cache, winner_mixin)
+                    self.assertEqual((bilibili._cookie_expires, bilibili._wbi_expires), winner_expiry)
+                    self.reset_observations()
+                    self.parse()
+                    self.assertEqual(self.paths(), [WBI_VIEW, PLAY])
+                    self.assertEqual(parse_qs(urlsplit(self.transport.requests[0].url).query),
+                                     winner_query)
+                    self.assertIn(f"buvid3={winner_cookies['buvid3']}",
+                                  self.transport.requests[0].headers['Cookie'])
+
+    def test_busy_cache_lock_uses_private_context_without_waiting_or_publishing(self):
+        for warm in (False, True):
+            with self.subTest(warm=warm):
+                bilibili.clear_anonymous_context_cache()
+                self.deadline = time.monotonic() + 10
+                self.transport = ContextCacheTransport()
+                with offline_requests(self.transport.send):
+                    if warm:
+                        self.warm_context()
+                original_generation = bilibili._context_generation
+                original_cookies = bilibili._cookie_cache
+                original_mixin = bilibili._wbi_cache
+                self.transport = InterleavedContextTransport(None, distinct_contexts=True)
+                worker = None
+                with offline_requests(self.transport.send):
+                    try:
+                        with bilibili._context_lock:
+                            worker = self.start_parse('private-parse')
+                            worker[0].join(timeout=1)
+                            self.assert_workers_succeeded([worker])
+                            self.assertEqual(self.paths(), COLD_PATHS)
+                            self.assertIn('buvid3=offline-winning-context',
+                                          self.transport.requests[-2].headers['Cookie'])
+                            self.assertIs(bilibili._context_generation, original_generation)
+                            self.assertIs(bilibili._cookie_cache, original_cookies)
+                            self.assertEqual(bilibili._wbi_cache, original_mixin)
+                    finally:
+                        if worker:
+                            worker[0].join(timeout=10)
+                self.assert_workers_succeeded([worker])
+                self.assert_original_deadline()
+
+    def test_api_cookie_publication_does_not_wait_for_busy_cache_lock(self):
+        self.warm_context()
+        cookies = bilibili.anonymous_cookie_context(deadline_monotonic=self.deadline)
+        snapshot = bilibili._cookie_cache
+        self.transport = InterleavedContextTransport(None, update_cookies=True)
+        worker = None
+        with offline_requests(self.transport.send):
+            try:
+                with bilibili._context_lock:
+                    worker = self.start_operation('api-parse', lambda: bilibili.api_get_json(
+                        'https://api.bilibili.com' + WBI_VIEW,
+                        {'bvid': 'BV1J4JX6PEMV'}, cookies=cookies,
+                        deadline_monotonic=self.deadline,
+                    ))
+                    worker[0].join(timeout=1)
+                    self.assert_workers_succeeded([worker])
+                    self.assertEqual(worker[1][0]['cid'], 456)
+                    self.assertEqual(cookies.get('buvid3'), 'offline-current-buvid3')
+                    self.assertIs(bilibili._cookie_cache, snapshot)
+                    self.assertEqual(self.paths(), [WBI_VIEW])
+            finally:
+                if worker:
+                    worker[0].join(timeout=10)
+        self.assert_workers_succeeded([worker])
+
+    def test_signing_uses_local_nav_when_cache_lock_is_busy(self):
+        self.warm_context()
+        cookies = bilibili.anonymous_cookie_context(deadline_monotonic=self.deadline)
+        original_mixin = bilibili._wbi_cache
+        original_expiry = bilibili._wbi_expires
+        self.transport = InterleavedContextTransport(None, distinct_contexts=True)
+        worker = None
+        with offline_requests(self.transport.send):
+            try:
+                with bilibili._context_lock:
+                    worker = self.start_operation('signed-parse', lambda: bilibili.signed_view_params(
+                        {'bvid': 'BV1J4JX6PEMV'}, cookies,
+                        deadline_monotonic=self.deadline,
+                    ))
+                    worker[0].join(timeout=1)
+                    self.assert_workers_succeeded([worker])
+                    self.assertIn('w_rid', worker[1][0])
+                    self.assertNotEqual(worker[1][0]['w_rid'], 'e45c9b1c9d50f5a6966a0ba3787743a4')
+                    self.assertEqual(self.paths(), [NAV])
+                    self.assertEqual(bilibili._wbi_cache, original_mixin)
+                    self.assertEqual(bilibili._wbi_expires, original_expiry)
+            finally:
+                if worker:
+                    worker[0].join(timeout=10)
+        self.assert_workers_succeeded([worker])
+
+    def test_private_and_old_generation_do_not_borrow_or_invalidate_shared_wbi(self):
+        for context_kind in ('private', 'old_generation'):
+            with self.subTest(context_kind=context_kind):
+                bilibili.clear_anonymous_context_cache()
+                self.deadline = time.monotonic() + 10
+                self.clock.return_value = 1000.0
+                self.transport = ContextCacheTransport()
+                with offline_requests(self.transport.send):
+                    self.warm_context()
+                    if context_kind == 'private':
+                        worker = None
+                        try:
+                            with bilibili._context_lock:
+                                worker = self.start_operation('private-context', lambda:
+                                    bilibili.anonymous_cookie_context(deadline_monotonic=self.deadline))
+                                worker[0].join(timeout=1)
+                                self.assert_workers_succeeded([worker])
+                                cookies = worker[1][0]
+                        finally:
+                            if worker:
+                                worker[0].join(timeout=10)
+                    else:
+                        cookies = bilibili.anonymous_cookie_context(deadline_monotonic=self.deadline)
+                        self.clock.return_value = 1600.0
+                        bilibili.anonymous_cookie_context(deadline_monotonic=self.deadline)
+                shared_generation = bilibili._context_generation
+                shared_cookies = bilibili._cookie_cache
+                shared_mixin = bilibili._wbi_cache
+                self.assertIsNot(cookies._bilibili_generation, shared_generation)
+                self.transport = InterleavedContextTransport(None, distinct_contexts=True)
+                with offline_requests(self.transport.send):
+                    signed = bilibili.signed_view_params(
+                        {'bvid': 'BV1J4JX6PEMV'}, cookies, deadline_monotonic=self.deadline,
+                    )
+                    self.assertEqual(self.paths(), [NAV])
+                    self.assertIn('w_rid', signed)
+                    self.assertNotEqual(signed['w_rid'], 'e45c9b1c9d50f5a6966a0ba3787743a4')
+                    self.assertEqual(bilibili._wbi_cache, shared_mixin)
+                    self.assertIs(bilibili._cookie_cache, shared_cookies)
+                    self.transport.view_outcomes = [(412, -412)]
+                    with self.assertRaises(XhsDownloadError):
+                        bilibili.api_get_json(
+                            'https://api.bilibili.com' + WBI_VIEW, signed,
+                            cookies=cookies, deadline_monotonic=self.deadline,
+                        )
+                self.assertTrue(cookies._bilibili_generation.is_set())
+                self.assertIs(bilibili._context_generation, shared_generation)
+                self.assertFalse(shared_generation.is_set())
+                self.assertEqual(bilibili._wbi_cache, shared_mixin)
+                self.assertIs(bilibili._cookie_cache, shared_cookies)
+
+    def test_busy_lock_cookie_deletion_stays_local_without_waiting_or_shared_publication(self):
+        self.warm_context()
+        cookies = bilibili.anonymous_cookie_context(deadline_monotonic=self.deadline)
+        generation = cookies._bilibili_generation
+        shared_snapshot = bilibili._cookie_cache
+        shared_values = shared_snapshot.get_dict()
+
+        def revoke_cookie(request, **kwargs):
+            response = self.transport.send(request, **kwargs)
+            if urlsplit(request.url).path == WBI_VIEW:
+                headers = Message()
+                headers.add_header('Set-Cookie',
+                                   'buvid3=; Domain=.bilibili.com; Path=/; Max-Age=0')
+                response.raw = SimpleNamespace(_original_response=SimpleNamespace(msg=headers))
+            return response
+
+        worker = None
+        with offline_requests(revoke_cookie):
+            try:
+                with bilibili._context_lock:
+                    worker = self.start_operation('revoked-api', lambda: bilibili.api_get_json(
+                        'https://api.bilibili.com' + WBI_VIEW, {'bvid': 'BV1J4JX6PEMV'},
+                        cookies=cookies, deadline_monotonic=self.deadline,
+                    ))
+                    worker[0].join(timeout=1)
+                    self.assert_workers_succeeded([worker])
+                    self.assertNotIn('buvid3', cookies.get_dict())
+                    self.assertFalse(generation.is_set())
+                    self.assertIs(bilibili._context_generation, generation)
+                    self.assertIs(bilibili._cookie_cache, shared_snapshot)
+                    self.assertEqual(bilibili._cookie_cache.get_dict(), shared_values)
+            finally:
+                if worker:
+                    worker[0].join(timeout=10)
+        self.assert_workers_succeeded([worker])
+        self.assertEqual(self.paths(), [WBI_VIEW])
+
+    def test_busy_lock_old_cookie_deletion_keeps_newer_same_generation_value_live(self):
+        self.warm_context()
+        old = bilibili.anonymous_cookie_context(deadline_monotonic=self.deadline)
+        current = bilibili.anonymous_cookie_context(deadline_monotonic=self.deadline)
+        generation = current._bilibili_generation
+        self.assertIs(old._bilibili_generation, generation)
+        self.assertIs(old._bilibili_snapshot, current._bilibili_snapshot)
+
+        def update_cookie(request, **kwargs):
+            response = self.transport.send(request, **kwargs)
+            if urlsplit(request.url).path == WBI_VIEW:
+                response.cookies.set('buvid3', 'offline-newer-buvid3',
+                                     domain='.bilibili.com', path='/', secure=True)
+            return response
+
+        params = {'bvid': 'BV1J4JX6PEMV'}
+        with offline_requests(update_cookie):
+            bilibili.api_get_json(
+                'https://api.bilibili.com' + WBI_VIEW, params, cookies=current,
+                deadline_monotonic=self.deadline,
+            )
+        self.assertEqual(bilibili._cookie_cache.get('buvid3'), 'offline-newer-buvid3')
+        self.assertEqual(old.get('buvid3'), 'offline-home-buvid3')
+        self.assertIsNot(old._bilibili_snapshot, current._bilibili_snapshot)
+        self.assertFalse(generation.is_set())
+
+        def delete_old_cookie(request, **kwargs):
+            response = self.transport.send(request, **kwargs)
+            if urlsplit(request.url).path == WBI_VIEW:
+                headers = Message()
+                headers.add_header('Set-Cookie',
+                                   'buvid3=; Domain=.bilibili.com; Path=/; Max-Age=0')
+                response.raw = SimpleNamespace(_original_response=SimpleNamespace(msg=headers))
+            return response
 
         workers = []
-        with offline_requests(self.transport.send), patch.object(
-            bilibili, 'anonymous_cookie_context', side_effect=observe_context,
-        ):
+        with offline_requests(delete_old_cookie):
             try:
-                workers.append(self.start_parse('held-parse'))
-                self.assertTrue(self.transport.entered.wait(timeout=3),
-                                'First parse did not reach the homepage')
-                workers.append(self.start_parse('parallel-parse'))
-                self.assertTrue(second_entered.wait(timeout=3),
-                                'Second parse did not enter context initialization')
+                # The main thread owns the lock while both API workers run.
+                with bilibili._context_lock:
+                    deletion = self.start_operation('late-delete-api', lambda: bilibili.api_get_json(
+                        'https://api.bilibili.com' + WBI_VIEW, params, cookies=old,
+                        deadline_monotonic=self.deadline,
+                    ))
+                    workers.append(deletion)
+                    deletion[0].join(timeout=1)
+                    self.assert_workers_succeeded([deletion])
+                    self.assertNotIn('buvid3', old.get_dict())
+                    play = self.start_operation('current-play-api', lambda: bilibili.api_get_json(
+                        'https://api.bilibili.com' + PLAY, {'cid': 456}, cookies=current,
+                        deadline_monotonic=self.deadline,
+                    ))
+                    workers.append(play)
+                    play[0].join(timeout=1)
+                    self.assertFalse(play[0].is_alive(), 'Current playurl waited for the cache lock')
+                    self.assertEqual(bilibili._cookie_cache.get('buvid3'), 'offline-newer-buvid3')
+                    self.assertFalse(
+                        generation.is_set(),
+                        'Old Cookie deletion revoked the newer shared value; '
+                        f'playurl errors={[type(error).__name__ for error in play[2]]}',
+                    )
+                    self.assert_workers_succeeded([play])
+                    self.assertEqual(play[1][0]['durl'][0]['url'], MEDIA)
             finally:
-                self.transport.release.set()
                 for worker, _, _ in workers:
                     worker.join(timeout=10)
-            self.assert_workers_succeeded(workers)
-        self.assertEqual(Counter(self.paths()), Counter({
-            '/': 1, SPI: 1, NAV: 1, WBI_VIEW: 2, PLAY: 2,
-        }))
+        self.assert_workers_succeeded(workers)
+        self.assertIs(bilibili._context_generation, generation)
+        self.assertEqual(self.paths(), [WBI_VIEW, WBI_VIEW, PLAY])
+        self.assertIn('buvid3=offline-newer-buvid3', self.transport.requests[-1].headers['Cookie'])
         self.assert_original_deadline()
 
     def test_late_cookie_responses_cannot_overwrite_or_revoke_current_context(self):
