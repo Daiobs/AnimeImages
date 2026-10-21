@@ -137,12 +137,12 @@ def _context_clock():
 
 @contextmanager
 def _locked_context(deadline_monotonic=None):
-    if not _context_lock.acquire(timeout=bilibili_request_timeout(deadline_monotonic, 3)):
-        raise XhsProviderTimeoutError("哔哩哔哩匿名上下文等待超时")
+    acquired = _context_lock.acquire(blocking=False)
     try:
-        yield
+        yield acquired
     finally:
-        _context_lock.release()
+        if acquired:
+            _context_lock.release()
 
 
 def clear_anonymous_context_cache():
@@ -156,7 +156,6 @@ def clear_anonymous_context_cache():
 
 
 def _reject_anonymous_context(error, cookies, *, optional=False):
-    global _cookie_cache, _wbi_cache, _wbi_expires
     error.bilibili_context_reused = bool(getattr(cookies, "_bilibili_reused", False))
     if cookies is None:
         return
@@ -165,10 +164,12 @@ def _reject_anonymous_context(error, cookies, *, optional=False):
     if optional and not error.bilibili_context_reused:
         # A fresh optional nav failure still permits the existing legacy view path,
         # but cannot seed the cache for future parses.
-        if generation is _context_generation:
-            _cookie_cache, _wbi_cache, _wbi_expires = None, None, 0
+        if generation is not None:
+            generation.set()
+            cookies._bilibili_generation = threading.Event()
+            cookies._bilibili_snapshot = None
         return
-    # Mark rejection immediately, without waiting behind another network initialization.
+    # Mark rejection immediately, without waiting for cache publication.
     # A late failure only revokes its own generation, never a newer context.
     if generation is not None:
         generation.set()
@@ -186,7 +187,11 @@ def _publish_anonymous_cookies(cookies, deadline_monotonic):
     global _cookie_cache
     if getattr(cookies, "_bilibili_rejected", False):
         return
-    with _locked_context(deadline_monotonic):
+    with _locked_context(deadline_monotonic) as acquired:
+        if not acquired:
+            # Keep response changes local when publishing would wait. Upstream
+            # rejection still revokes the generation independently of this lock.
+            return
         if (not _context_generation.is_set()
                 and getattr(cookies, "_bilibili_generation", None) is _context_generation
                 and getattr(cookies, "_bilibili_expires", None) == _cookie_expires
@@ -271,30 +276,60 @@ def _new_anonymous_cookie_context(*, deadline_monotonic=None):
     return cookies
 
 
+def _attach_anonymous_context(cookies, generation, expires, *, reused=False, snapshot=None):
+    cookies._bilibili_generation = generation
+    cookies._bilibili_expires = expires
+    cookies._bilibili_reused = reused
+    cookies._bilibili_snapshot = snapshot
+    return cookies
+
+
+def _cached_anonymous_cookies():
+    # Caller holds the cache lock; only copy live material, never perform HTTP here.
+    if _context_generation.is_set() or _context_clock() >= _cookie_expires:
+        return None
+    cookies = _cookie_cache.copy() if _cookie_cache is not None else None
+    if cookies is not None:
+        cookies.clear_expired_cookies()
+    if cookies:
+        return _attach_anonymous_context(
+            cookies, _context_generation, _cookie_expires,
+            reused=True, snapshot=_cookie_cache,
+        )
+    return None
+
+
 def anonymous_cookie_context(*, deadline_monotonic=None):
-    global _context_generation, _cookie_cache, _cookie_expires, _wbi_cache, _wbi_expires
-    with _locked_context(deadline_monotonic):
-        if _context_generation.is_set():
-            clear_anonymous_context_cache()
-        now = _context_clock()
-        cookies = _cookie_cache.copy() if _cookie_cache is not None else None
-        if cookies is not None:
-            cookies.clear_expired_cookies()
-        reused = bool(cookies) and now < _cookie_expires
-        if not reused:
-            cookies = _new_anonymous_cookie_context(deadline_monotonic=deadline_monotonic)
+    global _context_generation, _cookie_cache, _cookie_expires
+    observed_generation = None
+    with _locked_context(deadline_monotonic) as acquired:
+        if acquired:
             if _context_generation.is_set():
-                _wbi_cache, _wbi_expires = None, 0
-            # Cookie expiry replaces only its generation; still-valid WBI keys survive.
-            _context_generation = threading.Event()
-            _cookie_expires = _context_clock() + ANONYMOUS_COOKIE_TTL
-            _cookie_cache = (cookies.copy() if cookies and not
-                             getattr(cookies, "_bilibili_rejected", False) else None)
-        cookies._bilibili_generation = _context_generation
-        cookies._bilibili_expires = _cookie_expires
-        cookies._bilibili_reused = reused
-        cookies._bilibili_snapshot = _cookie_cache
-        return cookies
+                clear_anonymous_context_cache()
+            cached = _cached_anonymous_cookies()
+            if cached is not None:
+                return cached
+            observed_generation = _context_generation
+
+    cookies = _new_anonymous_cookie_context(deadline_monotonic=deadline_monotonic)
+    _attach_anonymous_context(
+        cookies, threading.Event(), _context_clock() + ANONYMOUS_COOKIE_TTL,
+    )
+    with _locked_context(deadline_monotonic) as acquired:
+        if acquired and observed_generation is not None:
+            cached = _cached_anonymous_cookies()
+            if cached is not None:
+                return cached
+            if (observed_generation is _context_generation
+                    and not observed_generation.is_set() and cookies
+                    and not getattr(cookies, "_bilibili_rejected", False)):
+                # First completion wins. Expiry changes the cookie generation only;
+                # still-valid WBI keys survive. Contenders keep a private context.
+                _context_generation = cookies._bilibili_generation
+                _cookie_expires = cookies._bilibili_expires
+                _cookie_cache = cookies.copy()
+                cookies._bilibili_snapshot = _cookie_cache
+    return cookies
 
 
 def api_get_json(
@@ -398,20 +433,27 @@ def signed_view_params(params, cookies, *, deadline_monotonic=None):
     view_request = requests.Request("GET", "https://api.bilibili.com/x/web-interface/wbi/view").prepare()
     if not requests.cookies.get_cookie_header(cookies, view_request):
         return None
-    with _locked_context(deadline_monotonic):
-        _require_live_context(cookies)
-        if _context_generation.is_set():
-            clear_anonymous_context_cache()
-        if _wbi_cache is not None and _context_clock() < _wbi_expires:
+    _require_live_context(cookies)
+    generation = getattr(cookies, "_bilibili_generation", None)
+    mixin = None
+    with _locked_context(deadline_monotonic) as acquired:
+        if (acquired and generation is _context_generation and not generation.is_set()
+                and _wbi_cache is not None and _context_clock() < _wbi_expires):
             mixin = _wbi_cache
             cookies._bilibili_reused = True
-        else:
-            generation = _context_generation
-            mixin = _load_wbi_mixin(cookies, deadline_monotonic=deadline_monotonic)
-            if (mixin and generation is _context_generation and not generation.is_set()
+    if mixin is None:
+        mixin = _load_wbi_mixin(cookies, deadline_monotonic=deadline_monotonic)
+        _require_live_context(cookies)
+        with _locked_context(deadline_monotonic) as acquired:
+            if (acquired and mixin and generation is _context_generation
+                    and not generation.is_set()
                     and not getattr(cookies, "_bilibili_rejected", False)):
-                _wbi_cache = mixin
-                _wbi_expires = _context_clock() + WBI_KEY_TTL
+                if _wbi_cache is not None and _context_clock() < _wbi_expires:
+                    mixin = _wbi_cache
+                    cookies._bilibili_reused = True
+                else:
+                    _wbi_cache = mixin
+                    _wbi_expires = _context_clock() + WBI_KEY_TTL
     if not mixin:
         return None
     signed = {
