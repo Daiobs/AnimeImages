@@ -1,0 +1,71 @@
+name: Deploy Acceptance
+
+# Isolated-user deploy and managed-release acceptance. It exercises the deploy
+# and release scripts, their ops files, the Django project entry and the
+# requirements, so it runs when those change, weekly for base-image drift, and
+# on demand before a release. Not a required check.
+on:
+  pull_request:
+    paths:
+      - "ops/deploy/**"
+      - "ops/managed-release/**"
+      - "scripts/*deploy*"
+      - "scripts/*release*"
+      - "scripts/restart.sh"
+      - "scripts/health_check.sh"
+      - "djangoProject/**"
+      - "manage.py"
+      - "requirements*.txt"
+      - ".python-version"
+      - ".github/workflows/deploy-acceptance.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "ops/deploy/**"
+      - "ops/managed-release/**"
+      - "scripts/*deploy*"
+      - "scripts/*release*"
+      - "scripts/restart.sh"
+      - "scripts/health_check.sh"
+      - "djangoProject/**"
+      - "manage.py"
+      - "requirements*.txt"
+      - ".python-version"
+      - ".github/workflows/deploy-acceptance.yml"
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deploy-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Linux deployment permission acceptance (isolated users)
+        run: |
+          docker build -t animeimages-deploy-permission-tests -f ops/deploy/tests/Dockerfile .
+          docker run --rm --network none -v "$GITHUB_WORKSPACE:/source:ro" animeimages-deploy-permission-tests
+
+      - name: Managed release channel acceptance (narrow sudo boundary)
+        run: |
+          bash -n scripts/deploy.sh scripts/managed_release.sh ops/managed-release/animeimages-consumer-probe
+          python -m unittest discover -s ops/managed-release/tests -p 'test_installer.py' -v
+          python -m unittest discover -s ops/managed-release/tests -p 'test_package.py' -v
+          python scripts/package_managed_release.py --output "$RUNNER_TEMP/animeimages-managed-release.tar"
+          docker run --rm --network none -v "$GITHUB_WORKSPACE:/source:ro" --entrypoint python animeimages-deploy-permission-tests -B /source/ops/managed-release/tests/test_channel.py
