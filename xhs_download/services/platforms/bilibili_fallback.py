@@ -94,7 +94,7 @@ def eligible_failure(error):
 
 
 def parse_fallback(source_url, *, native_parse, authorize,
-                   timeout_seconds=None, deadline_monotonic=None):
+                   timeout_seconds=None, deadline_monotonic=None, probe_media_metadata=True):
     source = canonical_video_source(source_url)
     now = time.monotonic()
     limits = []
@@ -129,7 +129,10 @@ def parse_fallback(source_url, *, native_parse, authorize,
                 source, timeout_seconds=remaining, deadline_monotonic=deadline)
             if time.monotonic() >= deadline:
                 raise XhsProviderTimeoutError("哔哩哔哩解析超过时间限制")
-            result = build_service_result(payload, source, deadline_monotonic=deadline)
+            result = build_service_result(
+                payload, source, deadline_monotonic=deadline,
+                **({"probe_media_metadata": False} if not probe_media_metadata else {}),
+            )
         except Exception as error:
             logger.info(
                 "bilibili_fallback_unavailable provider=%s error_type=%s diagnostic_detail=%s",

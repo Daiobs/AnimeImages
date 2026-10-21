@@ -55,6 +55,7 @@ class PlatformRegistry:
         upstream_matches=None,
         xhs_service_provider_ids=(),
         bilibili_service_authorizer=None,
+        probe_media_metadata=True,
     ):
         url = extract_url_from_text(url)
         adapter = self.get_adapter_for_url(url)
@@ -76,6 +77,8 @@ class PlatformRegistry:
             upstream_provider_ids=upstream_provider_ids,
             upstream_matches=upstream_matches,
         )
+        if not probe_media_metadata:
+            options["probe_media_metadata"] = False
         if adapter.platform_id == "xiaohongshu" and xhs_service_provider_ids:
             from .platforms.xhs_independent import parse_independent
 
@@ -99,6 +102,7 @@ class PlatformRegistry:
                     url, **{**options, "deadline_monotonic": deadline}),
                 authorize=bilibili_service_authorizer,
                 timeout_seconds=timeout_seconds, deadline_monotonic=deadline_monotonic,
+                **({"probe_media_metadata": False} if not probe_media_metadata else {}),
             )
         return adapter.parse(url, **options)
 
@@ -136,6 +140,7 @@ def parse_media_page(
     upstream_matches=None,
     xhs_service_provider_ids=(),
     bilibili_service_authorizer=None,
+    probe_media_metadata=True,
 ):
     return default_registry.parse_url(
         url,
@@ -155,4 +160,5 @@ def parse_media_page(
         upstream_matches=upstream_matches,
         xhs_service_provider_ids=xhs_service_provider_ids,
         bilibili_service_authorizer=bilibili_service_authorizer,
+        **({"probe_media_metadata": False} if not probe_media_metadata else {}),
     )

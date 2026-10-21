@@ -482,6 +482,9 @@
                     </div>
                     {% if card.last_run %}
                         <p class="health-muted">最近测试：{{ card.last_run.created_at|date:"Y-m-d H:i:s" }} {{ admin_time_zone }}，耗时 {{ card.last_run.duration_ms }} ms，request_id {{ card.last_run.request_id }}</p>
+                        {% for line in card.last_run.download_smoke_report_lines %}
+                            <div class="health-muted" style="overflow-wrap: anywhere;">{{ line }}</div>
+                        {% endfor %}
                     {% endif %}
                     <form method="post" data-loading-text="正在运行 {{ card.name }} 测试...">
                         {% csrf_token %}
@@ -530,6 +533,13 @@
                         <td>{% if run %}{{ run.notification_event }} / {{ run.notification_delivery_status }}{% else %}-{% endif %}</td>
                         <td>{{ run.test_url_host|default:"-" }}</td>
                     </tr>
+                    {% if state.download_smoke_report_lines %}
+                    <tr>
+                        <td colspan="9" style="white-space: normal; overflow-wrap: anywhere;">
+                            {% for line in state.download_smoke_report_lines %}<div>{{ line }}</div>{% endfor %}
+                        </td>
+                    </tr>
+                    {% endif %}
                     {% endwith %}
                 {% empty %}
                     <tr><td colspan="9">未选择每日测试项</td></tr>
@@ -636,6 +646,15 @@
                         <td>{{ run.actor_username }}</td>
                         <td>{{ run.request_id }}</td>
                     </tr>
+                    {% with smoke_lines=run.download_smoke_report_lines %}
+                    {% if smoke_lines %}
+                    <tr>
+                        <td colspan="9" style="white-space: normal; overflow-wrap: anywhere;">
+                            {% for line in smoke_lines %}<div>{{ line }}</div>{% endfor %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endwith %}
                 {% empty %}
                     <tr><td colspan="9">暂无测试记录</td></tr>
                 {% endfor %}

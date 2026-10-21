@@ -134,7 +134,7 @@ def probe_size(url, deadline_monotonic):
     return result.size_bytes if result.reachable else 0
 
 
-def build_service_result(payload, source_url, *, deadline_monotonic=None):
+def build_service_result(payload, source_url, *, deadline_monotonic=None, probe_media_metadata=True):
     from ..service_format_selection import attach_service_picker
 
     identity = source_identity(source_url)
@@ -159,7 +159,7 @@ def build_service_result(payload, source_url, *, deadline_monotonic=None):
         raise ValueError("bilibili_service_no_video")
     # Only the parse path passes a deadline; the default file is probed at most once.
     primary = next((row for row in rows if video_resource_is_complete(row)), None)
-    if deadline_monotonic is not None and primary and not primary.get("size_bytes"):
+    if probe_media_metadata and deadline_monotonic is not None and primary and not primary.get("size_bytes"):
         size = probe_size(primary["url"], deadline_monotonic)
         if size:
             rows = [{**row, "size": size, "size_bytes": size, "size_is_estimate": False}

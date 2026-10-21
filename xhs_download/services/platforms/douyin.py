@@ -656,6 +656,7 @@ class DouyinAdapter(BasePlatformAdapter):
         "allow_continuation",
         "continuation_identity",
         "ultra_attempt_controller",
+        "probe_media_metadata",
     )
 
     def parse_html(
@@ -931,6 +932,7 @@ class DouyinAdapter(BasePlatformAdapter):
         fast_short_link=False,
         request_deadline=0,
         prefer_ultra_hd=False,
+        probe_media_metadata=True,
     ):
         resolution_started_monotonic = monotonic()
         context = DouyinParseContext(
@@ -939,6 +941,7 @@ class DouyinAdapter(BasePlatformAdapter):
             deadline_monotonic=request_deadline,
             prefer_ultra_hd=prefer_ultra_hd,
             input_kind=classify_douyin_input_kind(url),
+            **({"probe_media_metadata": False} if not probe_media_metadata else {}),
         )
         context.aweme_id = extract_aweme_id(context.url)
         short_url = is_douyin_short_url(url)
@@ -977,7 +980,7 @@ class DouyinAdapter(BasePlatformAdapter):
                     context.direct_result = self.parse_html(
                         context.html,
                         source_url=context.final_url,
-                        probe_video_candidates=prefer_ultra_hd,
+                        probe_video_candidates=prefer_ultra_hd and probe_media_metadata,
                         deadline_monotonic=request_deadline or None,
                     )
                 finally:
@@ -1025,6 +1028,7 @@ class DouyinAdapter(BasePlatformAdapter):
         allow_continuation=False,
         continuation_identity="",
         ultra_attempt_controller=None,
+        probe_media_metadata=True,
     ):
         parse_started_monotonic = monotonic()
         parse_started_at = time()
@@ -1065,6 +1069,7 @@ class DouyinAdapter(BasePlatformAdapter):
             fast_short_link=prefer_ultra_hd,
             request_deadline=source_resolution_deadline,
             prefer_ultra_hd=prefer_ultra_hd,
+            **({"probe_media_metadata": False} if not probe_media_metadata else {}),
         )
         identity_ready_monotonic = (
             context.source_resolution_completed_monotonic

@@ -206,6 +206,30 @@ PROVIDER_HEALTH_TESTS = (
         "url_field": "videodl_url",
         "side_effect_warning": "仅限 noncommercial internal use",
     },
+    {
+        "key": "download_smoke_xhs_gallery",
+        "name": "小红书图文下载冒烟",
+        "description": "按当前用户路线解析，读取首个默认资源最多 1KB，记录字段覆盖与取数结果，不保存文件。",
+        "provider": "xiaohongshu", "provider_access_id": "", "url_field": "xhs_gallery_url",
+    },
+    {
+        "key": "download_smoke_xhs_video",
+        "name": "小红书视频下载冒烟",
+        "description": "按当前用户路线解析，读取首个默认资源最多 1KB，记录字段覆盖与取数结果，不保存文件。",
+        "provider": "xiaohongshu", "provider_access_id": "", "url_field": "xhs_video_url",
+    },
+    {
+        "key": "download_smoke_douyin",
+        "name": "抖音下载冒烟",
+        "description": "按当前用户默认超清路线解析，读取首个默认资源最多 1KB，记录字段覆盖与取数结果，不保存文件。",
+        "provider": "douyin", "provider_access_id": "", "url_field": "douyin_url",
+    },
+    {
+        "key": "download_smoke_bilibili",
+        "name": "哔哩哔哩下载冒烟",
+        "description": "按当前 Native 优先及获准兜底路线解析，读取首个默认资源最多 1KB，不保存文件。",
+        "provider": "bilibili", "provider_access_id": "", "url_field": "bilibili_url",
+    },
 )
 
 
@@ -393,6 +417,7 @@ def provider_health_test_record(
     runtime_mode="",
     hard_enabled=False,
     duration_ms=None,
+    download_smoke_details=None,
 ):
     provider_name = str(provider or item.get("provider", ""))[:80]
     fixed_error_code = (
@@ -422,6 +447,7 @@ def provider_health_test_record(
         actor_username=str(context.actor_username or "")[:150],
         test_url_host=provider_test_url_host(test_url)[:255],
         suite_run=context.suite_run,
+        download_smoke_details=download_smoke_details,
     )
 
 
@@ -509,6 +535,7 @@ def execute_provider_health_test(context, item):
     runtime_info = provider_test_runtime_info(item, context, runtime_setting)
     test_url = provider_test_url_for(item, test_setting)
     provider = item.get("provider", "")
+    download_smoke_details = None
 
     def record(status, error_type="", error_code="", error_message=""):
         return provider_health_test_record(
@@ -523,6 +550,7 @@ def execute_provider_health_test(context, item):
             test_url=test_url,
             runtime_mode=runtime_info["runtime_mode"],
             hard_enabled=runtime_info["hard_enabled"],
+            download_smoke_details=download_smoke_details,
         )
 
     try:
@@ -588,6 +616,20 @@ def execute_provider_health_test(context, item):
                 "SampleUrlPolicyRejected",
                 SAMPLE_URL_POLICY_ERROR_CODE,
                 SAMPLE_URL_POLICY_MESSAGE,
+            )
+
+        if key.startswith("download_smoke_"):
+            from .provider_download_smoke import run_download_smoke
+            download_smoke_details = run_download_smoke(context, key, test_url)
+            provider = download_smoke_details.get("provider") or provider
+            download = download_smoke_details["download"]
+            if download["status"] == "success":
+                return record(ProviderHealthTestStatus.SUCCESS)
+            return record(
+                ProviderHealthTestStatus.FAILED,
+                download_smoke_details.get("error_type") or "DownloadSmokeFailure",
+                download.get("error_code") or "DOWNLOAD_SMOKE_FAILED",
+                "下载冒烟未通过；阶段和有限取数信息见明细。",
             )
 
         if key == "douyin_native_parse":
