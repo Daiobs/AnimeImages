@@ -99,6 +99,40 @@ class BoundaryNetworkCase(SimpleTestCase):
 
 
 class RequestRedirectBoundaryTests(BoundaryNetworkCase):
+    def test_explicit_redirect_inspection_returns_headers_without_following_or_reading(self):
+        initial = "https://www.bilibili.com/"
+        self.routes[initial] = (302, {
+            "Location": "http://127.0.0.1/private",
+            "Set-Cookie": "buvid3=anonymous; Domain=.bilibili.com; Path=/; Secure",
+        }, b"not consumed")
+        response = request_get_with_retry(
+            initial, retries=1, stream=True, max_redirects=0,
+            return_redirect_response=True, allowed_final_host_suffixes=("bilibili.com",),
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Set-Cookie"].split("=", 1)[0], "buvid3")
+        self.assertEqual(self.urls(), [initial])
+        self.assertEqual(response.raw.read_count, 0)
+        response.close.assert_not_called()
+        response.close()
+
+    def test_redirect_inspection_still_enforces_source_dns_and_final_host(self):
+        initial = "https://public.example/"
+        self.routes[initial] = (302, {"Location": "https://www.bilibili.com/"}, b"unread")
+        with self.assertRaises(XhsSecurityError):
+            request_get_with_retry(
+                initial, return_redirect_response=True, stream=True,
+                allowed_final_host_suffixes=("bilibili.com",),
+            )
+        self.assertEqual(self.urls(), [initial])
+        self.responses[0].close.assert_called_once()
+        self.assertEqual(self.responses[0].raw.read_count, 0)
+        self.sent.clear()
+        self.dns["public.example"] = ["127.0.0.1"]
+        with self.assertRaises(XhsSecurityError):
+            request_get_with_retry(initial, return_redirect_response=True)
+        self.assertEqual(self.sent, [])
+
     def test_private_redirect_is_rejected_before_second_request(self):
         # Failed at base 35015f4: the adapter recorded the private second request.
         initial = "https://ci.xiaohongshu.com/image.jpg"

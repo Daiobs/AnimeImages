@@ -57,7 +57,10 @@ class AnonymousTransport:
             response.status_code = self.api_status
             if self.require_cookies and f'buvid3=anonymous-{self.bootstraps}' not in cookie:
                 response.status_code = 412
-            if path == '/x/web-interface/view':
+            if path in {'/x/frontend/finger/spi', '/x/web-interface/nav'}:
+                # Optional endpoints without WBI keys retain the legacy view.
+                payload['data'] = {}
+            elif path == '/x/web-interface/view':
                 payload['data'] = {
                     'bvid': 'BV1J4JX6PEMV', 'aid': 123, 'cid': 456,
                     'title': 'Anonymous session fixture',
@@ -100,7 +103,7 @@ class BilibiliAnonymousPublicEntryTests(TestCase):
         self.assertContains(response, 'Anonymous session fixture')
         self.assertEqual(response.context['video_items'][0]['url'], MEDIA)
         self.assertEqual(transport.bootstraps, 1)
-        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(len(transport.requests), 5)
         self.assertNotContains(response, 'anonymous-1')
         self.assertNotContains(response, 'must-not-leave-bootstrap')
 
@@ -116,13 +119,13 @@ class BilibiliAnonymousContextTests(SimpleTestCase):
         for number in (1, 2):
             result = bilibili.BilibiliAdapter().parse_url(SOURCE)
             self.assertEqual(result.video_assets[0].quality_label, '720P')
-            home, view, play = self.transport.requests[-3:]
+            home, spi, nav, view, play = self.transport.requests[-5:]
             self.assertEqual(home.url, HOME)
             self.assertNotIn('Cookie', home.headers)
             self.assertIn(f'buvid3=anonymous-{number}', view.headers['Cookie'])
             self.assertIn('b_nut=1700000000', view.headers['Cookie'])
             self.assertIn('buvid4=from-view', play.headers['Cookie'])
-            for request in (view, play):
+            for request in (spi, nav, view, play):
                 self.assertNotIn('SESSDATA', request.headers['Cookie'])
             self.assertNotIn('Cookie', result.video_assets[0].headers)
             self.assertNotIn('anonymous-', str(result))
@@ -144,21 +147,26 @@ class BilibiliAnonymousContextTests(SimpleTestCase):
         self.assertNotIn('Cookie', self.transport.requests[-1].headers)
         self.assertEqual(len(self.transport.requests), 2)
 
-    def test_bootstrap_redirect_is_not_followed_and_api_can_still_succeed(self):
+    def test_bootstrap_redirect_retains_source_cookies_without_following_target(self):
         self.transport.home_status = 302
         self.transport.home_location = 'https://other.example/challenge'
         self.transport.require_cookies = False
         result = bilibili.BilibiliAdapter().parse_url(SOURCE)
         self.assertEqual(result.video_assets[0].url, MEDIA)
-        self.assertEqual(len(self.transport.requests), 3)
-        self.assertNotIn('Cookie', self.transport.requests[1].headers)
+        self.assertEqual(len(self.transport.requests), 5)
+        self.assertIn('buvid3=anonymous-1', self.transport.requests[1].headers['Cookie'])
+        self.assertTrue(all(urlsplit(request.url).hostname in {
+            'www.bilibili.com', 'api.bilibili.com',
+        } for request in self.transport.requests))
 
     def test_explicit_412_is_not_repeated_after_initialization(self):
         self.transport.api_status = 412
         with self.assertRaises(XhsDownloadError) as raised:
             bilibili.BilibiliAdapter().parse_url(SOURCE)
         self.assertEqual(raised.exception.http_status, 412)
-        self.assertEqual(len(self.transport.requests), 2)
+        self.assertEqual([urlsplit(request.url).path for request in self.transport.requests],
+                         ['/', '/x/frontend/finger/spi', '/x/web-interface/nav',
+                          '/x/web-interface/view'])
 
     def test_expired_and_wrong_path_cookies_are_not_sent(self):
         cookies = requests.cookies.RequestsCookieJar()
@@ -200,7 +208,7 @@ class BilibiliAnonymousContextTests(SimpleTestCase):
         self.transport.revoke_cookie_on_view = True
         self.transport.require_cookies = False
         bilibili.BilibiliAdapter().parse_url(SOURCE)
-        _, view, play = self.transport.requests
+        _, _, _, view, play = self.transport.requests
         self.assertIn('buvid3=anonymous-1', view.headers['Cookie'])
         self.assertNotIn('buvid3=', play.headers['Cookie'])
         self.assertIn('b_nut=1700000000', play.headers['Cookie'])
@@ -215,12 +223,12 @@ class BilibiliAnonymousContextTests(SimpleTestCase):
                     bilibili.BilibiliAdapter().parse_url(SOURCE)
                 get.assert_called_once()
 
-    def test_existing_deadline_covers_bootstrap_and_both_api_calls(self):
+    def test_existing_deadline_covers_bootstrap_optional_context_and_both_api_calls(self):
         original = bilibili.request_get_with_retry
         with patch.object(bilibili, 'request_get_with_retry', wraps=original) as get:
             deadline = bilibili.time.monotonic() + 5
             bilibili.BilibiliAdapter().parse_url(SOURCE, deadline_monotonic=deadline)
-        self.assertEqual(len(get.call_args_list), 3)
+        self.assertEqual(len(get.call_args_list), 5)
         for call in get.call_args_list:
             self.assertEqual(call.kwargs['deadline_monotonic'], deadline)
             self.assertLessEqual(call.kwargs['timeout'], 5)
@@ -228,3 +236,4 @@ class BilibiliAnonymousContextTests(SimpleTestCase):
         self.assertEqual(bootstrap['retries'], 1)
         self.assertEqual(bootstrap['max_redirects'], 0)
         self.assertTrue(bootstrap['stream'])
+        self.assertTrue(bootstrap['return_redirect_response'])
