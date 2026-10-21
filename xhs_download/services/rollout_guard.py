@@ -17,6 +17,7 @@ from ..models import (
     ProviderHealthTestStatus,
     ProviderRuntimeSetting,
 )
+from .douyin_ultra_services import DOUYIN_ULTRA_NAME, douyin_ultra_summary
 from .provider_access import (
     PROVIDER_DOUYIN_ULTRA,
     PROVIDER_THIRD_PARTY,
@@ -53,21 +54,8 @@ class RolloutProviderConfig:
     download_query: Q
 
 
+# Douyin ultra is built per request from the configured services (A1).
 PROVIDER_CONFIGS = (
-    RolloutProviderConfig(
-        provider_id=PROVIDER_DOUYIN_ULTRA,
-        name="抖音 KuKuTool 超高清",
-        health_keys=("douyin_kukutool_ultra",),
-        parse_query=(
-            Q(prefer_ultra_hd=True)
-            | Q(selected_provider__icontains="kukutool")
-            | Q(selected_provider__icontains="ultra")
-        ),
-        download_query=(
-            Q(provider__icontains="kukutool")
-            | Q(source_platform__in=("douyin", "tiktok"))
-        ),
-    ),
     RolloutProviderConfig(
         provider_id=PROVIDER_YOUTUBE_MERGE,
         name="YouTube 高清合并",
@@ -100,6 +88,24 @@ PROVIDER_CONFIGS = (
         ),
     ),
 )
+
+
+def douyin_ultra_rollout_config(douyin_ultra):
+    service_names = douyin_ultra.provider_names
+    return RolloutProviderConfig(
+        provider_id=PROVIDER_DOUYIN_ULTRA,
+        name=DOUYIN_ULTRA_NAME,
+        health_keys=douyin_ultra.health_keys,
+        parse_query=(
+            Q(prefer_ultra_hd=True)
+            | Q(selected_provider__in=service_names)
+            | Q(selected_provider__icontains="ultra")
+        ),
+        download_query=(
+            Q(provider__in=service_names)
+            | Q(source_platform__in=("douyin", "tiktok"))
+        ),
+    )
 
 
 def admin_display_timezone():
@@ -204,6 +210,25 @@ def latest_health_for_config(config):
         "has_success": ProviderHealthTestStatus.SUCCESS in statuses,
         "has_skipped": ProviderHealthTestStatus.SKIPPED in statuses,
         "has_failed": bool(statuses & {ProviderHealthTestStatus.FAILED, ProviderHealthTestStatus.UNAVAILABLE}),
+    }
+
+
+def douyin_ultra_rollout_health(douyin_ultra):
+    run = douyin_ultra.health_run
+    status = ""
+    if run is not None:
+        status = {
+            ProviderHealthTestStatus.SUCCESS: "success",
+            ProviderHealthTestStatus.SKIPPED: "skipped",
+        }.get(run.status, "failed")
+    return {
+        "status": status,
+        "label": status or "暂无记录",
+        "created_at": local_datetime(run.created_at) if run else "",
+        "details": douyin_ultra.health_details or "暂无健康测试记录",
+        "has_success": status == "success",
+        "has_skipped": status == "skipped",
+        "has_failed": status == "failed",
     }
 
 
@@ -320,8 +345,9 @@ def top_error_reasons(queryset, limit=10):
 
 
 def build_provider_rollout_rows(runtime_setting, *, recent_24h_start, recent_7d_start, global_usage_percent):
+    douyin_ultra = douyin_ultra_summary()
     rows = []
-    for config in PROVIDER_CONFIGS:
+    for config in (douyin_ultra_rollout_config(douyin_ultra), *PROVIDER_CONFIGS):
         parse_24h = provider_parse_queryset(config, recent_24h_start)
         download_24h = provider_download_queryset(config, recent_24h_start)
         parse_total = parse_24h.count()
@@ -335,7 +361,10 @@ def build_provider_rollout_rows(runtime_setting, *, recent_24h_start, recent_7d_
         ).count()
         runtime_mode = provider_mode(config.provider_id, runtime_setting)
         hard_enabled = hard_enabled_for_provider(config.provider_id)
-        health = latest_health_for_config(config)
+        if config.provider_id == PROVIDER_DOUYIN_ULTRA:
+            health = douyin_ultra_rollout_health(douyin_ultra)
+        else:
+            health = latest_health_for_config(config)
         success_rate = percent(parse_success, parse_total)
         recommendation, reasons = evaluate_provider_rollout(
             config=config,
