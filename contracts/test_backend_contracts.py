@@ -64,12 +64,24 @@ class OfflineTransport:
 
     def __init__(self):
         self.events = []
+        self.bootstrap_calls = []
         self.sent_service_outcomes = []
         self.native_outcome = 412
         self.service_outcome = "success"
 
     def send(self, request, **kwargs):
         parsed = urlsplit(request.url)
+        if request.url == "https://www.bilibili.com/":
+            assert request.method == "GET", request.method
+            self.bootstrap_calls.append(request.url)
+            response = requests.Response()
+            response.status_code = 200
+            response.url = request.url
+            response.request = request
+            response.headers.update({"Content-Type": "text/html", "Content-Length": "0"})
+            response._content = b""
+            response._content_consumed = True
+            return response
         if parsed.hostname == "api.bilibili.com":
             self.events.append("native")
             if self.native_outcome == "timeout":

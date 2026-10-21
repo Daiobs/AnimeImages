@@ -124,8 +124,16 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
 
     def native_http(self, method, url, **kwargs):
         self.assertEqual(method.upper(), "GET")
-        self.assertEqual(urlsplit(url).hostname, "api.bilibili.com")
         self.assertFalse(kwargs["allow_redirects"])
+        if url == "https://www.bilibili.com/":
+            response = requests.Response()
+            response.status_code = 200
+            response.url = url
+            response.headers.update({"Content-Type": "text/html", "Content-Length": "0"})
+            response._content = b""
+            response._content_consumed = True
+            return response
+        self.assertEqual(urlsplit(url).hostname, "api.bilibili.com")
         self.events.append("native")
         if not self.native_success and not self.native_incomplete:
             return json_response(url, {"code": -412}, status=412)
@@ -203,7 +211,7 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
         expected_events = ["native"] * (2 if self.native_incomplete else 1) + ["service"]
         self.assertEqual(self.events, expected_events)
         self.post.assert_called_once()
-        self.assertEqual(self.native.call_count, expected_events.count("native"))
+        self.assertEqual(self.native.call_count, expected_events.count("native") + 1)
         self.assertEqual(
             [call.args[0] for call in self.limits.call_args_list],
             ["third-party-provider-minute-ip", "third-party-provider-minute-global"])
@@ -250,6 +258,7 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
         self.assertEqual(len(context["video_items"]), 1)
         self.assertFalse(context.get("upstream_candidates"))
         self.assertEqual(self.events, ["native", "native"])
+        self.assertEqual(self.native.call_count, len(self.events) + 1)
         self.post.assert_not_called()
         self.limits.assert_not_called()
 
@@ -265,6 +274,7 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
         self.assertFalse(context.get("video_items"))
         self.assertFalse(context.get("upstream_candidates"))
         self.assertEqual(self.events, ["native"])
+        self.assertEqual(self.native.call_count, len(self.events) + 1)
         self.post.assert_not_called()
         self.limits.assert_not_called()
 
