@@ -93,6 +93,10 @@ class AnonymousTransport:
     'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
 }})
 class BilibiliAnonymousPublicEntryTests(TestCase):
+    def setUp(self):
+        bilibili.clear_anonymous_context_cache()
+        self.addCleanup(bilibili.clear_anonymous_context_cache)
+
     def test_public_native_bootstrap_and_cookie_continuity(self):
         cache.clear()
         self.addCleanup(cache.clear)
@@ -110,26 +114,32 @@ class BilibiliAnonymousPublicEntryTests(TestCase):
 
 class BilibiliAnonymousContextTests(SimpleTestCase):
     def setUp(self):
+        bilibili.clear_anonymous_context_cache()
+        self.addCleanup(bilibili.clear_anonymous_context_cache)
         self.transport = AnonymousTransport()
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(offline_requests(self.transport.send))
 
-    def test_cookie_scope_is_one_parse_and_never_media_headers(self):
+    def test_cookie_context_is_reused_but_never_enters_media_headers(self):
         for number in (1, 2):
             result = bilibili.BilibiliAdapter().parse_url(SOURCE)
             self.assertEqual(result.video_assets[0].quality_label, '720P')
-            home, spi, nav, view, play = self.transport.requests[-5:]
-            self.assertEqual(home.url, HOME)
-            self.assertNotIn('Cookie', home.headers)
-            self.assertIn(f'buvid3=anonymous-{number}', view.headers['Cookie'])
+            view, play = self.transport.requests[-2:]
+            if number == 1:
+                home, spi, nav = self.transport.requests[:3]
+                self.assertEqual(home.url, HOME)
+                self.assertNotIn('Cookie', home.headers)
+            self.assertIn('buvid3=anonymous-1', view.headers['Cookie'])
             self.assertIn('b_nut=1700000000', view.headers['Cookie'])
             self.assertIn('buvid4=from-view', play.headers['Cookie'])
-            for request in (spi, nav, view, play):
+            for request in self.transport.requests:
+                if request.url == HOME:
+                    continue
                 self.assertNotIn('SESSDATA', request.headers['Cookie'])
             self.assertNotIn('Cookie', result.video_assets[0].headers)
             self.assertNotIn('anonymous-', str(result))
-        self.assertEqual(self.transport.bootstraps, 2)
+        self.assertEqual(self.transport.bootstraps, 1)
 
     def test_optional_bootstrap_failure_preserves_existing_api_success(self):
         self.transport.home_status = 503

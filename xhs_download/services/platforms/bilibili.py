@@ -1,6 +1,8 @@
 import hashlib
+from contextlib import contextmanager
 import logging
 import re
+import threading
 import time
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
@@ -25,6 +27,14 @@ from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 BILIBILI_PAGE_HOST_SUFFIXES = ("bilibili.com", "b23.tv")
 BILIBILI_MEDIA_HOST_SUFFIXES = ("bilivideo.com", "bilivideo.cn", "hdslb.com")
 ANONYMOUS_COOKIE_NAMES = frozenset({"buvid3", "buvid4", "b_nut"})
+ANONYMOUS_COOKIE_TTL = 600
+WBI_KEY_TTL = 3600
+_context_lock = threading.RLock()
+_context_generation = threading.Event()
+_cookie_cache = None
+_cookie_expires = 0
+_wbi_cache = None
+_wbi_expires = 0
 WBI_MIXIN_ORDER = (
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
     27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
@@ -121,6 +131,81 @@ def bilibili_request_timeout(deadline_monotonic, fallback):
     return min(float(fallback), max(0.001, remaining))
 
 
+def _context_clock():
+    return time.monotonic()
+
+
+@contextmanager
+def _locked_context(deadline_monotonic=None):
+    if not _context_lock.acquire(timeout=bilibili_request_timeout(deadline_monotonic, 3)):
+        raise XhsProviderTimeoutError("哔哩哔哩匿名上下文等待超时")
+    try:
+        yield
+    finally:
+        _context_lock.release()
+
+
+def clear_anonymous_context_cache():
+    """Drop process-local anonymous material; never touch shared caches or media."""
+    global _context_generation, _cookie_cache, _cookie_expires, _wbi_cache, _wbi_expires
+    with _context_lock:
+        _context_generation.set()
+        _context_generation = threading.Event()
+        _cookie_cache, _cookie_expires = None, 0
+        _wbi_cache, _wbi_expires = None, 0
+
+
+def _reject_anonymous_context(error, cookies, *, optional=False):
+    global _cookie_cache, _wbi_cache, _wbi_expires
+    error.bilibili_context_reused = bool(getattr(cookies, "_bilibili_reused", False))
+    if cookies is None:
+        return
+    cookies._bilibili_rejected = True
+    generation = getattr(cookies, "_bilibili_generation", None)
+    if optional and not error.bilibili_context_reused:
+        # A fresh optional nav failure still permits the existing legacy view path,
+        # but cannot seed the cache for future parses.
+        if generation is _context_generation:
+            _cookie_cache, _wbi_cache, _wbi_expires = None, None, 0
+        return
+    # Mark rejection immediately, without waiting behind another network initialization.
+    # A late failure only revokes its own generation, never a newer context.
+    if generation is not None:
+        generation.set()
+
+
+def _require_live_context(cookies):
+    generation = getattr(cookies, "_bilibili_generation", None)
+    if generation is not None and generation.is_set():
+        error = XhsParseError("哔哩哔哩匿名上下文已失效")
+        error.bilibili_context_reused = True
+        raise error
+
+
+def _publish_anonymous_cookies(cookies, deadline_monotonic):
+    global _cookie_cache
+    if getattr(cookies, "_bilibili_rejected", False):
+        return
+    with _locked_context(deadline_monotonic):
+        if (not _context_generation.is_set()
+                and getattr(cookies, "_bilibili_generation", None) is _context_generation
+                and getattr(cookies, "_bilibili_expires", None) == _cookie_expires
+                and _context_clock() < _cookie_expires):
+            snapshot = getattr(cookies, "_bilibili_snapshot", None)
+            if snapshot is not _cookie_cache:
+                # Stale additions never overwrite newer values, but a same-value
+                # revocation must not disappear merely because another response won.
+                current = {(c.domain, c.path, c.name): c.value for c in (_cookie_cache or ())}
+                updated = {(c.domain, c.path, c.name) for c in cookies}
+                if any((c.domain, c.path, c.name) not in updated
+                       and current.get((c.domain, c.path, c.name)) == c.value
+                       for c in (snapshot or ())):
+                    _context_generation.set()
+                return
+            _cookie_cache = cookies.copy() if cookies else None
+            cookies._bilibili_snapshot = _cookie_cache
+
+
 def retain_anonymous_cookies(response, cookies):
     updated = cookies.copy()
     # Apply Set-Cookie deletion semantics, which response.cookies omits.
@@ -136,7 +221,7 @@ def retain_anonymous_cookies(response, cookies):
     cookies.clear_expired_cookies()
 
 
-def anonymous_cookie_context(*, deadline_monotonic=None):
+def _new_anonymous_cookie_context(*, deadline_monotonic=None):
     cookies = requests.cookies.RequestsCookieJar()
     try:
         response = request_get_with_retry(
@@ -186,6 +271,32 @@ def anonymous_cookie_context(*, deadline_monotonic=None):
     return cookies
 
 
+def anonymous_cookie_context(*, deadline_monotonic=None):
+    global _context_generation, _cookie_cache, _cookie_expires, _wbi_cache, _wbi_expires
+    with _locked_context(deadline_monotonic):
+        if _context_generation.is_set():
+            clear_anonymous_context_cache()
+        now = _context_clock()
+        cookies = _cookie_cache.copy() if _cookie_cache is not None else None
+        if cookies is not None:
+            cookies.clear_expired_cookies()
+        reused = bool(cookies) and now < _cookie_expires
+        if not reused:
+            cookies = _new_anonymous_cookie_context(deadline_monotonic=deadline_monotonic)
+            if _context_generation.is_set():
+                _wbi_cache, _wbi_expires = None, 0
+            # Cookie expiry replaces only its generation; still-valid WBI keys survive.
+            _context_generation = threading.Event()
+            _cookie_expires = _context_clock() + ANONYMOUS_COOKIE_TTL
+            _cookie_cache = (cookies.copy() if cookies and not
+                             getattr(cookies, "_bilibili_rejected", False) else None)
+        cookies._bilibili_generation = _context_generation
+        cookies._bilibili_expires = _cookie_expires
+        cookies._bilibili_reused = reused
+        cookies._bilibili_snapshot = _cookie_cache
+        return cookies
+
+
 def api_get_json(
     url,
     params,
@@ -198,6 +309,7 @@ def api_get_json(
     timeout_seconds=15,
 ):
     query = urlencode({key: value for key, value in params.items() if value is not None})
+    _require_live_context(cookies)
     request_url = f"{url}?{query}" if query else url
     headers = {**BILIBILI_HEADERS, "Referer": requote_uri(referer)}
     if cookies is not None:
@@ -224,12 +336,15 @@ def api_get_json(
         stage = "view" if url.endswith("/view") else "playurl" if url.endswith("/playurl") else "api"
         logger.info("bilibili_native_http_failure stage=%s http_status=%s",
                     stage, getattr(error, "http_status", None))
+        if getattr(error, "http_status", None) == 412:
+            _reject_anonymous_context(error, cookies, optional=url.endswith(("/nav", "/spi")))
         raise
     except (requests.Timeout, requests.ConnectionError) as error:
         raise XhsProviderTimeoutError("哔哩哔哩接口请求超时，请稍后重试") from error
     try:
         if cookies is not None:
             retain_anonymous_cookies(response, cookies)
+            _publish_anonymous_cookies(cookies, deadline_monotonic)
         data = response.json()
     finally:
         response.close()
@@ -238,11 +353,14 @@ def api_get_json(
         raise XhsParseError("哔哩哔哩接口返回格式错误")
     if data.get("code") not in accepted_codes:
         message = data.get("message") or "接口返回异常"
-        raise XhsParseError(f"哔哩哔哩解析失败：{message}")
+        error = XhsParseError(f"哔哩哔哩解析失败：{message}")
+        if data.get("code") == -412 or (data.get("code") == -403 and "/wbi/" in url):
+            _reject_anonymous_context(error, cookies, optional=url.endswith(("/nav", "/spi")))
+        raise error
     return data.get("data") or {}
 
 
-def signed_view_params(params, cookies, *, deadline_monotonic=None):
+def _load_wbi_mixin(cookies, *, deadline_monotonic=None):
     nav_url = "https://api.bilibili.com/x/web-interface/nav"
     if not requests.cookies.get_cookie_header(cookies, requests.Request("GET", nav_url).prepare()):
         return None
@@ -272,7 +390,30 @@ def signed_view_params(params, cookies, *, deadline_monotonic=None):
         logger.info("bilibili_wbi_context_unavailable error_type=%s", type(error).__name__)
         return None
     lookup = "".join(keys)
-    mixin = "".join(lookup[index] for index in WBI_MIXIN_ORDER)[:32]
+    return "".join(lookup[index] for index in WBI_MIXIN_ORDER)[:32]
+
+
+def signed_view_params(params, cookies, *, deadline_monotonic=None):
+    global _wbi_cache, _wbi_expires
+    view_request = requests.Request("GET", "https://api.bilibili.com/x/web-interface/wbi/view").prepare()
+    if not requests.cookies.get_cookie_header(cookies, view_request):
+        return None
+    with _locked_context(deadline_monotonic):
+        _require_live_context(cookies)
+        if _context_generation.is_set():
+            clear_anonymous_context_cache()
+        if _wbi_cache is not None and _context_clock() < _wbi_expires:
+            mixin = _wbi_cache
+            cookies._bilibili_reused = True
+        else:
+            generation = _context_generation
+            mixin = _load_wbi_mixin(cookies, deadline_monotonic=deadline_monotonic)
+            if (mixin and generation is _context_generation and not generation.is_set()
+                    and not getattr(cookies, "_bilibili_rejected", False)):
+                _wbi_cache = mixin
+                _wbi_expires = _context_clock() + WBI_KEY_TTL
+    if not mixin:
+        return None
     signed = {
         key: "".join(char for char in str(value) if char not in "!'()*")
         for key, value in sorted({**params, "wts": round(time.time())}.items())
@@ -443,10 +584,27 @@ class BilibiliAdapter(BasePlatformAdapter):
     parse_option_names = ("timeout_seconds", "deadline_monotonic")
 
     def parse_url(self, url, timeout_seconds=None, deadline_monotonic=None):
-        self.require_supported_url(url)
         deadline = float(deadline_monotonic or 0)
         if not deadline and timeout_seconds is not None:
             deadline = time.monotonic() + max(0.001, float(timeout_seconds or 0))
+        try:
+            return self._parse_url(url, deadline)
+        except (XhsDownloadError, XhsParseError) as error:
+            if not getattr(error, "bilibili_context_reused", False):
+                raise
+            # Only a rejected cached context gets one fresh attempt, within the same budget.
+            bilibili_request_timeout(deadline or None, 3)
+            try:
+                return self._parse_url(url, deadline)
+            except (XhsParseError, XhsDownloadError) as rebuild_error:
+                # A refresh cannot remove the original HTTP 412 fallback eligibility.
+                # Keep the last diagnostic as the cause; TLS/security errors are not caught.
+                if getattr(error, "http_status", None) == 412:
+                    raise error from rebuild_error
+                raise
+
+    def _parse_url(self, url, deadline):
+        self.require_supported_url(url)
         source_url = normalize_bilibili_url(url)
         page_url = source_url
         if not extract_bvid(source_url) and not extract_aid(source_url):
@@ -458,7 +616,7 @@ class BilibiliAdapter(BasePlatformAdapter):
         bvid = extract_bvid(page_url)
         aid = extract_aid(page_url)
         page_number = extract_page_number(page_url)
-        # Per-parse anonymous context; it is never attached to media or cached.
+        # Every parse owns its jar; only anonymous material is reused inside this process.
         cookies = anonymous_cookie_context(deadline_monotonic=deadline or None)
         view_params = build_view_params(bvid, aid)
         signed_params = signed_view_params(view_params, cookies, deadline_monotonic=deadline or None)
