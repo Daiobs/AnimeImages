@@ -18,6 +18,7 @@ from uuid import uuid4
 import requests
 from django.conf import settings
 from django.core.cache import cache
+from django.db import connections
 
 from ..candidates import MediaCandidate
 from ..common import XhsProviderTimeoutError, validate_external_url, validate_public_url
@@ -114,6 +115,15 @@ def get_provider_capacity(name, max_pending_tasks):
         return capacity
 
 
+def run_provider_task(callback, *args):
+    try:
+        return callback(*args)
+    finally:
+        # Workers outlive the request that queued them; release their ORM
+        # connections the way a finished request does.
+        connections.close_all()
+
+
 def submit_provider_task(
     name,
     max_workers,
@@ -125,7 +135,7 @@ def submit_provider_task(
     if not capacity.acquire(blocking=False):
         return None
     try:
-        future = get_provider_executor(name, max_workers).submit(callback, *args)
+        future = get_provider_executor(name, max_workers).submit(run_provider_task, callback, *args)
     except Exception:
         capacity.release()
         raise

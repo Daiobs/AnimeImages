@@ -1,6 +1,6 @@
 import json
 from io import StringIO
-from threading import Event
+from threading import Event, current_thread
 from time import monotonic, sleep, time
 from unittest.mock import Mock, patch
 
@@ -32,6 +32,7 @@ from .services.platforms.douyin_kukutool import (
     run_kukutool_sidecar,
     run_kukutool_upstream,
     run_kukutool_url_helper,
+    submit_provider_task,
 )
 from .services.platforms.douyin_providers import (
     DouyinParseContext,
@@ -1291,3 +1292,14 @@ class DouyinKukuToolTests(SimpleTestCase):
             mock_run.call_args.args[0][2],
             "https://www.instagram.com/p/example/",
         )
+
+
+class ProviderTaskConnectionTests(SimpleTestCase):
+    def test_worker_releases_its_database_connections_after_each_task(self):
+        closed_in = []
+        with patch("xhs_download.services.platforms.douyin_kukutool.connections.close_all",
+                   side_effect=lambda: closed_in.append(current_thread())):
+            future = submit_provider_task("connection-release-test", 1, 1, lambda: "done")
+            self.assertEqual(future.result(timeout=2), "done")
+        self.assertEqual(len(closed_in), 1)
+        self.assertIsNot(closed_in[0], current_thread())
