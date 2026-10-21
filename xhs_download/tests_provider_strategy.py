@@ -2795,6 +2795,167 @@ class TianTianJieXiHealthHardeningTests(TestCase):
         mock_probe.assert_not_called()
 
 
+@override_settings(ULTRA_HD_PROVIDER_ENABLED=True, KUKUTOOL_PROVIDER_ENABLED=True)
+@patch(
+    "xhs_download.services.provider_health_tests.get_kukutool_provider_health",
+    return_value={"available": True},
+)
+class KukuToolHealthScopeTests(TestCase):
+    AWEME_ID = "7611146072161047526"
+
+    def setUp(self):
+        from .models import ProviderHealthTestSetting
+
+        ProviderHealthTestSetting.objects.create(
+            singleton_key=1,
+            douyin_url=f"https://www.douyin.com/video/{self.AWEME_ID}",
+        )
+        self.request = RequestFactory().post("/admin/provider-health-tests/run/")
+        self.request.user = get_user_model().objects.create_superuser(
+            username="admin",
+            password="password",
+        )
+        self.request.request_id = "rid-kukutool-health"
+        # The test must never reach the whole chain, TianTian or Native.
+        self.chain = self.start_patch(patch("xhs_download.services.provider_health_tests.parse_media_page"))
+        self.tiantian = self.start_patch(
+            patch("xhs_download.services.platforms.douyin_providers.DouyinTianTianJieXiProvider.parse")
+        )
+        self.tiantian_generic = self.start_patch(patch.object(TianTianJieXiGenericProvider, "parse"))
+        self.native = self.start_patch(
+            patch("xhs_download.services.platforms.douyin_providers.get_fast_native_result")
+        )
+
+    def start_patch(self, patcher):
+        mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return mock
+
+    def run_test(self):
+        return run_provider_health_test(
+            self.request,
+            provider_health_test_by_key("douyin_kukutool_ultra"),
+        )
+
+    def assert_only_kukutool_ran(self):
+        self.chain.assert_not_called()
+        self.tiantian.assert_not_called()
+        self.tiantian_generic.assert_not_called()
+        self.native.assert_not_called()
+
+    def provider_result(self, provider, selected_provider):
+        asset = MediaAsset(
+            media_type="video",
+            url="https://v5-default.365yg.com/demo.mp4",
+            platform="douyin",
+            provider=provider,
+            asset_id=f"douyin:{self.AWEME_ID}:video:{provider}",
+            provider_resource_id=self.AWEME_ID,
+            provider_cache_key=f"douyin:{provider}:validated:{self.AWEME_ID}",
+        )
+        asset = MediaAsset(
+            **{
+                **asset.__dict__,
+                "provider_manifest_token": build_provider_manifest_token(
+                    asset_id=asset.asset_id,
+                    provider=asset.provider,
+                    provider_resource_id=asset.provider_resource_id,
+                    provider_cache_key=asset.provider_cache_key,
+                    url=asset.url,
+                    media_type=asset.media_type,
+                ),
+            }
+        )
+        return ParseResult(
+            platform="douyin",
+            post_type="video",
+            base_filename="demo",
+            assets=(asset,),
+            metadata={"selected_provider": selected_provider},
+        )
+
+    def test_real_kukutool_parse_succeeds_without_native_tiantian_or_chain(self, _health):
+        from concurrent.futures import Future
+
+        from .services.platforms.douyin_kukutool import (
+            DouyinKukuToolProvider,
+            KukuToolResource,
+            ValidatedKukuToolCandidate,
+        )
+
+        validated = ValidatedKukuToolCandidate(
+            candidate=KukuToolResource(
+                url="https://v5-default.365yg.com/demo.mp4",
+                quality_label="超高清",
+                size_bytes=1024,
+            ).to_candidate(),
+            candidate_count=1,
+            title="demo",
+        )
+        upstream = Future()
+        upstream.set_result(validated)
+        with patch.object(DouyinKukuToolProvider, "get_cached_candidate", return_value=None), patch.object(
+            DouyinKukuToolProvider,
+            "get_or_start_kukutool_future",
+            return_value=(upstream, "started"),
+        ) as mock_upstream:
+            run = self.run_test()
+
+        self.assertEqual(run.status, ProviderHealthTestStatus.SUCCESS, run.error_message_short)
+        self.assertEqual(run.provider, "kukutool")
+        mock_upstream.assert_called_once()
+        self.assert_only_kukutool_ran()
+
+    def test_kukutool_result_with_valid_manifest_is_success(self, _health):
+        with patch(
+            "xhs_download.services.provider_health_tests.DouyinKukuToolProvider.parse",
+            return_value=self.provider_result("kukutool", "kukutool"),
+        ) as mock_parse:
+            run = self.run_test()
+
+        self.assertEqual(run.status, ProviderHealthTestStatus.SUCCESS, run.error_message_short)
+        context = mock_parse.call_args.args[1]
+        self.assertTrue(context.native_fallback_future.done())
+        self.assertIsNone(context.native_fallback_future.result())
+        self.assert_only_kukutool_ran()
+
+    def test_empty_or_foreign_results_are_not_success(self, _health):
+        cases = {
+            "empty": None,
+            "no_assets": ParseResult(platform="douyin", post_type="video", base_filename="demo", assets=()),
+            "native": self.provider_result("native", "native"),
+            "tiantian": self.provider_result("tiantianjiexi", "tiantianjiexi"),
+            "kukutool_assets_native_selected": self.provider_result("kukutool", "native"),
+        }
+        for label, result in cases.items():
+            with self.subTest(label), patch(
+                "xhs_download.services.provider_health_tests.DouyinKukuToolProvider.parse",
+                return_value=result,
+            ):
+                run = self.run_test()
+                self.assertEqual(run.status, ProviderHealthTestStatus.UNAVAILABLE)
+                self.assertEqual(run.error_type, "InvalidParseResult")
+        self.assert_only_kukutool_ran()
+
+    def test_disabled_and_unavailable_gates_are_unchanged(self, mock_health):
+        with patch("xhs_download.services.provider_health_tests.DouyinKukuToolProvider.parse") as mock_parse:
+            for overrides in (
+                {"ULTRA_HD_PROVIDER_ENABLED": False},
+                {"KUKUTOOL_PROVIDER_ENABLED": False},
+            ):
+                with self.subTest(**overrides), override_settings(**overrides):
+                    run = self.run_test()
+                    self.assertEqual(run.status, ProviderHealthTestStatus.UNAVAILABLE)
+                    self.assertEqual(run.error_type, "CapabilityDisabled")
+
+            mock_health.return_value = {"available": False, "error": "circuit open"}
+            run = self.run_test()
+            self.assertEqual(run.status, ProviderHealthTestStatus.UNAVAILABLE)
+            self.assertEqual(run.error_type, "ProviderUnavailable")
+        mock_parse.assert_not_called()
+        self.assert_only_kukutool_ran()
+
+
 class DouyinUltraRaceSettingsTests(SimpleTestCase):
     @override_settings(
         DOUYIN_ULTRA_RACE_ENABLED=True,
