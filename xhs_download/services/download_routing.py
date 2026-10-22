@@ -4,7 +4,10 @@ from download_console.models import DownloadRuntimeSetting
 from ..models import KukuToolDownloadDeliveryMode, ProviderRuntimeSetting
 
 from .downloads import provider_manifest_allows_public_download
-from .provider_strategy import BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
+from .provider_strategy import (
+    BROWSER_DIRECT_FETCH_SAFE_PROVIDERS, SERVER_MERGE_PROVIDERS,
+    browser_streaming_resource_url_is_allowed,
+)
 from .platforms.xhs_tiantian_media_policy import (
     xhs_tiantian_manifest_item_is_allowed,
 )
@@ -214,6 +217,10 @@ def item_can_browser_direct_video(item):
     provider = item_provider(item)
     if item_is_upstream(item):
         return provider_manifest_allows_public_download(item)
+    if provider in SERVER_MERGE_PROVIDERS:
+        return False
+    if browser_streaming_resource_url_is_allowed(url):
+        return not provider or provider_manifest_allows_public_download(item)
     if item_is_xhs_native_browser_video(item):
         return True
     if (
@@ -346,6 +353,8 @@ def public_route_item(item):
         if browser_direct_fetch_safe:
             public_item["requires_merge"] = False
             public_item["requires_cookie"] = False
+            if not item_is_upstream(item):
+                public_item.update(browser_transport_hint(public_item))
             if item_is_upstream(item):
                 binding = upstream_video_resource_binding(item)
                 if binding:

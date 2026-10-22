@@ -43,7 +43,12 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
   terminal state. Recovery uses natural, bounded expiry without admin intervention.
 - INV-03 checks highest default, exact alternative resource/token, SW streaming with
   a bound selection, legacy Worker messaging, and the existing unsupported-browser
-  Blob compatibility path. Bilibili server attachments are a separate delivery path.
+  Blob compatibility path. Bilibili Native and service HTTPS complete files use
+  the same reviewed browser-first route with their original authorization. HTTP
+  resources keep the existing attachment path; no scheme is silently rewritten.
+  Explicit old-Worker URL rejection permits bounded browser Blob compatibility
+  only before a task starts. Unknown registration, cancellation and media-response
+  failures never trigger a second media request.
 - INV-04 uses both Safari and Chrome UA fixtures and the real attachment controller.
   This is not a new real-browser save, disk-persistence proof, or historical Worker
   binary run. YouTube merge and every platform/CDN are not exhaustively covered.
@@ -70,6 +75,7 @@ not syntax/import errors. The Nginx countercheck is also an executable CI test.
 | INV-01 (KuKuTool switch) | Unchanged `ddf2f80` (`KUKUTOOL_PROVIDER_ENABLED` inside the Douyin ultra capability gate) | Switch off, TianTian configured: Douyin page did not offer ultra; with order `kukutool,tiantianjiexi,native` the `ultra_hd=1` parse asked no service (`[]`) |
 | INV-02 | Failure cache retained for 24 hours | Failure, timeout and disconnect could not recover into usable public HTML |
 | INV-03 | Choose lowest default; force bound selections to Blob; require Worker v4 | Wrong default; no SW navigation; incompatible legacy registration |
+| INV-03 (browser first) | Unchanged `c26453c` through public Bilibili parse and action routes | Native auto route was `proxy`; service HTTPS selected download returned 409 instead of a direct descriptor |
 | INV-04 | Premature saved copy; attachment `DENY` instead of `SAMEORIGIN` | Controller rejects premature completion; both UA response checks reject framing |
 | INV-04 (transfer observation) | Unchanged `8e8beda` | Three-minute observation ends as `poll_timeout`; slow HTTP transfer status returns 410 after 60 s; downstream close reports `UPSTREAM_CONNECTION_ERROR` |
 | INV-05 | Remove fallback; call service before Native; bypass admission; allow 404 fallback | Failure classification, order and permission assertions fail |
@@ -78,5 +84,7 @@ not syntax/import errors. The Nginx countercheck is also an executable CI test.
 | INV-08 | Remove `/media/service-selected-format/` from temporary snippet | HTTP 404 and no Django ingress; countercheck expects this failure |
 | INV-09 | Trust leftmost XFF | Spoofed quota becomes 201 instead of 429; gray decision changes |
 
-The two frozen Worker/protocol files were not changed, including in counterchecks.
+The original counterchecks did not change either frozen Worker/protocol file.
+The Human-approved browser-first correction updates the existing protocol URL
+policy in one PR, without changing the wire shape or requiring a version handshake.
 Merge-guard event replays are local API doubles, not actual labels or branch protection.

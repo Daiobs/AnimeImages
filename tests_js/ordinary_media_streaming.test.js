@@ -314,6 +314,45 @@ function selectedDescriptor(overrides = {}, provider = "tiantianjiexi") {
         downloadId: "0123456789abcdef0123456789abcdef"});
 }
 
+function bilibiliSelectedItem(overrides = {}) {
+    return selectedItem("tiantianjiexi_generic", {
+        source_platform: "bilibili", url: "https://upos-sz-mirrorcos.bilivideo.com/video.mp4",
+        asset_id: `bilibili:service:BV1xx411c7mD:p1:video:${"c".repeat(24)}`,
+        provider_resource_id: "b".repeat(64),
+        provider_cache_key: `bilibili:service:tiantianjiexi_generic:${"b".repeat(64)}`,
+        ...overrides,
+    });
+}
+
+test("Bilibili complete-file admission keeps scheme, track and redirect boundaries", () => {
+    const source = bilibiliSelectedItem().url;
+    assert.equal(protocol.isAllowedInitialMediaUrl(source), true);
+    for (const url of [source.replace("https:", "http:"), source.replace(".mp4", ".m4s"),
+        source.replace(".mp4", ".m3u8"), source.replace(".mp4", ".mpd"),
+        source.replace("bilivideo.com", "bilivideo.com.evil.example"),
+        source.replace("bilivideo.com", "hdslb.com")]) {
+        assert.equal(protocol.isAllowedInitialMediaUrl(url), false, url);
+    }
+    assert.equal(protocol.isAllowedFinalMediaUrl({initialUrl: source,
+        finalUrl: "https://upos-other.bilivideo.cn/video.mp4", redirected: true}), true);
+    for (const other of [ordinaryItem().url, "https://media.example/video.mp4", source.replace(".mp4", ".m4s")]) {
+        assert.equal(protocol.isAllowedFinalMediaUrl({initialUrl: source, finalUrl: other, redirected: true}), false);
+        assert.equal(protocol.isAllowedFinalMediaUrl({initialUrl: other, finalUrl: source, redirected: true}), false);
+    }
+    const item = bilibiliSelectedItem();
+    assert.equal(ordinary.isOrdinaryMediaItem(item), true);
+    const choice = {id: item.candidate_id, provider: item.provider, kind: "video", formatId: item.selected_format_id,
+        schema: item.selection_schema, legacyAssetId: item.asset_id};
+    assert.equal(picker.validateItem(item, choice), item);
+    for (const changes of [{provider_manifest_token: ""}, {provider_cache_key: "other"},
+        {asset_id: `bilibili:service:BV1xx411c7mD:p1:video:${"d".repeat(24)}`}]) {
+        assert.throws(() => picker.validateItem({...item, ...changes}, choice));
+    }
+    const transfer = protocol.createTransportDescriptor({...item, downloadId: "f".repeat(32)});
+    assert.deepEqual(Object.keys(transfer).sort(),
+        ["createdAt", "downloadId", "expectedBytes", "expiresAt", "filename", "url"].sort());
+});
+
 async function registerSelected(runtime, descriptor) {
     return runtime.send({type: "REGISTER_DOWNLOAD", protocolVersion: protocol.PROTOCOL_VERSION, descriptor});
 }
@@ -1012,7 +1051,7 @@ test("only explicit pre-start capability failures permit Blob fallback", async (
         "STREAMING_URL_UNSUPPORTED",
         "stale worker protocol",
         {safeToFallback: true},
-    )), false);
+    )), true);
     assert.equal(ordinary.canFallbackToBlob(streaming.streamingError(
         "STREAMING_START_STATE_UNKNOWN",
         "start state unknown",
@@ -1020,14 +1059,15 @@ test("only explicit pre-start capability failures permit Blob fallback", async (
     )), false);
 });
 
-test("a stale worker URL rejection never falls back or fetches media", async () => {
+test("an explicit old worker URL rejection uses one bounded browser fetch, without takeover", async (t) => {
     const harness = createClientHarness({
         registerDownloadErrorCode: "STREAMING_URL_UNSUPPORTED",
     });
+    t.after(() => harness.client.close());
     let mediaFetches = 0;
     let blobHandoffs = 0;
     let fallbacks = 0;
-    await assert.rejects(ordinary.download(ordinaryItem({
+    const result = await ordinary.download(ordinaryItem({
         url: "https://sns-video-hw.xhscdn.com/media/video.mp4?fixture=fake",
         provider: "tiantianjiexi_generic",
         size_bytes: 5,
@@ -1041,12 +1081,15 @@ test("a stale worker URL rejection never falls back or fetches media", async () 
         },
         async handoffBlob() { blobHandoffs += 1; },
         onTransportFallback() { fallbacks += 1; },
-    }), error => error.errorCode === "STREAMING_URL_UNSUPPORTED");
+    });
 
-    assert.equal(mediaFetches, 0);
-    assert.equal(blobHandoffs, 0);
-    assert.equal(fallbacks, 0);
+    assert.equal(result.transport, "browser_blob");
+    assert.equal(mediaFetches, 1);
+    assert.equal(blobHandoffs, 1);
+    assert.equal(fallbacks, 1);
     assert.equal(harness.clicked.length, 0);
+    assert.equal(workerMessages(harness, "REGISTER_DOWNLOAD").length, 1);
+    assert.equal(workerMessages(harness, "SKIP_WAITING").length, 0);
 });
 
 test("a page-rejected URL never fetches even when URL rejection is fallback-eligible", async () => {
@@ -2007,7 +2050,9 @@ test("selected worker enforces declared, response and actual-byte 1 GiB limits w
 });
 
 test("real client and worker deliver selected bytes before EOF with bounded read-ahead and frozen identity", async () => {
-    const sources = [selectedItem("tiantianjiexi"), selectedItem("kukutool"),
+    const sources = [selectedItem("tiantianjiexi"), selectedItem("kukutool"), bilibiliSelectedItem(),
+        ordinaryItem({provider: "", source_platform: "bilibili", url: bilibiliSelectedItem().url,
+            filename: "selected-high.bin"}),
         ...["yt_dlp_generic", "parsehub_generic"].map(provider => ordinaryItem({provider,
             source_platform: "upstream", selection_schema: "upstream_resource_v1", browser_upstream_bound: true,
             asset_id: `upstream:${"a".repeat(32)}:video:1`, provider_resource_id: "b".repeat(64),

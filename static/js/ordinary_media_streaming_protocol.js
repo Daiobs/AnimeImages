@@ -18,6 +18,8 @@
     const INITIAL_MEDIA_HOST_SUFFIXES = Object.freeze([
         "365yg.com",
         "douyinvod.com",
+        "bilivideo.com",
+        "bilivideo.cn",
     ]);
     const INITIAL_EXACT_MEDIA_HOSTS = Object.freeze([
         "v3-dy-a-x.ixigua.com",
@@ -33,6 +35,7 @@
         "DOUYIN_IXIGUA_EXACT",
         "XHS_TIANTIAN_HW_EXACT",
         "XHS_NATIVE_REVIEWED",
+        "BILIBILI_PUBLIC",
         "LOOPBACK_TEST",
         "UNKNOWN",
     ]);
@@ -279,6 +282,10 @@
             return "UNKNOWN";
         }
         const hostname = String(url.hostname || "").toLowerCase();
+        if (hostnameMatchesSuffix(hostname, "bilivideo.com")
+                || hostnameMatchesSuffix(hostname, "bilivideo.cn")) {
+            return /\.(?:m4s|m3u8|mpd)$/i.test(url.pathname) ? "UNKNOWN" : "BILIBILI_PUBLIC";
+        }
         if (hostnameMatchesSuffix(hostname, "365yg.com")) {
             return "DOUYIN_365YG";
         }
@@ -408,6 +415,8 @@
         let allowed = false;
         if (initialMediaFamily === "LOOPBACK_TEST") {
             allowed = finalInitialFamily === "LOOPBACK_TEST";
+        } else if (initialMediaFamily === "BILIBILI_PUBLIC") {
+            allowed = finalInitialFamily === "BILIBILI_PUBLIC";
         } else if (
             initialMediaFamily === "XHS_TIANTIAN_HW_EXACT"
             || initialMediaFamily === "XHS_NATIVE_REVIEWED"
@@ -426,6 +435,7 @@
                 finalInitialFamily !== "UNKNOWN"
                 && finalInitialFamily !== "XHS_TIANTIAN_HW_EXACT"
                 && finalInitialFamily !== "XHS_NATIVE_REVIEWED"
+                && finalInitialFamily !== "BILIBILI_PUBLIC"
             );
             if (
                 !allowed
@@ -610,6 +620,9 @@
         const dedicated = binding.source_platform === "douyin"
             && binding.selection_schema === "service_selected_format_v1"
             && ["tiantianjiexi", "kukutool"].includes(value.provider);
+        const bilibili = binding.source_platform === "bilibili"
+            && binding.selection_schema === "service_selected_format_v1"
+            && value.provider === "tiantianjiexi_generic";
         const upstream = binding.source_platform === "upstream" && (
             binding.selection_schema === "ytdlp_selected_format_v1" && value.provider === "yt_dlp_generic"
             || binding.selection_schema === "service_selected_format_v1"
@@ -617,7 +630,7 @@
         const resource = binding.source_platform === "upstream"
             && binding.selection_schema === "upstream_resource_v1"
             && ["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(value.provider);
-        if ((!dedicated && !upstream && !resource) || binding.type !== "video"
+        if ((!dedicated && !bilibili && !upstream && !resource) || binding.type !== "video"
             || (binding.selection_delivery || "direct") !== "direct"
             || binding.browser_upstream_bound !== true || binding.browser_direct_fetch_safe !== true
             || binding.requires_merge !== false || binding.requires_cookie !== false
@@ -637,6 +650,11 @@
                     && /^[a-f0-9]{24}$/.test(binding.asset_id.slice(`${prefix}:format:`.length)))) {
                 throw new Error("INVALID_SELECTION_BINDING");
             }
+        } else if (bilibili) {
+            if (!/^bilibili:service:BV[A-Za-z0-9]{10}:p[1-9][0-9]*:video:[a-f0-9]{24}$/.test(binding.asset_id)
+                || !/^[a-f0-9]{64}$/.test(binding.provider_resource_id)
+                || binding.provider_cache_key !== `bilibili:service:${value.provider}:${binding.provider_resource_id}`
+                || !safeIdentity("provider_manifest_token")) throw new Error("INVALID_SELECTION_BINDING");
         } else if (resource) {
             const asset = /^upstream:([a-f0-9]{32}):video:([1-9][0-9]?)$/.exec(binding.asset_id);
             if (!asset || !/^[a-f0-9]{64}$/.test(binding.provider_resource_id)
@@ -652,7 +670,7 @@
             browser_direct_fetch_safe: true, requires_merge: false, requires_cookie: false,
             ...(!resource ? {candidate_id: binding.candidate_id, selected_format_id: binding.selected_format_id} : {}),
             asset_id: binding.asset_id, selection_expires_at: binding.selection_expires_at,
-            ...(dedicated || resource ? {provider_resource_id: binding.provider_resource_id,
+            ...(dedicated || bilibili || resource ? {provider_resource_id: binding.provider_resource_id,
                 provider_manifest_token: binding.provider_manifest_token,
                 provider_cache_key: binding.provider_cache_key} : {}),
         });

@@ -21,6 +21,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -192,6 +193,44 @@ class BackendHTTPContracts(TestCase):
         self.assertNotContains(response, SERVICE_TITLE)
         self.assertGreater(len(self.transport.events), 0)
         self.assertEqual(set(self.transport.events), {"native"})
+
+    def test_inv03_bilibili_complete_file_is_browser_first_for_native_and_service(self):
+        for native_outcome in ("success", 412):
+            with self.subTest(native_outcome=native_outcome):
+                cache.clear()
+                self.transport.events.clear()
+                self.transport.native_outcome = native_outcome
+                page = self.parse()
+                self.assertEqual(page.status_code, 200)
+                soup = BeautifulSoup(page.content, "html.parser")
+                if native_outcome == "success":
+                    card = soup.select_one('[data-type="video"][data-url]')
+                    self.assertIsNotNone(card)
+                    item = {"type": "video", "url": card["data-url"],
+                            "source_platform": "bilibili"}
+                    response = self.client.post(reverse("download_images_api"), {
+                        "media_items": [item], "download_mode": "auto", "route_only": True,
+                    }, content_type="application/json")
+                    self.assertEqual(response.status_code, 200, response.content)
+                    self.assertEqual(response.json()["route_type"], "direct")
+                    item = response.json()["items"][0]
+                else:
+                    radio = soup.select_one('[data-picker-radio]')
+                    self.assertIsNotNone(radio)
+                    response = self.client.post(reverse("service_selected_format"), {
+                        "candidate_id": radio["value"],
+                        "resource_token": radio["data-token"], "action": "download",
+                    }, content_type="application/json")
+                    self.assertEqual(response.status_code, 200, response.content)
+                    item = response.json()["item"]
+                    self.assertEqual(item["source_platform"], "bilibili")
+                    self.assertEqual(item["provider"], "tiantianjiexi_generic")
+                    self.assertEqual(item["candidate_id"], radio["value"])
+                    self.assertTrue(item["provider_manifest_token"])
+                self.assertEqual(item["url"], MEDIA)
+                self.assertTrue(item["browser_direct_fetch_safe"])
+                self.assertEqual(item["download_strategy"], "browser_streaming")
+                self.assertNotIn("server_single_attachment", str(item))
 
     def test_inv05_eligible_native_failures_use_admitted_tiantian(self):
         for outcome in (412, 429, 500, 503, 599, "timeout", "incomplete"):

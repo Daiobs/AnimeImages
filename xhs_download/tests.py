@@ -7135,7 +7135,7 @@ class XhsDownloadViewTests(TestCase):
         request = RequestFactory().post("/media/download-images/")
         route = decide_download_route(
             request,
-            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
+            [{"type": "video", "url": "http://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
             requested_mode="auto",
         )
 
@@ -7148,7 +7148,7 @@ class XhsDownloadViewTests(TestCase):
         request = RequestFactory().post("/media/download-images/")
         route = decide_download_route(
             request,
-            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
+            [{"type": "video", "url": "http://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
             requested_mode="browser",
         )
 
@@ -7161,7 +7161,7 @@ class XhsDownloadViewTests(TestCase):
         request = RequestFactory().post("/media/download-images/")
         route = decide_download_route(
             request,
-            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
+            [{"type": "video", "url": "http://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
             requested_mode="proxy",
         )
 
@@ -7370,7 +7370,7 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(image_route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(video_route["route_type"], ROUTE_PROXY)
+        self.assertEqual(video_route["route_type"], ROUTE_DIRECT)
         self.assertEqual(mixed_route["route_type"], ROUTE_ZIP)
         self.assertEqual(image_route["strategy_version"], "v3")
         self.assertIn("estimated_cost", image_route)
@@ -7501,7 +7501,7 @@ class XhsDownloadViewTests(TestCase):
     def test_download_auto_video_returns_server_single_file(self, mock_fetch):
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/a.mp4",
+            url="http://sns-video-hw.xhscdn.com/a.mp4",
             content_type="video/mp4",
         )
         response = Client().post(
@@ -7510,7 +7510,7 @@ class XhsDownloadViewTests(TestCase):
                 "download_mode": "auto",
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/a.mp4",
                     "size_bytes": 654,
                 }],
             }),
@@ -7531,7 +7531,7 @@ class XhsDownloadViewTests(TestCase):
     def test_download_proxy_video_returns_single_file_response(self, mock_fetch):
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/a.mp4",
+            url="http://sns-video-hw.xhscdn.com/a.mp4",
             content_type="video/mp4",
         )
         response = Client().post(
@@ -7540,7 +7540,7 @@ class XhsDownloadViewTests(TestCase):
                 "download_mode": "proxy",
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/a.mp4",
                     "size_bytes": 654,
                 }],
             }),
@@ -7571,7 +7571,7 @@ class XhsDownloadViewTests(TestCase):
                 "download_mode": "proxy",
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/a.mp4",
                     "size_bytes": 654,
                 }],
             }),
@@ -7776,7 +7776,7 @@ class XhsDownloadViewTests(TestCase):
     def test_download_proxy_single_video_returns_single_file_response(self, mock_fetch):
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/a.mp4",
+            url="http://sns-video-hw.xhscdn.com/a.mp4",
             content_type="video/mp4",
         )
         response = Client().post(
@@ -7785,7 +7785,7 @@ class XhsDownloadViewTests(TestCase):
                 "download_mode": "proxy",
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/a.mp4",
                     "size_bytes": 654,
                 }],
             }),
@@ -8130,7 +8130,7 @@ class XhsDownloadViewTests(TestCase):
         }
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/demo.mp4",
+            url="http://sns-video-hw.xhscdn.com/demo.mp4",
             content_type="video/mp4",
         )
 
@@ -8139,7 +8139,7 @@ class XhsDownloadViewTests(TestCase):
             data=json.dumps({
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/demo.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/demo.mp4",
                     "size_bytes": 1024,
                 }],
             }),
@@ -8257,7 +8257,7 @@ class XhsDownloadViewTests(TestCase):
         }
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/demo.mp4",
+            url="http://sns-video-hw.xhscdn.com/demo.mp4",
             content_type="video/mp4",
         )
 
@@ -8266,7 +8266,7 @@ class XhsDownloadViewTests(TestCase):
             data=json.dumps({
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/demo.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/demo.mp4",
                     "size_bytes": 1000,
                 }],
             }),

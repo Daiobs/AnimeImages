@@ -188,7 +188,7 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertTrue(strategy["cors_expected"])
         self.assertTrue(strategy["browser_direct_fetch_safe"])
 
-    def test_native_public_video_keeps_browser_direct_strategy(self):
+    def test_native_public_video_uses_same_streaming_strategy_as_selected_video(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -199,9 +199,22 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
         self.assertEqual(
             strategy["download_strategy"],
-            DOWNLOAD_STRATEGY_BROWSER_DIRECT,
+            DOWNLOAD_STRATEGY_BROWSER_STREAMING,
         )
         self.assertTrue(strategy["browser_direct_fetch_safe"])
+
+    def test_reviewed_complete_file_transport_is_independent_of_parser_label(self):
+        for provider in ("", "native", "tiantianjiexi_generic", "kukutool_generic", "yt_dlp_generic"):
+            with self.subTest(provider=provider):
+                strategy = build_download_strategy(MediaAsset(
+                    media_type="video", platform="bilibili", provider=provider,
+                    url="https://upos-sz-mirrorcos.bilivideo.com/video.mp4"))
+                self.assertEqual(strategy["download_strategy"], DOWNLOAD_STRATEGY_BROWSER_STREAMING)
+                self.assertEqual(strategy["fallback_strategy"], DOWNLOAD_STRATEGY_BROWSER_BLOB)
+        for url in ("http://upos.bilivideo.com/video.mp4", "https://upos.bilivideo.com/video.m4s",
+                    "https://upos.bilivideo.com/video.m3u8", "https://bilivideo.com.evil.test/video.mp4"):
+            from .services.provider_strategy import browser_streaming_resource_url_is_allowed
+            self.assertFalse(browser_streaming_resource_url_is_allowed(url))
 
     def test_youtube_merge_requires_server_merge(self):
         strategy = build_download_strategy(

@@ -92,6 +92,18 @@
                 throw new Error("返回资源身份与本次选择不一致，未开始下载。");
             }
         }
+        if (item.source_platform === "bilibili") {
+            validateLinkItem(item, selection);
+            if (selection.schema !== "service_selected_format_v1" || item.provider !== "tiantianjiexi_generic"
+                    || selection.kind !== "video" || !selection.legacyAssetId || item.asset_id !== selection.legacyAssetId
+                    || !/^bilibili:service:BV[A-Za-z0-9]{10}:p[1-9][0-9]*:video:[a-f0-9]{24}$/.test(item.asset_id)
+                    || !/^[a-f0-9]{64}$/.test(item.provider_resource_id)
+                    || item.provider_cache_key !== `bilibili:service:${item.provider}:${item.provider_resource_id}`
+                    || typeof item.provider_manifest_token !== "string" || !item.provider_manifest_token
+                    || /[\s\\\u0000-\u001f\u007f]/.test(item.provider_manifest_token)) {
+                throw new Error("返回资源授权与本次选择不一致，未开始下载。");
+            }
+        }
         sourceHttps(item.url);
         return item;
     }

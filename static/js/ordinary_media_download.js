@@ -45,6 +45,7 @@
         "STREAMING_MESSAGE_TIMEOUT",
         "STREAMING_NAVIGATION_UNAVAILABLE",
         "STREAMING_START_TIMEOUT",
+        "STREAMING_URL_UNSUPPORTED",
     ]);
     const STAGE_MESSAGES = Object.freeze({
         preparing: "正在准备下载...",
@@ -436,6 +437,13 @@
     }
 
     function isBoundDedicatedServiceItem(item) {
+        if (item && item.source_platform === "bilibili"
+                && item.selection_schema === "service_selected_format_v1") {
+            try {
+                return Boolean(streamingProtocol.createSelectionBinding(item))
+                    && streamingProtocol.isAllowedInitialMediaUrl(item.url);
+            } catch (_) { return false; }
+        }
         if (!item || item.selection_schema !== "service_selected_format_v1"
                 || !["tiantianjiexi", "kukutool"].includes(item.provider)
                 || item.type !== "video" || item.source_platform !== "douyin"

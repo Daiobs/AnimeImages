@@ -210,7 +210,7 @@ Native 取得完整单文件时不调用服务。对于规范 BV/AV 视频第一
 
 不为预留兜底而缩短 Native 原有期限。调用方提供的总 deadline 仍是硬上限，耗尽就不再启动服务；未指定总 deadline 的普通入口，仅在 Native 失败后使用既有 `TIANTIANJIEXI_TIMEOUT_SECONDS` 作为服务阶段预算，排队同样计入。
 
-服务结果必须包含合法完整视频；封面不算成功。保留真实服务身份、作品引用和每个资源的独立签名，经共用选择器进入既有 Bilibili 附件下载入口，保持原 Referer/UA 和地址校验。HTTP CDN 返回保留原协议，不强行改为 HTTPS，也不送入浏览器直连路径。展示、选择、签发动作及实际下载不复用 Native 授权；下载时重新核验当前服务准入。不同出口上的 Native 可用性不同，此兜底不代表解除上游风控或保证所有作品成功。
+服务结果必须包含合法完整视频；封面不算成功。保留真实服务身份、作品引用和每个资源的独立签名。经核验的 `bilivideo.com` / `bilivideo.cn` HTTPS 完整文件，Native 和服务选择器均走共用浏览器下载入口；服务器只签发授权，不转发媒体正文。HTTP CDN 返回保留原协议，不强行改为 HTTPS，继续使用已有附件路径及原 Referer/UA、地址校验。展示、选择、签发动作及实际下载不复用 Native 授权；下载时重新核验当前服务准入。不同出口上的 Native 可用性不同，此兜底不代表解除上游风控或保证所有作品成功。
 
 访客只开放这一条兜底时，在现有 Provider 配置的“第三方访客允许平台”中追加
 `bilibili:tiantianjiexi_fallback`，不需要添加整站 Host 或开放所有天天来源。
@@ -258,7 +258,7 @@ flowchart LR
 
 图示适用于已授权且处于现有 SW 资源策略范围内的完整视频，不是所有 HTTPS 视频。范围外合法资源及独立音频仍按原条件走有界兼容路径；候选绑定或 Provider 名称不单独决定 Blob。选择器、动作描述符与共用入口保持所选资源、文件名和有效期一致，适用的旧资产/专用路径另核验准确 manifest，不把它强加为全部通用候选的契约。
 
-当前协议为 v4，客户端核验实际 controller。旧 Worker 等待更新时不静默 Blob，不用未知状态推断可以接管；正常更新后重新握手和检查原期限。具体用户操作和 Chrome/Safari/IAB 证据范围见 [格式选择指南](ytdlp-result-picker.md)。
+客户端使用实际 controller 的现有普通文件协议，不要求业务字段或版本号完全匹配，也不为新下载强制替换 Worker。旧 Worker 明确拒绝尚未注册的新增 CDN 地址时，可使用有界浏览器 Blob 兼容路径；注册结果未知、已开始、取消或媒体校验失败不自动重发。候选/manifest 在动作接口和页面核验，不进入新任务的 Worker 消息。具体用户操作和 Chrome/Safari/IAB 证据范围见 [格式选择指南](ytdlp-result-picker.md)。
 
 ### Images And Archives
 

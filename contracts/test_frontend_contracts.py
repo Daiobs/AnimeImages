@@ -77,10 +77,10 @@ class FrontendHttpContracts(TransactionTestCase):
         elif parsed.path == "/x/player/playurl":
             body = json.dumps({"code": 0, "data": {
                 "quality": 80, "accept_quality": [80], "accept_description": ["1080P"],
-                "durl": [{"url": "https://media.bilivideo.com/resource", "size": 10}],
+                "durl": [{"url": "https://media.hdslb.com/resource", "size": 10}],
             }}).encode()
             response.headers["Content-Type"] = "application/json"
-        elif parsed.hostname in {"media.bilivideo.com", "media.tiktokcdn.com"}:
+        elif parsed.hostname in {"media.hdslb.com", "media.tiktokcdn.com"}:
             body = b"first-last"
             response.headers["Content-Type"] = "video/mp4"
         else:
@@ -237,7 +237,8 @@ class FrontendHttpContracts(TransactionTestCase):
             self.assertEqual("tiantianjiexi_generic" in text, staff)
 
     def test_INV04_INV06_bilibili_attachment_contract_for_safari_and_chrome_user_agents(self):
-        # UA coverage verifies server headers/bytes only, not real browser disk saving.
+        # An existing CDN outside reviewed SW access retains attachment delivery.
+        # Reviewed HTTPS files have a browser-first contract. UAs do not prove disk saving.
         user_agents = {
             "safari": "Mozilla/5.0 Version/18.0 Safari/605.1.15",
             "chrome": "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
@@ -274,7 +275,7 @@ class FrontendHttpContracts(TransactionTestCase):
                 self.assertEqual(b"".join(stream.streaming_content), b"first-last")
                 self.assertEqual(self.client.get(ticket["status_url"]).json()["status"], "completed")
                 stream.close()
-                media_calls = [call for call in self.calls if "media.bilivideo.com" in call[1]]
+                media_calls = [call for call in self.calls if "media.hdslb.com" in call[1]]
                 self.assertTrue(media_calls)
                 self.assertIn("bilibili.com", media_calls[-1][2].get("Referer", ""))
 

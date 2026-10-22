@@ -37,6 +37,7 @@ def browser_streaming_resource_url_is_allowed(value):
     from .platforms.douyin_media_policy import is_allowed_douyin_media_hostname
     from .platforms.xiaohongshu import xhs_native_video_url_is_browser_streaming_allowed
     from .platforms.xhs_tiantian_media_policy import xhs_tiantian_media_url_is_allowed
+    from .common import host_matches
 
     url = str(value or "")
     try:
@@ -45,7 +46,7 @@ def browser_streaming_resource_url_is_allowed(value):
                 or "\\" in url or parsed.scheme != "https" or parsed.fragment
                 or parsed.username is not None or parsed.password is not None
                 or parsed.port not in (None, 443) or not parsed.path.strip("/")
-                or parsed.path.lower().endswith((".m3u8", ".mpd"))):
+                or parsed.path.lower().endswith((".m3u8", ".mpd", ".m4s"))):
             return False
     except ValueError:
         return False
@@ -53,6 +54,7 @@ def browser_streaming_resource_url_is_allowed(value):
         is_allowed_douyin_media_hostname(parsed.hostname, existing_suffixes=("365yg.com", "douyinvod.com"))
         or xhs_native_video_url_is_browser_streaming_allowed(url)
         or xhs_tiantian_media_url_is_allowed(url)
+        or host_matches(parsed.hostname, ("bilivideo.com", "bilivideo.cn"))
     )
 
 
@@ -126,6 +128,21 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
             "requires_merge": True,
             "requires_cookie": False,
             "strategy_label": "服务端合并下载",
+        }
+
+    # Transport is a property of the file's access conditions, not its parser.
+    headers = getattr(asset, "headers", {}) or {}
+    if (media_type == "video" and browser_streaming_resource_url_is_allowed(asset.url)
+            and not any(str(key).lower() in {"cookie", "authorization", "proxy-authorization"}
+                        and value for key, value in headers.items())):
+        return {
+            "download_strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
+            "fallback_strategy": FALLBACK_BROWSER_BLOB,
+            "cors_expected": True,
+            "browser_direct_fetch_safe": True,
+            "requires_merge": False,
+            "requires_cookie": False,
+            "strategy_label": "浏览器下载",
         }
 
     if media_type == "video" and (is_xhs_tiantian_video or is_xhs_native_video):
