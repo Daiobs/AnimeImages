@@ -1,5 +1,6 @@
 import hashlib
 import json
+import time
 from concurrent.futures import Future
 from copy import deepcopy
 from types import SimpleNamespace
@@ -74,6 +75,14 @@ class DouyinGalleryContinuationTests(TestCase):
             payload = serialize_douyin_continuation_result(self.result())
         with self.assertRaises(ValueError):
             deserialize_douyin_continuation_result(payload)
+
+    def test_image_url_expiry_is_rechecked_even_when_manifest_is_current(self):
+        now = int(time.time())
+        self.images = [url + f"?x-expires={now + 40}" for url in self.images]
+        payload = serialize_douyin_continuation_result(self.result())
+        with patch("xhs_download.services.downloads.time.time", return_value=now + 11):
+            with self.assertRaisesRegex(ValueError, "expired"):
+                deserialize_douyin_continuation_result(payload)
 
     @patch("xhs_download.views.parse_media_page", side_effect=AssertionError("poll must not reparse"))
     def test_late_gallery_is_rendered_through_real_public_continuation(self, parse):

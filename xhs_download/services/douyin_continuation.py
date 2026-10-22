@@ -266,6 +266,10 @@ def _deserialize_continuation_asset(asset_data, media_type):
     }
     if not provider_manifest_is_valid(item):
         raise ValueError("continuation provider manifest is invalid")
+    if media_type == "image":
+        from .downloads import tiantianjiexi_douyin_manifest_is_allowed
+        if not tiantianjiexi_douyin_manifest_is_allowed(item):
+            raise ValueError("continuation image authorization is invalid or expired")
     validate_douyin_media_url(
         item["url"],
         "续查资源 URL 不在允许的抖音媒体域名内",
