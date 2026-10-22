@@ -4,6 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from unittest.mock import Mock, patch
 
@@ -151,6 +152,23 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertEqual(response["Service-Worker-Allowed"], "/")
         self.assertEqual(response["Cache-Control"], "no-cache, no-store, must-revalidate")
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    def test_worker_and_dependency_are_one_update_unit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "static" / "js"
+            scripts.mkdir(parents=True)
+            worker = scripts / "ordinary_media_download_sw.js"
+            protocol = scripts / "ordinary_media_streaming_protocol.js"
+            worker.write_text("// unchanged worker\n", encoding="utf-8")
+            protocol.write_text("// first dependency\n", encoding="utf-8")
+            with override_settings(BASE_DIR=root):
+                first = self.client.get(reverse("ordinary_media_service_worker"))
+                protocol.write_text("// changed dependency\n", encoding="utf-8")
+                second = self.client.get(reverse("ordinary_media_service_worker"))
+            self.assertEqual(first.content, b"// first dependency\n\n;\n// unchanged worker\n")
+            self.assertNotEqual(first.content, second.content)
+            self.assertIn(b"// changed dependency", second.content)
 
     def test_tiantianjiexi_video_uses_browser_streaming_with_blob_capability_fallback(self):
         strategy = build_download_strategy(

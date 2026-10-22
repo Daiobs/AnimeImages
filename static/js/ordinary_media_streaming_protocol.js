@@ -750,7 +750,105 @@
             downloadId: descriptor.downloadId, url: descriptor.url,
             filename: descriptor.filename, expectedBytes: descriptor.expectedBytes,
             createdAt: descriptor.createdAt, expiresAt: descriptor.expiresAt,
+            responsePolicy: createResponsePolicy(descriptor.url, settings),
         });
+    }
+
+    // Resource admission stays on the page. The worker consumes generic endpoint
+    // constraints, not a second, installed snapshot of the platform catalogue.
+    function createResponsePolicy(url, options) {
+        const family = classifyInitialMediaFamily(url, options);
+        const hosts = [];
+        const suffixes = [];
+        const redirectSuffixes = [];
+        if (family === "UNKNOWN") throw new Error("STREAMING_URL_UNSUPPORTED");
+        if (family === "LOOPBACK_TEST") {
+            hosts.push("localhost", "127.0.0.1", "[::1]");
+        } else if (family === "BILIBILI_PUBLIC") {
+            suffixes.push("bilivideo.com", "bilivideo.cn");
+        } else if (family.startsWith("XHS_")) {
+            hosts.push(new URL(url).hostname);
+        } else {
+            hosts.push("v3-dy-a-x.ixigua.com");
+            suffixes.push("365yg.com", "douyinvod.com");
+            if (family === "DOUYIN_365YG") redirectSuffixes.push("bdcgslb.com");
+        }
+        return Object.freeze({
+            hosts: Object.freeze(hosts), suffixes: Object.freeze(suffixes),
+            redirectSuffixes: Object.freeze(redirectSuffixes),
+        });
+    }
+
+    function normalizeResponsePolicy(value, options) {
+        const settings = options || {};
+        if (!value || typeof value !== "object") throw new Error("INVALID_RESPONSE_POLICY");
+        const policy = {};
+        for (const key of ["hosts", "suffixes", "redirectSuffixes"]) {
+            const entries = value[key];
+            if (!Array.isArray(entries) || entries.length > 16) throw new Error("INVALID_RESPONSE_POLICY");
+            policy[key] = Object.freeze(entries.map(entry => {
+                const host = String(entry || "").toLowerCase();
+                const loopback = key === "hosts" && settings.allowLoopbackHttp && isLoopbackHostname(host);
+                if (!loopback && (sanitizeObservedMediaHostname(host) !== host || !host.includes(".")
+                    || /(?:^|\.)(?:localhost|local|internal|test|invalid)$/.test(host))) {
+                    throw new Error("INVALID_RESPONSE_POLICY");
+                }
+                return host;
+            }));
+        }
+        if (!policy.hosts.length && !policy.suffixes.length) throw new Error("INVALID_RESPONSE_POLICY");
+        return Object.freeze(policy);
+    }
+
+    function transportUrlAllowed(value, policy, options, redirected) {
+        const observed = observedFinalUrl(value, options);
+        if (!observed.secure || !observed.url || observed.url.hash
+            || /\.(?:m4s|m3u8|mpd)$/i.test(observed.url.pathname)) return false;
+        const host = observed.hostname;
+        return policy.hosts.includes(host)
+            || policy.suffixes.some(suffix => hostnameMatchesSuffix(host, suffix))
+            || (Boolean(redirected) && policy.redirectSuffixes.some(suffix => hostnameIsStrictSubdomain(host, suffix)));
+    }
+
+    function createWorkerDescriptor(input, options) {
+        const value = input || {};
+        const settings = options || {};
+        // Retain the already-deployed message boundary for open old pages (G1).
+        // New requests always use the same generic transport path below.
+        if (!value.responsePolicy) return createDescriptor(value, settings);
+        const responsePolicy = normalizeResponsePolicy(value.responsePolicy, settings);
+        const downloadId = normalizeDownloadId(value.downloadId);
+        if (!downloadId) throw new Error("INVALID_DOWNLOAD_ID");
+        if (!transportUrlAllowed(value.url, responsePolicy, settings, false)) throw new Error("STREAMING_URL_UNSUPPORTED");
+        const now = positiveInteger(settings.nowEpochMs) || Date.now();
+        const createdAt = positiveInteger(value.createdAt) || now;
+        const expiresAt = Math.min(createdAt + DEFAULT_STREAM_DESCRIPTOR_TTL_MS,
+            positiveInteger(value.expiresAt) || Infinity);
+        if (createdAt > now || expiresAt <= now) throw new Error("DESCRIPTOR_EXPIRED");
+        const expectedBytes = positiveInteger(value.expectedBytes);
+        if (expectedBytes > MAX_STREAM_BYTES) throw new Error("EXPECTED_SIZE_TOO_LARGE");
+        return Object.freeze({downloadId, url: String(value.url), filename: sanitizeFilename(value.filename),
+            expectedBytes, createdAt, expiresAt, maxBytes: MAX_STREAM_BYTES, responsePolicy,
+            mediaHost: new URL(value.url).hostname});
+    }
+
+    function classifyTransportResponse(response, descriptor, options) {
+        if (!descriptor.responsePolicy) return classifyResponseRejection(response, {...options, initialUrl: descriptor.url});
+        const contentType = response.headers && response.headers.get("Content-Type");
+        const observed = observedFinalUrl(response.url, options);
+        const allowed = transportUrlAllowed(response.url, descriptor.responsePolicy, options, response.redirected);
+        let responseRejectReason = "";
+        if (!response.ok) responseRejectReason = "HTTP_STATUS_REJECTED";
+        else if (!response.body || response.type === "opaque" || response.type === "opaqueredirect") responseRejectReason = "BODY_UNAVAILABLE";
+        else if (!isAllowedMediaContentType(contentType)) responseRejectReason = "CONTENT_TYPE_REJECTED";
+        else if (!allowed) responseRejectReason = "FINAL_HOST_REJECTED";
+        return Object.freeze({rejected: Boolean(responseRejectReason), responseRejectReason,
+            httpStatus: normalizeHttpStatus(response.status), contentTypeClass: classifyContentType(contentType),
+            // Classification is diagnostic only; it never changes admission.
+            initialMediaFamily: classifyInitialMediaFamily(descriptor.url, options),
+            finalMediaHost: allowed ? observed.hostname : "unknown", observedFinalHost: observed.hostname,
+            observedFinalHostClass: classifyObservedFinalHost(observed.hostname, options),
+            redirected: Boolean(response.redirected)});
     }
 
     function downloadPath(downloadId, scopePath) {
@@ -916,6 +1014,9 @@
         classifyResponseRejection,
         createDescriptor,
         createTransportDescriptor,
+        createResponsePolicy,
+        createWorkerDescriptor,
+        classifyTransportResponse,
         createSelectionBinding,
         filenameFromContentType,
         createProgressEstimator,

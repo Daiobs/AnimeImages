@@ -136,7 +136,7 @@ function mountPicker(app) {
     }};
 }
 
-function attachWorker(app, {legacy = false, unavailable = false} = {}) {
+function attachWorker(app, {legacy = false, unavailable = false, rejectedUrl = false} = {}) {
     const messages = [], navigations = [], mediaRequests = [], workerListeners = new Map();
     const statusListeners = new Set(), statuses = new Map(), responses = [], endings = [];
     let protocol;
@@ -157,6 +157,10 @@ function attachWorker(app, {legacy = false, unavailable = false} = {}) {
             }
             const reply = data => ports[0].postMessage(data);
             if (message.type === "REGISTER_DOWNLOAD") {
+                if (rejectedUrl) {
+                    reply({ok: false, code: "STREAMING_URL_UNSUPPORTED"});
+                    return;
+                }
                 const descriptor = message.descriptor;
                 const status = {...descriptor, protocolVersion: 2, state: "prepared",
                     receivedBytes: 0, totalBytes: 2, streamingStarted: false};
@@ -317,6 +321,26 @@ test("INV03 unavailable Worker uses one bounded Blob fallback and INV06 real MIM
         assert.deepEqual(saves, [{filename: "Contract short title.mp4", href: "blob:contract"}]);
         assert.deepEqual(Array.from(new Uint8Array(await blob.arrayBuffer())), [1, 2]);
         assert.equal(worker.navigations.length, 0);
+    } finally { picker.controller.destroy(); await worker.close(); }
+});
+
+test("INV03 old Worker resource rules cannot silently change a selected download to Blob", async () => {
+    const requests = [];
+    const app = browser(async (url, options) => {
+        requests.push(url);
+        assert.equal(url, "https://product.example/media/service-selected-format/");
+        return json({status: "success", item: selectionItem(JSON.parse(options.body).candidate_id)});
+    });
+    const worker = attachWorker(app, {legacy: true, rejectedUrl: true});
+    const picker = mountPicker(app);
+    try {
+        picker.choose("720");
+        await picker.controller.save();
+        assert.equal(requests.length, 1, "only the original authorization request, no media retry");
+        assert.equal(worker.navigations.length, 0);
+        assert.equal(worker.messages.filter(message => message.type === "REGISTER_DOWNLOAD").length, 1);
+        assert.equal(worker.messages.some(message => /CAPABILIT|SKIP_WAITING|ACTIVATE/.test(message.type)), false);
+        assert.doesNotMatch(picker.root.querySelector("[data-picker-status]").textContent, /已交给|已保存/);
     } finally { picker.controller.destroy(); await worker.close(); }
 });
 

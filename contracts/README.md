@@ -46,9 +46,12 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
   Blob compatibility path. Bilibili Native and service HTTPS complete files use
   the same reviewed browser-first route with their original authorization. HTTP
   resources keep the existing attachment path; no scheme is silently rewritten.
-  Explicit old-Worker URL rejection permits bounded browser Blob compatibility
-  only before a task starts. Unknown registration, cancellation and media-response
-  failures never trigger a second media request.
+  The Worker executes generic endpoint constraints derived from the page's unchanged
+  resource policy. The public Worker response includes its dependency as one update
+  unit. Old-Worker URL rejection, registration errors and startup timeouts never
+  silently select Blob; actual missing browser capability retains bounded Blob.
+  Unknown registration, cancellation and media-response failures never trigger a
+  second media request.
 - INV-04 uses both Safari and Chrome UA fixtures and the real attachment controller.
   This is not a new real-browser save, disk-persistence proof, or historical Worker
   binary run. YouTube merge and every platform/CDN are not exhaustively covered.

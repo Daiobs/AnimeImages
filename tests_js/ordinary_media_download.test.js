@@ -825,7 +825,7 @@ test("a plausible error name without explicit unstarted proof never retries sele
     }
 });
 
-test("expiry during safe SW setup failure prevents a new Blob request", async t => {
+test("failed SW setup never renews an expiring selection or starts a Blob request", async t => {
     const now = Date.now();
     t.mock.method(Date, "now", () => now);
     const item = dedicatedServiceFile("tiantianjiexi", {selection_expires_at: now + 1000});
@@ -837,7 +837,7 @@ test("expiry during safe SW setup failure prevents a new Blob request", async t 
             });
         }},
         fetchImpl: () => assert.fail("expired authorization cannot start a fallback request"),
-    }), error => error.errorCode === "DESCRIPTOR_EXPIRED");
+    }), error => error.errorCode === "STREAMING_REGISTRATION_FAILED");
 });
 
 test("worker upgrade is not browser incapability and never starts a Blob request", async () => {

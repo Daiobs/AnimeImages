@@ -1,9 +1,10 @@
 "use strict";
 
-const STREAMING_PROTOCOL_ASSET_VERSION = "4";
-importScripts(
-    `/static/js/ordinary_media_streaming_protocol.js?v=${STREAMING_PROTOCOL_ASSET_VERSION}`,
-);
+// The public endpoint serves this file and its dependency as one atomic script.
+// Standalone loading remains useful for existing static consumers and tests.
+if (!self.AnimeImagesOrdinaryMediaStreamingProtocol) {
+    importScripts("/static/js/ordinary_media_streaming_protocol.js");
+}
 
 const protocol = self.AnimeImagesOrdinaryMediaStreamingProtocol;
 const downloads = new Map();
@@ -268,7 +269,7 @@ self.addEventListener("message", (event) => {
         return;
     }
     const existing = downloads.get(protocol.normalizeDownloadId(message.downloadId));
-    if (existing && existing.selectionBinding
+    if (existing && (existing.selectionBinding || existing.responsePolicy)
         && ["DELETE_DOWNLOAD", "CANCEL_DOWNLOAD"].includes(message.type)
         && (!event.source || event.source.id !== existing.ownerClientId)) {
         reply(port, {ok: false, code: "DOWNLOAD_OWNER_MISMATCH"});
@@ -282,10 +283,10 @@ self.addEventListener("message", (event) => {
                     || message.descriptor.protocolVersion !== protocol.PROTOCOL_VERSION)) {
                 throw new Error("STREAMING_PROTOCOL_UNSUPPORTED");
             }
-            const descriptor = protocol.createDescriptor(message.descriptor, {
+            const descriptor = protocol.createWorkerDescriptor(message.descriptor, {
                 allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
             });
-            if (descriptor.selectionBinding && !(event.source && event.source.id)) {
+            if ((descriptor.selectionBinding || descriptor.responsePolicy) && !(event.source && event.source.id)) {
                 throw new Error("DOWNLOAD_OWNER_MISSING");
             }
             if (downloads.has(descriptor.downloadId)) {
@@ -412,8 +413,7 @@ async function streamDownload(state) {
     state.firstResponseAt = Date.now();
     const contentType = protocol.normalizeContentType(upstream.headers.get("Content-Type"));
     const contentLength = protocol.positiveInteger(upstream.headers.get("Content-Length"));
-    let responseGate = protocol.classifyResponseRejection(upstream, {
-        initialUrl,
+    let responseGate = protocol.classifyTransportResponse(upstream, state, {
         allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
     });
     if (selected && (upstream.redirected || upstream.type === "opaque" || upstream.type === "opaqueredirect"

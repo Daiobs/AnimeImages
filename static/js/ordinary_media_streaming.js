@@ -10,13 +10,12 @@
     }
     if (root) {
         root.AnimeImagesOrdinaryMediaStreaming = api;
+        if (root.document) api.prepare().catch(() => {});
     }
 }(typeof window !== "undefined" ? window : globalThis, function (protocol) {
     "use strict";
 
-    const DEFAULT_WORKER_URL = (
-        `/ordinary-media-download-sw.js?v=${protocol && protocol.PROTOCOL_VERSION || 1}`
-    );
+    const DEFAULT_WORKER_URL = "/ordinary-media-download-sw.js";
     const DEFAULT_WORKER_SCOPE = "/";
     const DEFAULT_START_TIMEOUT_MS = 8000;
     const DEFAULT_MESSAGE_TIMEOUT_MS = 4000;
@@ -1057,6 +1056,15 @@
         return sharedClient;
     }
 
+    async function prepare(options) {
+        const client = getSharedClient(options);
+        if (!client.capabilityAvailable()) return;
+        const ready = await client.registration();
+        // Check the complete script at page load, not as a download retry or
+        // version gate. Activation remains the browser's normal lifecycle.
+        if (typeof ready.registration.update === "function") await ready.registration.update();
+    }
+
     return Object.freeze({
         DEFAULT_MESSAGE_TIMEOUT_MS,
         DEFAULT_START_TIMEOUT_MS,
@@ -1073,6 +1081,7 @@
         getSharedClient,
         normalizePageVisibility,
         normalizeWorkerState,
+        prepare,
         readCookie,
         streamingError,
         supportsStreamingEnvironment,
