@@ -2158,7 +2158,10 @@ class DownloadHandoffTests(SimpleTestCase):
             build_download_handoff_cache_key, build_download_status_cache_key,
         )
         clock = time.time()
-        with patch("time.time", return_value=clock):
+        # Redis has its own clock; advance application expiry without assuming
+        # that physical cache eviction follows Python's clock.
+        with patch("xhs_download.services.download_handoff.time") as handoff_clock:
+            handoff_clock.time.return_value = clock
             tokens = issue_download_handoff_tokens(
                 item={"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg?secret=1"},
                 base_filename="demo", client_identity="client-a",
@@ -2171,15 +2174,19 @@ class DownloadHandoffTests(SimpleTestCase):
             cache.set(key, old, timeout=60)
             self.assertEqual(load_download_status(tokens.status_token, client_identity="client-a").status, "issued")
             self.assertTrue(update_download_status(initial.ticket_id, "streaming"))
-        with patch("time.time", return_value=clock + 70):
-            self.assertIsNone(cache.get(build_download_handoff_cache_key(initial.ticket_id)))
+            handoff_clock.time.return_value = clock + 70
+            launch_record = cache.get(build_download_handoff_cache_key(initial.ticket_id))
+            self.assertEqual(launch_record["expires_at"], clock + tokens.expires_in_seconds)
+            with self.assertRaises(DownloadHandoffError) as launch_expired:
+                load_download_handoff(tokens.stream_token, client_identity="client-a")
+            self.assertEqual(launch_expired.exception.status_code, 410)
             status_record = cache.get(key)
             self.assertNotIn("item", status_record)
             self.assertNotIn("secret", json.dumps(status_record))
             with self.assertRaises(DownloadHandoffError):
                 load_download_handoff(tokens.status_token, client_identity="client-a")
             self.assertEqual(load_download_status(tokens.status_token, client_identity="client-a").status, "streaming")
-        with patch("time.time", return_value=clock + 301):
+            handoff_clock.time.return_value = clock + 301
             with self.assertRaises(DownloadHandoffError) as expired:
                 load_download_status(tokens.status_token, client_identity="client-a")
             self.assertEqual(expired.exception.status_code, 410)
