@@ -15,6 +15,11 @@ def douyin_format_asset_id(aweme_id, provider, url):
     return f"douyin:{aweme_id}:video:{provider}:format:{digest}"
 
 
+def douyin_tiantian_image_asset_id(aweme_id, url):
+    digest = hashlib.sha256(str(url).encode()).hexdigest()[:24]
+    return f"douyin:{aweme_id}:image:tiantianjiexi:{digest}"
+
+
 def douyin_format_manifest_is_valid(item):
     """Extra formats retain work identity but cannot borrow primary recovery."""
     provider = item.get('provider')

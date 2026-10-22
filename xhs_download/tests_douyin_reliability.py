@@ -43,6 +43,7 @@ from .services.douyin_continuation import (
     DouyinContinuationError,
     DouyinContinuationPendingError,
     build_douyin_continuation_cache_key,
+    build_douyin_continuation_poll_key,
     build_douyin_continuation_source_key,
     deserialize_douyin_continuation_result,
     find_active_douyin_continuation,
@@ -3805,6 +3806,28 @@ class DouyinContinuationViewTests(TestCase):
         self.client_identity = hashlib.sha256(
             b"127.0.0.1"
         ).hexdigest()[:24]
+
+    def test_terminal_poll_does_not_claim_an_unobserved_native_result(self):
+        for state in ("failed", "timeout", "missing", "poll_limit"):
+            with self.subTest(state=state):
+                task_id = "empty-" + state
+                if state != "missing":
+                    cache.set(build_douyin_continuation_cache_key(task_id),
+                              {"status": state if state != "poll_limit" else "pending"}, 15)
+                if state == "poll_limit":
+                    cache.set(build_douyin_continuation_poll_key(task_id), 100, 15)
+                token = issue_douyin_continuation_token(
+                    task_id=task_id, client_identity=self.client_identity, platform_key="home",
+                )
+                response = self.client.post(
+                    "/media/douyin-continuation/",
+                    data=json.dumps({"continuation_token": token}), content_type="application/json",
+                )
+                body = response.json()
+                self.assertIn(body["status"], {"failed", "timeout"})
+                self.assertNotIn("已返回", body["message"])
+                self.assertNotIn("普通清晰度", body["message"])
+                self.assertNotIn("已保留", body["message"])
 
     @patch("xhs_download.views.parse_media_page")
     @patch(

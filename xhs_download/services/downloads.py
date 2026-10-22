@@ -7,7 +7,7 @@ import tempfile
 import time
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import requests
@@ -45,7 +45,7 @@ from .platforms.kukutool_generic import (
     build_failure_cache_key as build_generic_kukutool_failure_cache_key,
     build_payload_cache_key as build_generic_kukutool_payload_cache_key,
 )
-from .platforms.douyin_kukutool import is_byte_cdn_url
+from .platforms.douyin_kukutool import is_byte_cdn_url, parse_byte_cdn_url
 from .provider_recovery import (
     get_kukutool_manifest_identity,
     get_tiantianjiexi_manifest_identity,
@@ -54,7 +54,11 @@ from .provider_recovery import (
     TianTianJieXiRecoveryError,
 )
 from .provider_runtime_config import runtime_float
-from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
+from .provider_manifest import (
+    build_provider_manifest_token,
+    douyin_tiantian_image_asset_id,
+    provider_manifest_is_valid,
+)
 from .platforms.third_party import third_party_manifest_item_is_allowed
 from .platforms.xhs_tiantian_media_policy import (
     xhs_tiantian_manifest_item_is_allowed,
@@ -455,6 +459,25 @@ def is_recoverable_provider_download_error(error):
     return message.startswith("HTTP ") or message.startswith("资源类型异常：")
 
 
+def validate_tiantianjiexi_douyin_image_url(url, *, existing_suffixes=None):
+    message = "天天解析抖音图片 URL 不允许请求"
+    validate_public_url(url, message)
+    validate_douyin_media_url(url, message, existing_suffixes=existing_suffixes)
+    parsed = urlparse(url)
+    if (parsed.username is not None or parsed.password is not None
+            or parsed.port not in {None, 80, 443}):
+        raise XhsSecurityError(message)
+    expirations = [parse_byte_cdn_url(url)["expires_at"]]
+    # Douyin signed images declare their deadline in x-expires, not /video/.
+    for value in parse_qs(parsed.query, keep_blank_values=True).get("x-expires", ()):
+        if not value.isascii() or not value.isdecimal() or int(value) <= 0:
+            raise XhsSecurityError(message)
+        expirations.append(int(value))
+    if any(expires and expires <= int(time.time()) + 30 for expires in expirations):
+        raise XhsSecurityError("天天解析抖音图片 URL 已过期")
+    return url
+
+
 def tiantianjiexi_douyin_manifest_is_allowed(item):
     if not isinstance(item, dict) or item.get("provider") != "tiantianjiexi":
         return False
@@ -466,6 +489,15 @@ def tiantianjiexi_douyin_manifest_is_allowed(item):
     expected_cache_key = f"douyin:tiantianjiexi:validated:{aweme_id}"
     if str(item.get("provider_cache_key") or "") != expected_cache_key:
         return False
+    if item.get("type") == "image":
+        if (item.get("source_platform") != "douyin"
+                or item.get("asset_id") != douyin_tiantian_image_asset_id(aweme_id, item.get("url"))):
+            return False
+        try:
+            validate_tiantianjiexi_douyin_image_url(item.get("url"))
+        except (TypeError, ValueError):
+            return False
+        return True
     expected_asset_id = f"douyin:{aweme_id}:video:tiantianjiexi"
     if str(item.get("asset_id") or "") != expected_asset_id:
         return False
@@ -1068,9 +1100,13 @@ def fetch_item_to_temp_path(
         return download_ytdlp_merge_to_temp_path(item, progress_callback=progress_callback)
 
     initial_url = url or item.get("url")
+    if (":image:tiantianjiexi:" in str(item.get("asset_id") or "")
+            or (item.get("provider") == "tiantianjiexi" and item.get("type") == "image")):
+        if not provider_manifest_allows_public_download({**item, "url": initial_url}):
+            raise XhsDownloadError("Provider 签名资源未通过校验")
     kukutool_recovery_enabled = bool(get_kukutool_manifest_identity(item))
     tiantianjiexi_recovery_enabled = bool(
-        get_tiantianjiexi_manifest_identity(item)
+        item.get("type") == "video" and get_tiantianjiexi_manifest_identity(item)
     )
     recovery_enabled = kukutool_recovery_enabled or tiantianjiexi_recovery_enabled
     provider_item = {

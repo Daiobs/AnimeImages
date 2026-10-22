@@ -81,6 +81,7 @@ test("permanent pending state uses the bounded continuation poll window", async 
 
     assert.equal(pollCount, reliability.MAX_POLLS);
     assert.equal(result.status, "timeout");
+    assert.doesNotMatch(result.message, /已返回|普通清晰度|已保留/);
     assert.equal(
         result.error_code,
         "DOUYIN_CONTINUATION_CLIENT_LIMIT",
@@ -195,7 +196,7 @@ test("a bounded continuation failure preserves retry cooldown metadata", () => {
 
     assert.equal(resolved.status, "success");
     assert.equal(resolved.retry_after_seconds, 7);
-    assert.equal(resolved.continuation_message, "ultra unavailable");
+    assert.equal(resolved.continuation_message, "已保留当前资源。ultra unavailable");
 });
 
 test("a completed continuation replaces the rendered fallback", () => {
@@ -348,6 +349,19 @@ function continuationHome(options = {}) {
         download: () => click(controls["#download-btn"], "#download-btn"),
     };
 }
+
+test("home shows a real failure when continuation ends without any fallback", async () => {
+    const home = continuationHome({
+        parse: () => ({status: "continuation_pending", continuation_token: "token", has_results: false}),
+        poll: async () => ({status: "failed", error_code: "DOUYIN_CONTINUATION_FAILED",
+            message: "超高清解析本次未完成，请稍后重试。"}),
+    });
+    await home.submit();
+    assert.match(home.region.innerHTML, /alert-danger/);
+    assert.doesNotMatch(home.region.innerHTML, /已返回|已保留|普通清晰度/);
+    assert.equal(home.submitButton.disabled, false);
+    assert.equal(home.downloadRequests.length, 0);
+});
 
 test("home renders fallback immediately and upgrades only the current idle result", async () => {
     const poll = deferred();
