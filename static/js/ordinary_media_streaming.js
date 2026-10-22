@@ -10,13 +10,12 @@
     }
     if (root) {
         root.AnimeImagesOrdinaryMediaStreaming = api;
-        if (root.document) api.prepare().catch(() => {});
     }
 }(typeof window !== "undefined" ? window : globalThis, function (protocol) {
     "use strict";
 
     const DEFAULT_WORKER_URL = "/ordinary-media-download-sw.js";
-    const DEFAULT_WORKER_SCOPE = "/";
+    const DEFAULT_WORKER_SCOPE = "/__animeimages-stream-download/";
     const DEFAULT_START_TIMEOUT_MS = 8000;
     const DEFAULT_MESSAGE_TIMEOUT_MS = 4000;
     const DEFAULT_STATUS_POLL_MS = 1000;
@@ -471,8 +470,8 @@
         }
 
         function handleWorkerMessage(event) {
-            if (event && event.source && navigatorObject.serviceWorker.controller
-                && event.source !== navigatorObject.serviceWorker.controller) return;
+            if (event && event.source && currentRegistration
+                && event.source !== currentRegistration.active) return;
             const message = event && event.data && typeof event.data === "object"
                 ? event.data
                 : {};
@@ -523,13 +522,8 @@
                         schedule,
                         clearSchedule,
                     });
-                    const controller = await waitForWorkerControl(navigatorObject, {
-                        timeoutMs: startTimeoutMs,
-                        schedule,
-                        clearSchedule,
-                    });
                     attachMessageListener();
-                    return {registration: registered, active, controller};
+                    return {registration: registered, active, controller: active};
                 })().catch((error) => {
                     registrationPromise = null;
                     throw error;
@@ -537,18 +531,14 @@
             }
             const registered = await registrationPromise;
             return {...registered, active: registered.registration.active,
-                controller: navigatorObject.serviceWorker.controller};
+                controller: registered.registration.active};
         }
 
         async function postMessage(message, onDispatch) {
-            await registration();
-            // A cached registration must never keep messaging the old controller
-            // after a normal worker upgrade. Do not close the shared client here:
-            // it can still own navigation frames for existing downloads.
-            const worker = navigatorObject.serviceWorker.controller
-                || await waitForWorkerControl(navigatorObject, {
-                    timeoutMs: startTimeoutMs, schedule, clearSchedule,
-                });
+            const ready = await registration();
+            // The fallback owns only the download URL scope. A root-scoped old
+            // page controller can finish its tasks without blocking new ones.
+            const worker = ready.registration.active;
             if (!worker || typeof worker.postMessage !== "function") {
                 throw streamingError(
                     "STREAMING_WORKER_NOT_ACTIVE",
@@ -674,6 +664,10 @@
                 return [];
             }
             try {
+                if (!currentRegistration && typeof navigatorObject.serviceWorker.getRegistration === 'function') {
+                    const existing = await navigatorObject.serviceWorker.getRegistration(workerScope);
+                    if (!existing || !new URL(existing.scope).pathname.startsWith(workerScope)) return [];
+                }
                 const response = await postMessage({type: "LIST_ACTIVE_DOWNLOADS"});
                 if (!response.ok || !Array.isArray(response.statuses)) {
                     return [];
@@ -1060,7 +1054,7 @@
         const client = getSharedClient(options);
         if (!client.capabilityAvailable()) return;
         const ready = await client.registration();
-        // Check the complete script at page load, not as a download retry or
+        // Explicit preparation checks the complete script, not a media retry or
         // version gate. Activation remains the browser's normal lifecycle.
         if (typeof ready.registration.update === "function") await ready.registration.update();
     }

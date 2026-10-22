@@ -136,6 +136,36 @@ function mountPicker(app) {
     }};
 }
 
+test('INV03 native attachment handoff preserves selection without Worker, Blob or completion claims', async () => {
+    const requests = [], links = [];
+    const app = browser(async (url, options) => {
+        requests.push(url);
+        assert.equal(url, 'https://product.example/media/service-selected-format/');
+        const body = JSON.parse(options.body);
+        return json({status: 'success', item: {...selectionItem(body.candidate_id),
+            download_strategy: 'browser_native', native_download_expires_at: Date.now() + 60000}});
+    });
+    app.win.navigator.serviceWorker = {register() { assert.fail('Native must not register a Worker'); },
+        controller: {postMessage() { assert.fail('Native must not wait for an old controller'); }}};
+    const create = app.doc.createElement;
+    app.doc.createElement = tag => {
+        const node = create(tag);
+        if (tag === 'a') node.click = () => links.push({url: node.href, target: node.target});
+        return node;
+    };
+    for (const name of ['ordinary_media_streaming_protocol.js', 'ordinary_media_streaming.js',
+        'ordinary_media_download.js', 'ytdlp_result_picker.js']) app.load(name);
+    const mounted = mountPicker(app);
+    mounted.choose('720');
+    await mounted.controller.save();
+    assert.equal(requests.length, 1);
+    assert.deepEqual(links, [{url: selectionItem('720').url, target: '_blank'}]);
+    const status = mounted.root.querySelector('[data-picker-status]').textContent;
+    assert.match(status, /已发起下载请求/);
+    assert.doesNotMatch(status, /已保存|保存成功|100%/);
+    mounted.controller.destroy();
+});
+
 function attachWorker(app, {legacy = false, unavailable = false, rejectedUrl = false} = {}) {
     const messages = [], navigations = [], mediaRequests = [], workerListeners = new Map();
     const statusListeners = new Set(), statuses = new Map(), responses = [], endings = [];

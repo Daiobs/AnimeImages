@@ -113,6 +113,43 @@ class TrackingThreadPoolExecutor:
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
+    @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+    def test_native_attachment_fact_is_exact_short_lived_and_not_authorization(self):
+        from django.core.cache import cache
+        from .services.quality import QualityProbe
+        from .services.provider_strategy import browser_transport_hint
+        from time import time
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+        item = dict(type='video', url='https://v26-default.365yg.com/selected.mp4',
+                    browser_direct_fetch_safe=True, requires_merge=False, requires_cookie=False)
+        for disposition in ('inline', '', 'ATTACHMENT; filename="source.mp4"'):
+            response = Mock(status_code=200, url=item['url'], headers={
+                'Content-Type': 'video/mp4', 'Content-Length': '10', 'Content-Disposition': disposition})
+            with patch('xhs_download.services.quality._request_with_retry', return_value=response) as request:
+                self.assertTrue(QualityProbe().probe(item['url'], allow_fallback=False).reachable)
+            self.assertEqual(request.call_count, 1)
+            expected = 'browser_native' if disposition.startswith('ATTACHMENT') else 'browser_streaming'
+            self.assertEqual(browser_transport_hint(item)['download_strategy'], expected)
+        self.assertEqual(browser_transport_hint({**item, 'browser_direct_fetch_safe': False}), {})
+        self.assertEqual(browser_transport_hint({**item, 'url': item['url'] + '?other=1'})['download_strategy'], 'browser_streaming')
+        with patch('xhs_download.services.quality.time.time', return_value=time() + 61):
+            self.assertEqual(browser_transport_hint(item)['download_strategy'], 'browser_streaming')
+        for headers, response_url, mime in (
+            ({'Authorization': 'fixture'}, item['url'], 'video/mp4'),
+            ({}, item['url'] + '?redirected', 'video/mp4'),
+            ({}, item['url'], 'text/html'),
+            ({}, item['url'], 'video/unknown'),
+        ):
+            response = Mock(status_code=200, url=response_url, headers={
+                'Content-Type': mime, 'Content-Length': '10', 'Content-Disposition': 'attachment'})
+            with patch('xhs_download.services.quality._request_with_retry', return_value=response):
+                QualityProbe().probe(item['url'], headers=headers, allow_fallback=False)
+            self.assertEqual(browser_transport_hint(item)['download_strategy'], 'browser_streaming')
+        with patch('xhs_download.services.quality.cache.get', side_effect=OSError('unavailable')):
+            self.assertEqual(browser_transport_hint(item)['download_strategy'], 'browser_streaming')
+
     def test_authorized_browser_transport_depends_on_resource_not_provider(self):
         from .services.provider_strategy import browser_transport_hint
 

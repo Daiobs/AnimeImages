@@ -52,6 +52,13 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
   silently select Blob; actual missing browser capability retains bounded Blob.
   Unknown registration, cancellation and media-response failures never trigger a
   second media request.
+  Native attachment navigation now precedes Worker setup when the existing bounded
+  metadata request observed a same-URL video attachment. That fact is short-lived,
+  is not authorization, and causes no additional probe. The public parse/action
+  contract retains one HEAD and the frontend contract retains the selected URL,
+  with no fetch/Blob/Worker call and no completion claim. The fallback uses the
+  existing Worker under its download-only scope, independent of an old root page
+  controller; the wire shape and old in-flight tasks are retained.
 - INV-04 uses both Safari and Chrome UA fixtures and the real attachment controller.
   This is not a new real-browser save, disk-persistence proof, or historical Worker
   binary run. YouTube merge and every platform/CDN are not exhaustively covered.

@@ -84,6 +84,30 @@ test("ordinary media classification requires a safe plain video", () => {
     assert.equal(ordinary.isOrdinaryMediaItem(ordinaryItem({url: "javascript:alert(1)"})), false);
 });
 
+test('native handoff is one navigation, ignores Worker state and never claims bytes or filename', async () => {
+    const links = [], stages = [], progress = [];
+    const documentObject = {body: {appendChild() {}}, createElement() {
+        return {click() { links.push(this.href); }, remove() {}};
+    }};
+    const item = ordinaryItem({download_strategy: 'browser_native', native_download_expires_at: Date.now() + 60000});
+    const result = await ordinary.download(item, {documentObject,
+        streamingClient: {capabilityAvailable() { assert.fail('No Worker setup'); }},
+        fetchImpl() { assert.fail('No media fetch'); },
+        onStage: stage => stages.push(stage), onProgress: value => progress.push(value)});
+    assert.deepEqual(links, [item.url]);
+    assert.deepEqual(stages, ['handed_off']);
+    assert.deepEqual(progress, []);
+    assert.equal(result.transport, 'browser_native');
+    assert.equal(result.filename, '');
+    assert.equal(result.receivedBytes, undefined);
+    for (const options of [{native_download_expires_at: 1}, {requires_cookie: true}]) {
+        await assert.rejects(ordinary.download({...item, ...options}, {documentObject}));
+    }
+    const signal = AbortSignal.abort();
+    await assert.rejects(ordinary.download(item, {documentObject, signal}));
+    assert.equal(links.length, 1);
+});
+
 test("browser fetch options omit credentials, cache, and page referrer", () => {
     const options = ordinary.browserFetchOptions(undefined);
     assert.equal(options.method, "GET");

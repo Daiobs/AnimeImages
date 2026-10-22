@@ -69,6 +69,9 @@ class OfflineTransport:
         self.sent_service_outcomes = []
         self.native_outcome = 412
         self.service_outcome = "success"
+        self.native_size = 12345
+        self.media_headers = {}
+        self.media_calls = []
 
     def send(self, request, **kwargs):
         parsed = urlsplit(request.url)
@@ -97,7 +100,7 @@ class OfflineTransport:
                     "pages": [{"cid": 456, "page": 1, "part": "Part one"}],
                 }
             elif parsed.path == "/x/player/playurl":
-                data = {"quality": 80, "durl": [{"url": MEDIA, "size": 12345}]}
+                data = {"quality": 80, "durl": [{"url": MEDIA, "size": self.native_size}]}
                 if self.native_outcome == "incomplete":
                     data = {"quality": 80, "dash": {
                         "video": [{"id": 80, "height": 1080, "width": 1920,
@@ -128,6 +131,16 @@ class OfflineTransport:
                     {"url": MEDIA, "quality": "1080P", "size": 12345},
                 ]}],
             }})
+        if request.url == MEDIA:
+            self.media_calls.append(request.method)
+            response = requests.Response()
+            response.status_code = 200
+            response.url = request.url
+            response.request = request
+            response.headers.update({'Content-Type': 'video/mp4', 'Content-Length': '12345', **self.media_headers})
+            response._content = b''
+            response._content_consumed = True
+            return response
         raise AssertionError(f"Unexpected outbound HTTP request: {request.method} {request.url}")
 
 
@@ -231,6 +244,27 @@ class BackendHTTPContracts(TestCase):
                 self.assertTrue(item["browser_direct_fetch_safe"])
                 self.assertEqual(item["download_strategy"], "browser_streaming")
                 self.assertNotIn("server_single_attachment", str(item))
+
+    def test_inv03_existing_metadata_probe_enables_native_without_another_media_request(self):
+        self.transport.native_outcome = 'success'
+        self.transport.native_size = 0
+        self.transport.media_headers = {'Content-Disposition': 'attachment; filename="source.mp4"'}
+        page = self.parse()
+        self.assertEqual(page.status_code, 200)
+        soup = BeautifulSoup(page.content, 'html.parser')
+        card = soup.select_one('[data-type="video"][data-url]')
+        self.assertIsNotNone(card)
+        self.assertEqual(self.transport.media_calls, ['HEAD'])
+        response = self.client.post(reverse('download_images_api'), {
+            'media_items': [{'type': 'video', 'url': card['data-url'], 'source_platform': 'bilibili'}],
+            'download_mode': 'auto', 'route_only': True,
+        }, content_type='application/json')
+        self.assertEqual(response.status_code, 200, response.content)
+        item = response.json()['items'][0]
+        self.assertEqual(item['download_strategy'], 'browser_native')
+        self.assertGreater(item['native_download_expires_at'], 0)
+        self.assertEqual(self.transport.media_calls, ['HEAD'])
+        self.assertEqual(item['url'], MEDIA)
 
     def test_inv05_eligible_native_failures_use_admitted_tiantian(self):
         for outcome in (412, 429, 500, 503, 599, "timeout", "incomplete"):

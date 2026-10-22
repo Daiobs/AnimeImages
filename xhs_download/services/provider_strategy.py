@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 DOWNLOAD_STRATEGY_BROWSER_BLOB = "browser_blob"
 DOWNLOAD_STRATEGY_BROWSER_STREAMING = "browser_streaming"
 DOWNLOAD_STRATEGY_BROWSER_DIRECT = "browser_direct"
+DOWNLOAD_STRATEGY_BROWSER_NATIVE = "browser_native"
 DOWNLOAD_STRATEGY_SERVER_ATTACHMENT = "server_attachment"
 DOWNLOAD_STRATEGY_SERVER_MERGE = "server_merge"
 DOWNLOAD_STRATEGY_SERVER_ZIP = "server_zip"
@@ -65,6 +66,14 @@ def browser_transport_hint(item):
             or any(item.get(key) for key in ("has_drm", "requires_context", "download_context_required"))
             or item.get("video_tracks") == "absent"):
         return {}
+    from .quality import native_attachment_expiry
+    expires_at = native_attachment_expiry(item.get('url'))
+    if expires_at and browser_streaming_resource_url_is_allowed(item.get('url')):
+        selection_expiry = item.get('selection_expires_at')
+        if selection_expiry:
+            expires_at = min(expires_at, int(selection_expiry))
+        return {'download_strategy': DOWNLOAD_STRATEGY_BROWSER_NATIVE,
+                'fallback_strategy': FALLBACK_NONE, 'native_download_expires_at': expires_at}
     streaming = browser_streaming_resource_url_is_allowed(item.get("url"))
     return {
         "download_strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING if streaming else DOWNLOAD_STRATEGY_BROWSER_BLOB,

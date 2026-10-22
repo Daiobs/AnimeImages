@@ -958,7 +958,7 @@ test("progress estimator reports real bytes, stable speed, ETA, and unknown tota
     assert.equal(unknown.etaSeconds, null);
 });
 
-test("client registers the root-scoped worker and launches one opaque download path", async () => {
+test("client registers only the download scope and launches one opaque download path", async () => {
     const harness = createClientHarness({
         onNavigate({serviceWorker, statuses}) {
             const status = [...statuses.values()][0];
@@ -970,7 +970,7 @@ test("client registers the root-scoped worker and launches one opaque download p
     assert.deepEqual(harness.calls[0], {
         type: "register",
         url: "/ordinary-media-download-sw.js",
-        options: {scope: "/", updateViaCache: "none"},
+        options: {scope: "/__animeimages-stream-download/", updateViaCache: "none"},
     });
     assert.match(harness.clicked[0], /^\/__animeimages-stream-download\/[a-f0-9]{32}$/);
     assert.equal(harness.frames.length, 1);
@@ -2436,7 +2436,7 @@ test("authorization expires during browser registration without creating a trans
     assertNoUpdateSideEffects(app);
 });
 
-test("cached registration uses the current controller without replacing existing download frames", async (t) => {
+test("cached registration uses the current download-scope active Worker without replacing frames", async (t) => {
     const app = createClientHarness({onNavigate: emitNavigationStarted});
     t.after(() => app.client.close());
     const existing = await app.client.start(ordinaryItem());
@@ -2451,7 +2451,21 @@ test("cached registration uses the current controller without replacing existing
     await completeDownload(app, selected);
 });
 
-test("ordinary download uses the old controller without a media Blob fallback or update stage", async (t) => {
+test('root controller with an active old download is untouched by the scoped fallback', async (t) => {
+    const app = createClientHarness({onNavigate: emitNavigationStarted});
+    t.after(() => app.client.close());
+    const rootWorker = {state: 'activated', postMessage() { assert.fail('Do not message or replace the root Worker'); }};
+    app.serviceWorker.controller = rootWorker;
+    const first = await app.client.start(bilibiliSelectedItem());
+    assert.equal(app.serviceWorker.controller, rootWorker);
+    assert.equal(app.calls[0].options.scope, '/__animeimages-stream-download/');
+    assert.equal(workerMessages(app, 'REGISTER_DOWNLOAD').length, 1);
+    assert.equal(app.clicked.length, 1);
+    await completeDownload(app, first);
+    assert.equal(app.serviceWorker.controller, rootWorker);
+});
+
+test("ordinary download uses the compatible active download Worker without a Blob fallback", async (t) => {
     const app = createClientHarness({capabilitiesResponse: {ok: false, code: "UNKNOWN_MESSAGE"},
         waitingWorker: {protocolVersion: 4}, onNavigate: emitNavigationStarted});
     t.after(() => app.client.close());

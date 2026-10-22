@@ -1339,6 +1339,28 @@
         };
     }
 
+    function handoffNative(item, settings) {
+        if (settings.signal && settings.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        if (!(Number(item.native_download_expires_at) > Date.now())) {
+            throw downloadError('DESCRIPTOR_EXPIRED', '当前下载信息已过期，请重新获取资源。');
+        }
+        const doc = settings.documentObject || (typeof document !== 'undefined' ? document : null);
+        if (!doc || !doc.body) throw downloadError('NATIVE_HANDOFF_UNAVAILABLE', '浏览器无法发起下载。');
+        const link = doc.createElement('a');
+        link.href = item.url || item.video_url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.referrerPolicy = 'no-referrer';
+        link.download = sanitizeFilename(settings.filename || item.filename);
+        link.hidden = true;
+        doc.body.appendChild(link);
+        try { link.click(); } finally { link.remove(); }
+        const message = '已发起下载请求，请在浏览器下载列表中查看。';
+        if (settings.onStage) settings.onStage('handed_off', message);
+        // Navigation has no web API for browser-manager completion or final name.
+        return {transport: 'browser_native', state: 'handed_off', filename: '', message};
+    }
+
     async function download(item, options) {
         const settings = options && typeof options === "object" ? options : {};
         if (!isOrdinaryMediaItem(item)) {
@@ -1359,6 +1381,9 @@
             if (!binding || binding.selection_expires_at <= Date.now()) {
                 throw downloadError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
             }
+        }
+        if (item.download_strategy === 'browser_native' && streamEligible) {
+            return handoffNative(item, settings);
         }
         // Existing direct-bound resources outside the reviewed SW URL scope and
         // audio retain bounded compatibility delivery; they do not widen SW access.

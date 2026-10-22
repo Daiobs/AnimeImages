@@ -1,13 +1,28 @@
 from dataclasses import dataclass
+from hashlib import sha256
 import math
 import time
 
 import requests
+from django.core.cache import cache
 
 from .common import (
     MEDIA_HOST_SUFFIXES, XhsDownloadError, XhsSecurityError,
     _RedirectBudget, _request_with_retry,
 )
+
+
+def native_attachment_cache_key(url):
+    return 'media-attachment:' + sha256(str(url).encode()).hexdigest()
+
+
+def native_attachment_expiry(url):
+    """A short-lived response fact, never a substitute for resource authorization."""
+    try:
+        value = cache.get(native_attachment_cache_key(url))
+    except Exception:
+        return 0
+    return value if isinstance(value, int) and value > time.time() * 1000 else 0
 
 
 @dataclass(frozen=True)
@@ -74,6 +89,10 @@ class QualityProbe:
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
         deadline = time.monotonic() + timeout
+        try:
+            cache.delete(native_attachment_cache_key(url))
+        except Exception:
+            pass
         redirects = _RedirectBudget(5)
         request_headers = headers or {}
         methods = ("RANGE", "HEAD") if strategy == "range_first" else ("HEAD", "RANGE")
@@ -125,6 +144,16 @@ class QualityProbe:
                     if method == "RANGE" and response.status_code == 206
                     else parse_content_length(response)
                 )
+                # Reuse this existing metadata request. Do not probe again at
+                # download time or infer attachment behavior from a URL suffix.
+                if (response.url == url and normalize_content_type(content_type) in {'video/mp4', 'video/webm', 'video/quicktime'}
+                        and str(response.headers.get('Content-Disposition', '')).split(';', 1)[0].strip().lower() == 'attachment'
+                        and not any(str(key).lower() in {'cookie', 'authorization', 'proxy-authorization'}
+                                    and value for key, value in headers.items())):
+                    try:
+                        cache.set(native_attachment_cache_key(url), int(time.time() * 1000) + 60000, timeout=60)
+                    except Exception:
+                        pass
                 return QualityProbeResult(
                     url=url,
                     final_url=response.url,

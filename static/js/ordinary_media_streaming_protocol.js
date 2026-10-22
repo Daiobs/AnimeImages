@@ -857,6 +857,7 @@
             throw new Error("INVALID_DOWNLOAD_ID");
         }
         const base = String(scopePath || "/static/js/").replace(/\/*$/, "/");
+        if (base === `/${DOWNLOAD_PATH_SEGMENT}/`) return `${base}${id}`;
         return `${base}${DOWNLOAD_PATH_SEGMENT}/${id}`;
     }
 
