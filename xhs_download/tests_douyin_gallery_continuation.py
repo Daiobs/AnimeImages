@@ -12,6 +12,7 @@ from django.test import TestCase, override_settings
 from .services.douyin_continuation import (
     DOUYIN_CONTINUATION_MAX_CACHE_BYTES,
     DouyinContinuationCoordinator,
+    build_douyin_continuation_cache_key,
     deserialize_douyin_continuation_result,
     issue_douyin_continuation_token,
     serialize_douyin_continuation_result,
@@ -84,6 +85,41 @@ class DouyinGalleryContinuationTests(TestCase):
             len(json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")),
             DOUYIN_CONTINUATION_MAX_CACHE_BYTES,
         )
+
+    def test_large_gallery_caption_fits_complete_cache_record_without_losing_images(self):
+        self.images = [f"https://p3-sign.douyinpic.com/gallery/{i}.webp" for i in range(24)]
+        base = serialize_douyin_continuation_result(self.result(title="Gallery title", description=""))
+        room = DOUYIN_CONTINUATION_MAX_CACHE_BYTES - len(
+            json.dumps(base, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        )
+        for length in (2000, (room - 30) // 6):
+            with self.subTest(description_length=length):
+                description = "\u56fe" * length
+                original = self.result(title="Gallery title", description=description)
+                coordinator = DouyinContinuationCoordinator(1, first_upgrade_wins=True)
+                self.addCleanup(coordinator.abandon)
+                future = Future()
+                future.set_result(original)
+                coordinator.capture_future(
+                    future, provider_name="tiantianjiexi", score_result=lambda result: (0, 0),
+                    is_strong_result=lambda result: False, prepare_result=lambda result: result,
+                )
+                record = cache.get(build_douyin_continuation_cache_key(coordinator.task_id))
+                self.assertEqual(record["status"], "success")
+                self.assertTrue(coordinator.available)
+                self.assertLessEqual(
+                    len(json.dumps(record, ensure_ascii=True, separators=(",", ":")).encode("utf-8")),
+                    DOUYIN_CONTINUATION_MAX_CACHE_BYTES,
+                )
+                restored = deserialize_douyin_continuation_result(record["result"])
+                self.assertTrue(restored.metadata["description"])
+                self.assertTrue(description.startswith(restored.metadata["description"]))
+                self.assertLess(len(restored.metadata["description"]), len(description))
+                self.assertEqual(original.metadata["description"], description)
+                self.assertEqual(
+                    [asset.to_download_item() for asset in restored.assets],
+                    [asset.to_download_item() for asset in original.assets],
+                )
 
     def test_cache_cannot_swap_image_tokens_types_or_works(self):
         payload = serialize_douyin_continuation_result(self.result())

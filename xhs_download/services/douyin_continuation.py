@@ -161,6 +161,37 @@ def safe_continuation_metadata(metadata):
     return safe
 
 
+def _encode_with_bounded_description(value, metadata):
+    def encode():
+        return json.dumps(
+            value, ensure_ascii=True, separators=(",", ":"), sort_keys=True,
+        ).encode("utf-8")
+
+    encoded = encode()
+    description = metadata.get("description")
+    if len(encoded) <= DOUYIN_CONTINUATION_MAX_CACHE_BYTES or not isinstance(description, str):
+        return encoded
+    # Keep media/authorization intact; optional text uses only the remaining bytes.
+    metadata.pop("description")
+    encoded = encode()
+    if len(encoded) > DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
+        return encoded
+    low, high, retained = 0, len(description), None
+    while low <= high:
+        middle = (low + high) // 2
+        metadata["description"] = description[:middle]
+        candidate = encode()
+        if len(candidate) <= DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
+            encoded, retained, low = candidate, middle, middle + 1
+        else:
+            high = middle - 1
+    if retained is None:
+        metadata.pop("description", None)
+    else:
+        metadata["description"] = description[:retained]
+    return encoded
+
+
 def _serialize_continuation_asset(asset):
     provider = str(asset.provider or "").strip().lower()
     if provider not in DOUYIN_CONTINUATION_ALLOWED_PROVIDERS:
@@ -235,12 +266,7 @@ def serialize_douyin_continuation_result(result):
         refs.append(ref)
     if refs:
         payload['format_refs'] = refs
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
+    encoded = _encode_with_bounded_description(payload, payload["metadata"])
     if len(encoded) > DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
         raise ValueError("continuation result exceeds cache limit")
     return payload
@@ -507,12 +533,9 @@ class DouyinContinuationCoordinator:
         if not self._available or not self._active:
             return False
         record = self._record()
-        encoded = json.dumps(
-            record,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
+        encoded = _encode_with_bounded_description(
+            record, record.get("result", {}).get("metadata", {}),
+        )
         if len(encoded) > DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
             self._available = False
             return False
