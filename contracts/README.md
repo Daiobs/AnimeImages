@@ -47,6 +47,9 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
 - INV-04 uses both Safari and Chrome UA fixtures and the real attachment controller.
   This is not a new real-browser save, disk-persistence proof, or historical Worker
   binary run. YouTube merge and every platform/CDN are not exhaustively covered.
+  Controlled-clock slow transfers also cross the former 15-second observation and
+  60-second launch boundaries: status survives actual progress, launch remains
+  one-use/expired, and downstream closure is distinct from an upstream failure.
 - INV-06 includes raw Douyin captions through the public result and nondefault
   selection endpoint: short title, description and hashtags remain separate.
 - INV-07 checks anonymous, ordinary authenticated and Staff presentation. Public
@@ -68,6 +71,7 @@ not syntax/import errors. The Nginx countercheck is also an executable CI test.
 | INV-02 | Failure cache retained for 24 hours | Failure, timeout and disconnect could not recover into usable public HTML |
 | INV-03 | Choose lowest default; force bound selections to Blob; require Worker v4 | Wrong default; no SW navigation; incompatible legacy registration |
 | INV-04 | Premature saved copy; attachment `DENY` instead of `SAMEORIGIN` | Controller rejects premature completion; both UA response checks reject framing |
+| INV-04 (transfer observation) | Unchanged `8e8beda` | Three-minute observation ends as `poll_timeout`; slow HTTP transfer status returns 410 after 60 s; downstream close reports `UPSTREAM_CONNECTION_ERROR` |
 | INV-05 | Remove fallback; call service before Native; bypass admission; allow 404 fallback | Failure classification, order and permission assertions fail |
 | INV-06 | Retain `.bin`; remove caption transmission or short-title projection | Wrong extension; placeholder or description/hashtags enter selected filename |
 | INV-07 | Unconditionally show technical panel | Anonymous/member presentation assertions fail |

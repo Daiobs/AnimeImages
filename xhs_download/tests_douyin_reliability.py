@@ -2065,11 +2065,7 @@ class DownloadHandoffTests(SimpleTestCase):
                 client_identity="client-a",
             )
         self.assertEqual(tampered.exception.error_code, "DOWNLOAD_HANDOFF_INVALID")
-        with patch(
-            "xhs_download.services.download_handoff."
-            "DOWNLOAD_HANDOFF_TTL_SECONDS",
-            -1,
-        ):
+        with patch("time.time", return_value=time.time() + DOWNLOAD_HANDOFF_TTL_SECONDS + 1):
             with self.assertRaises(DownloadHandoffError) as expired:
                 load_download_handoff(
                     tokens.stream_token,
@@ -2100,7 +2096,6 @@ class DownloadHandoffTests(SimpleTestCase):
             "connecting",
             "refreshing",
             "streaming",
-            "completed",
             "failed",
         ):
             updated = update_download_status(
@@ -2143,6 +2138,52 @@ class DownloadHandoffTests(SimpleTestCase):
             "资源连接异常，请稍后重试。",
         )
         self.assertTrue(failed["stream_started"])
+
+    def test_completed_status_cannot_be_reopened_or_extended_by_late_callback(self):
+        tokens = issue_download_handoff_tokens(
+            item={"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"},
+            base_filename="demo", client_identity="client-a",
+        )
+        initial = load_download_status(tokens.status_token, client_identity="client-a")
+        self.assertTrue(update_download_status(initial.ticket_id, "completed"))
+        completed = load_download_status(tokens.status_token, client_identity="client-a")
+        with patch.object(cache, "set") as write:
+            self.assertFalse(update_download_status(initial.ticket_id, "streaming"))
+            self.assertFalse(update_download_status(initial.ticket_id, "failed"))
+            self.assertEqual(load_download_status(tokens.status_token, client_identity="client-a"), completed)
+        write.assert_not_called()
+
+    def test_status_progress_never_retains_media_authority_and_reads_do_not_keep_it_alive(self):
+        from .services.download_handoff import (
+            build_download_handoff_cache_key, build_download_status_cache_key,
+        )
+        clock = time.time()
+        with patch("time.time", return_value=clock):
+            tokens = issue_download_handoff_tokens(
+                item={"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg?secret=1"},
+                base_filename="demo", client_identity="client-a",
+            )
+            initial = load_download_status(tokens.status_token, client_identity="client-a")
+            # Existing tickets from the previous process gain only a status binding.
+            key = build_download_status_cache_key(initial.ticket_id)
+            old = cache.get(key)
+            old.pop("client_identity")
+            cache.set(key, old, timeout=60)
+            self.assertEqual(load_download_status(tokens.status_token, client_identity="client-a").status, "issued")
+            self.assertTrue(update_download_status(initial.ticket_id, "streaming"))
+        with patch("time.time", return_value=clock + 70):
+            self.assertIsNone(cache.get(build_download_handoff_cache_key(initial.ticket_id)))
+            status_record = cache.get(key)
+            self.assertNotIn("item", status_record)
+            self.assertNotIn("secret", json.dumps(status_record))
+            with self.assertRaises(DownloadHandoffError):
+                load_download_handoff(tokens.status_token, client_identity="client-a")
+            self.assertEqual(load_download_status(tokens.status_token, client_identity="client-a").status, "streaming")
+        with patch("time.time", return_value=clock + 301):
+            with self.assertRaises(DownloadHandoffError) as expired:
+                load_download_status(tokens.status_token, client_identity="client-a")
+            self.assertEqual(expired.exception.status_code, 410)
+            self.assertFalse(update_download_status(initial.ticket_id, "streaming"))
 
     def test_failed_after_streaming_preserves_sticky_start_fact(self):
         tokens = issue_download_handoff_tokens(

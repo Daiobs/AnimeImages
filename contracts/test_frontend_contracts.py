@@ -2,6 +2,7 @@
 
 import io
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import unquote, urlsplit
@@ -276,3 +277,68 @@ class FrontendHttpContracts(TransactionTestCase):
                 media_calls = [call for call in self.calls if "media.bilivideo.com" in call[1]]
                 self.assertTrue(media_calls)
                 self.assertIn("bilibili.com", media_calls[-1][2].get("Referer", ""))
+
+    def attachment_ticket(self):
+        _, soup = self.result("https://www.bilibili.com/video/BV1xx411c7mD")
+        card = soup.select_one('.asset-card[data-type="video"]')
+        response = self.client.post("/media/download-prepare/", {
+            "media_items": [{"type": "video", "url": card["data-url"]}],
+            "platform_key": "bilibili", "base_filename": "Contract short title",
+        }, content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_INV04_slow_attachment_keeps_status_without_renewing_download_authorization(self):
+        clock = [time.time()]
+        monotonic = [time.monotonic()]
+
+        class SlowBody(io.BytesIO):
+            def stream(self, amount, decode_content=True):
+                for index in range(6):
+                    clock[0] += 1 if index == 0 else 40
+                    monotonic[0] += 1 if index == 0 else 40
+                    yield b"media"
+
+        def slow_send(request, **kwargs):
+            response = self.send(request, **kwargs)
+            if urlsplit(request.url).hostname == "media.bilivideo.com":
+                response.raw = SlowBody()
+                response.raw._connection = SimpleNamespace(sock=SimpleNamespace(settimeout=lambda _: None))
+                response.headers["Content-Length"] = "30"
+            return response
+
+        with patch("time.time", side_effect=lambda: clock[0]), \
+                patch("time.monotonic", side_effect=lambda: monotonic[0]), \
+                patch("requests.adapters.HTTPAdapter.send", side_effect=slow_send):
+            ticket = self.attachment_ticket()
+            stream = self.client.get(ticket["download_url"])
+            self.assertEqual(stream.status_code, 200)
+            chunks = []
+            try:
+                for chunk in stream.streaming_content:
+                    chunks.append(chunk)
+                    observed = self.client.get(ticket["status_url"])
+                    self.assertEqual(observed.status_code, 200, observed.content)
+                    self.assertEqual(observed.json()["status"], "streaming")
+                self.assertEqual(b"".join(chunks), b"media" * 6)
+                self.assertEqual(self.client.get(ticket["status_url"]).json()["status"], "completed")
+                self.assertEqual(self.client.get(ticket["download_url"]).status_code, 410)
+                self.assertEqual(self.client.get(ticket["status_url"], REMOTE_ADDR="127.0.0.2").status_code, 403)
+                self.assertEqual(sum("media.bilivideo.com" in call[1] for call in self.calls), 1)
+                clock[0] += 601
+                self.assertEqual(self.client.get(ticket["status_url"]).status_code, 410)
+            finally:
+                stream.close()
+
+    def test_INV04_downstream_close_is_not_an_upstream_failure(self):
+        ticket = self.attachment_ticket()
+        stream = self.client.get(ticket["download_url"])
+        iterator = iter(stream.streaming_content)
+        self.assertEqual(next(iterator), b"first-last")
+        stream.close()
+        observed = self.client.get(ticket["status_url"])
+        self.assertEqual(observed.json()["status"], "failed")
+        self.assertEqual(observed.json()["error_code"], "DOWNLOAD_CONNECTION_CLOSED")
+        self.assertNotIn("上游", observed.json()["message"])
+        self.assertNotIn("取消", observed.json()["message"])
+        self.assertEqual(sum("media.bilivideo.com" in call[1] for call in self.calls), 1)

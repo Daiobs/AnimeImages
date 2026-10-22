@@ -83,6 +83,7 @@ from .services.download_tasks import (
     serialize_task,
 )
 from .services.download_handoff import (
+    DOWNLOAD_STATUS_PROGRESS_INTERVAL_SECONDS,
     DOWNLOAD_STREAM_START_TIMEOUT_SECONDS,
     DownloadHandoffError,
     issue_download_handoff_tokens,
@@ -2895,6 +2896,7 @@ class SingleAttachmentStream:
         self.closed = False
         self.streaming_notified = False
         self.stream_started_at = None
+        self.last_status_progress_at = None
         self.telemetry.setdefault("actual_yielded_bytes", 0)
         self.telemetry.setdefault("chunk_index", 0)
         self.telemetry.setdefault("exception_type", "")
@@ -2918,6 +2920,13 @@ class SingleAttachmentStream:
             self.telemetry.get("actual_yielded_bytes") or 0
         ) + len(chunk)
         self.update_elapsed()
+        now = time.monotonic()
+        if (
+            self.last_status_progress_at is not None
+            and now - self.last_status_progress_at >= DOWNLOAD_STATUS_PROGRESS_INTERVAL_SECONDS
+        ):
+            self.last_status_progress_at = now
+            self.notify("streaming")
 
     def notify(self, status, error=None):
         try:
@@ -2943,6 +2952,7 @@ class SingleAttachmentStream:
             return
         self.streaming_notified = True
         self.stream_started_at = time.monotonic()
+        self.last_status_progress_at = self.stream_started_at
         self.telemetry["stream_started"] = True
         self.notify("streaming")
 
@@ -2985,7 +2995,7 @@ class SingleAttachmentStream:
             )
             terminal_error = DownloadStreamStatusError(
                 "下载连接提前关闭。",
-                error_code="UPSTREAM_CONNECTION_ERROR",
+                error_code="DOWNLOAD_CONNECTION_CLOSED",
             )
             raise
         except BaseException as error:
@@ -3022,7 +3032,7 @@ class SingleAttachmentStream:
                 self.fail(
                     DownloadStreamStatusError(
                         "下载连接提前关闭。",
-                        error_code="UPSTREAM_CONNECTION_ERROR",
+                        error_code="DOWNLOAD_CONNECTION_CLOSED",
                     )
                 )
             if callable(self.close_callback):
@@ -6054,7 +6064,7 @@ def download_stream_view(request, token):
                 },
             )
 
-        if status in logged_statuses and status in {"connecting", "refreshing"}:
+        if status in logged_statuses and status in {"connecting", "refreshing", "streaming"}:
             return
         logged_statuses.add(status)
         log_fields = {

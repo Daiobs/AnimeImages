@@ -205,6 +205,12 @@ def public_download_error_message(error, limit=120):
 
 
 def observable_download_error(error, *, provider=""):
+    if getattr(error, "error_code", "") == "DOWNLOAD_CONNECTION_CLOSED":
+        return {
+            "error_code": "DOWNLOAD_CONNECTION_CLOSED",
+            "message": "下载连接已提前关闭，尚未确认文件传输完成。请查看浏览器下载栏。",
+            "status_code": 499,
+        }
     if (
         str(getattr(error, "error_code", "") or "")
         == "DOWNLOAD_STREAM_START_TIMEOUT"

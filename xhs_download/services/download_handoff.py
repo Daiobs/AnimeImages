@@ -42,6 +42,9 @@ DOWNLOAD_HANDOFF_TTL_SECONDS = max(
 )
 DOWNLOAD_HANDOFF_MAX_USES = 1
 DOWNLOAD_HANDOFF_MAX_CACHE_BYTES = 32 * 1024
+# Only actual transfer progress renews this read-only record, never a status GET.
+DOWNLOAD_STATUS_RETENTION_SECONDS = 300
+DOWNLOAD_STATUS_PROGRESS_INTERVAL_SECONDS = 5
 DOWNLOAD_HANDOFF_ITEM_STRING_LIMITS = {
     "type": 16,
     "url": 8192,
@@ -76,6 +79,7 @@ DOWNLOAD_STATUS_STATES = frozenset(
     }
 )
 DOWNLOAD_STATUS_ERROR_MESSAGES = {
+    "DOWNLOAD_CONNECTION_CLOSED": "下载连接已提前关闭，尚未确认文件传输完成。请查看浏览器下载栏。",
     "DOWNLOAD_CONCURRENCY_LIMIT": "当前已有下载任务正在处理，请等待完成后再试。",
     "DOWNLOAD_DAILY_BYTES_LIMIT_GLOBAL": "今日全站下载流量已达到限制，请稍后再试。",
     "DOWNLOAD_DAILY_BYTES_LIMIT_IP": "今日下载流量已达到限制，请明天再试。",
@@ -182,12 +186,14 @@ def _build_signed_token(ticket_id, *, salt):
     )
 
 
-def _load_signed_ticket(token, *, salt):
+def _load_signed_ticket(token, *, salt, max_age=...):
+    if max_age is ...:
+        max_age = DOWNLOAD_HANDOFF_TTL_SECONDS
     try:
         payload = signing.loads(
             str(token or ""),
             salt=salt,
-            max_age=DOWNLOAD_HANDOFF_TTL_SECONDS,
+            max_age=max_age,
         )
     except signing.SignatureExpired as error:
         raise DownloadHandoffError(
@@ -373,6 +379,7 @@ def issue_download_handoff_tokens(
     cache.set(
         build_download_status_cache_key(ticket_id),
         {
+            "client_identity": record["client_identity"],
             "status": "issued",
             "error_code": "",
             "message": "",
@@ -415,7 +422,9 @@ def issue_download_handoff(
 
 
 def load_download_handoff(token, *, client_identity, consume=True):
-    ticket_id = _load_signed_ticket(token, salt=DOWNLOAD_HANDOFF_SALT)
+    ticket_id = _load_signed_ticket(
+        token, salt=DOWNLOAD_HANDOFF_SALT, max_age=DOWNLOAD_HANDOFF_TTL_SECONDS,
+    )
     record = cache.get(build_download_handoff_cache_key(ticket_id))
     if not isinstance(record, dict):
         raise _expired_handoff_error()
@@ -450,19 +459,21 @@ def load_download_handoff(token, *, client_identity, consume=True):
 
 
 def load_download_status(token, *, client_identity):
-    ticket_id = _load_signed_ticket(token, salt=DOWNLOAD_STATUS_SALT)
-    handoff_record = cache.get(build_download_handoff_cache_key(ticket_id))
-    if not isinstance(handoff_record, dict):
-        raise _expired_handoff_error()
-    _validate_client_identity(handoff_record, client_identity)
-    if not _remaining_ttl(handoff_record.get("expires_at")):
-        raise _expired_handoff_error()
-
+    # The signed status token cannot start a transfer; its live cache record bounds
+    # observation independently of the short, one-use launch authorization.
+    ticket_id = _load_signed_ticket(token, salt=DOWNLOAD_STATUS_SALT, max_age=None)
     record = cache.get(build_download_status_cache_key(ticket_id))
     if not isinstance(record, dict):
         raise _expired_handoff_error()
     if not _remaining_ttl(record.get("expires_at")):
         raise _expired_handoff_error()
+    identity_record = record
+    if not record.get("client_identity"):
+        # Tickets issued before this change remain readable only in their old TTL.
+        identity_record = cache.get(build_download_handoff_cache_key(ticket_id))
+        if not isinstance(identity_record, dict) or not _remaining_ttl(identity_record.get("expires_at")):
+            raise _expired_handoff_error()
+    _validate_client_identity(identity_record, client_identity)
 
     status = str(record.get("status") or "")
     if status not in DOWNLOAD_STATUS_STATES:
@@ -511,6 +522,8 @@ def update_download_status(
     remaining_ttl = _remaining_ttl(record.get("expires_at"))
     if not remaining_ttl:
         return False
+    if record.get("status") in {"completed", "failed", "expired"}:
+        return False
 
     normalized_error_code = ""
     message = ""
@@ -534,6 +547,13 @@ def update_download_status(
         ),
         "updated_at": time.time(),
     }
+    if not updated.get("client_identity"):
+        handoff_record = cache.get(build_download_handoff_cache_key(ticket_id))
+        if isinstance(handoff_record, dict) and _remaining_ttl(handoff_record.get("expires_at")):
+            updated["client_identity"] = handoff_record.get("client_identity", "")
+    if updated.get("client_identity") and status in {"streaming", "completed", "failed"}:
+        remaining_ttl = DOWNLOAD_STATUS_RETENTION_SECONDS
+        updated["expires_at"] = updated["updated_at"] + remaining_ttl
     if recovered is not None:
         updated["recovered"] = bool(recovered)
     if upstream_attempt_count is not None:
