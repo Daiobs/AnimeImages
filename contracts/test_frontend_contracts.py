@@ -302,7 +302,7 @@ class FrontendHttpContracts(TransactionTestCase):
 
         def slow_send(request, **kwargs):
             response = self.send(request, **kwargs)
-            if urlsplit(request.url).hostname == "media.bilivideo.com":
+            if urlsplit(request.url).hostname == "media.hdslb.com":
                 response.raw = SlowBody()
                 response.raw._connection = SimpleNamespace(sock=SimpleNamespace(settimeout=lambda _: None))
                 response.headers["Content-Length"] = "30"
@@ -325,7 +325,7 @@ class FrontendHttpContracts(TransactionTestCase):
                 self.assertEqual(self.client.get(ticket["status_url"]).json()["status"], "completed")
                 self.assertEqual(self.client.get(ticket["download_url"]).status_code, 410)
                 self.assertEqual(self.client.get(ticket["status_url"], REMOTE_ADDR="127.0.0.2").status_code, 403)
-                self.assertEqual(sum("media.bilivideo.com" in call[1] for call in self.calls), 1)
+                self.assertEqual(sum("media.hdslb.com" in call[1] for call in self.calls), 1)
                 clock[0] += 601
                 self.assertEqual(self.client.get(ticket["status_url"]).status_code, 410)
             finally:
@@ -342,4 +342,4 @@ class FrontendHttpContracts(TransactionTestCase):
         self.assertEqual(observed.json()["error_code"], "DOWNLOAD_CONNECTION_CLOSED")
         self.assertNotIn("上游", observed.json()["message"])
         self.assertNotIn("取消", observed.json()["message"])
-        self.assertEqual(sum("media.bilivideo.com" in call[1] for call in self.calls), 1)
+        self.assertEqual(sum("media.hdslb.com" in call[1] for call in self.calls), 1)
