@@ -10,6 +10,7 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 
 from .services.douyin_continuation import (
+    DOUYIN_CONTINUATION_MAX_CACHE_BYTES,
     DouyinContinuationCoordinator,
     deserialize_douyin_continuation_result,
     issue_douyin_continuation_token,
@@ -19,6 +20,7 @@ from .services.downloads import provider_manifest_allows_public_download
 from .services.platforms.douyin import DouyinAdapter
 from .services.platforms.douyin_providers import DouyinParseContext, DouyinTianTianJieXiProvider
 from .services.platforms.tiantianjiexi_generic import TianTianJieXiResultNormalizer
+from .views import build_result_display_context
 
 
 @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
@@ -29,9 +31,9 @@ class DouyinGalleryContinuationTests(TestCase):
         self.images = [f"https://p3-sign.douyinpic.com/gallery/{i}.webp" for i in range(3)]
         self.provider = DouyinTianTianJieXiProvider(provider_settings=SimpleNamespace())
 
-    def result(self, aweme_id="7634213610894689787"):
+    def result(self, aweme_id="7634213610894689787", *, title="", description="Gallery fixture #photos"):
         payload = TianTianJieXiResultNormalizer.normalize_payload({
-            "desc": "Gallery fixture #photos", "images": self.images, "videos": [],
+            "title": title, "desc": description, "images": self.images, "videos": [],
         })
         source = f"https://www.douyin.com/note/{aweme_id}"
         return self.provider.result_from_payload(
@@ -50,6 +52,38 @@ class DouyinGalleryContinuationTests(TestCase):
         for before, after in zip(original.assets, restored.assets):
             self.assertEqual(after.to_download_item(), before.to_download_item())
             self.assertTrue(provider_manifest_allows_public_download(after.to_download_item()))
+
+    def test_gallery_caption_is_unchanged_after_continuation(self):
+        for title, description in (
+            ("Gallery title", "Full gallery caption #photos"),
+            ("", "Gallery fixture #photos"),
+            ("Gallery title", ""),
+        ):
+            with self.subTest(title=title, description=description):
+                original = self.result(title=title, description=description)
+                restored = deserialize_douyin_continuation_result(
+                    serialize_douyin_continuation_result(original)
+                )
+                before = build_result_display_context(original, probe_missing_video_sizes=False)
+                after = build_result_display_context(restored, probe_missing_video_sizes=False)
+                for key in ("display_title", "display_description", "display_topics", "base_filename"):
+                    self.assertEqual(after[key], before[key], key)
+                self.assertEqual(
+                    [asset.to_download_item() for asset in restored.assets],
+                    [asset.to_download_item() for asset in original.assets],
+                )
+
+    def test_continuation_description_is_bounded_without_changing_source(self):
+        description = "\u56fe" * 2500
+        original = self.result(title="Gallery title", description=description)
+        payload = serialize_douyin_continuation_result(original)
+        restored = deserialize_douyin_continuation_result(payload)
+        self.assertEqual(restored.metadata.get("description"), description[:2000])
+        self.assertEqual(original.metadata["description"], description)
+        self.assertLessEqual(
+            len(json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")),
+            DOUYIN_CONTINUATION_MAX_CACHE_BYTES,
+        )
 
     def test_cache_cannot_swap_image_tokens_types_or_works(self):
         payload = serialize_douyin_continuation_result(self.result())
@@ -89,7 +123,8 @@ class DouyinGalleryContinuationTests(TestCase):
         coordinator = DouyinContinuationCoordinator(1, first_upgrade_wins=True)
         self.addCleanup(coordinator.abandon)
         future = Future()
-        future.set_result(self.result())
+        original = self.result(title="Gallery title", description="Full gallery caption #photos <b>detail</b>")
+        future.set_result(original)
         coordinator.capture_future(
             future, provider_name="tiantianjiexi", score_result=lambda result: (0, 0),
             is_strong_result=lambda result: False, prepare_result=lambda result: result,
@@ -107,7 +142,12 @@ class DouyinGalleryContinuationTests(TestCase):
         self.assertEqual(body["status"], "success")
         self.assertTrue(body["has_results"])
         self.assertIn("3", body["html"])
-        for asset in self.result().assets:
+        self.assertIn("Gallery title", body["html"])
+        self.assertIn("Full gallery caption", body["html"])
+        self.assertIn("#photos", body["html"])
+        self.assertIn("&lt;b&gt;detail&lt;/b&gt;", body["html"])
+        self.assertNotIn("<b>detail</b>", body["html"])
+        for asset in original.assets:
             self.assertIn(asset.asset_id, body["html"])
         self.assertNotIn("查看技术信息", body["html"])
         parse.assert_not_called()

@@ -45,11 +45,13 @@ DOUYIN_CONTINUATION_METADATA_KEYS = frozenset(
         "tiantianjiexi_candidate_count",
         "ultra_retry_after_seconds",
         "title",
+        "description",
         "title_source",
     }
 )
 DOUYIN_CONTINUATION_METADATA_STRING_LIMITS = {
     "title": 200,
+    "description": 2000,
     "title_source": 40,
 }
 
