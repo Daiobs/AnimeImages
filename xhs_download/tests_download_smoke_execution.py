@@ -3,10 +3,13 @@ from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
+import threading
+import time
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 from django.core.cache import cache
 from django.test import TransactionTestCase, override_settings
 
@@ -14,6 +17,7 @@ from contracts.network import offline_requests
 from contracts.test_backend_contracts import OfflineTransport, SOURCE, MEDIA, ADMISSION, SERVICE
 from contracts.test_inv01_douyin import (
     AWEME, NATIVE_AWEME, NATIVE_MEDIA, ULTRA_PAYLOAD, ULTRA_MEDIA,
+    ULTRA_TITLE, NATIVE_TITLE,
     SOURCE as DOUYIN_SOURCE,
 )
 from .models import ProviderAccessMode, ProviderHealthTestSetting, ProviderRuntimeSetting
@@ -25,6 +29,17 @@ from .tests_xhs_media_fidelity import (
     NOTE_URL, IMAGE_ONE, IMAGE_TWO, COVER_URL, VIDEO_URL,
     hydration_html, note_payload, image_note, video_note,
 )
+
+
+DOUYIN_IMAGE_ONE = "https://p3-sign.douyinpic.com/smoke-first.jpg"
+DOUYIN_IMAGE_TWO = "https://p3-sign.douyinpic.com/smoke-second.jpg"
+XHS_SERVICE_AUDIO = "https://sns-video-bd.xhscdn.com/smoke-audio.mp3"
+XHS_SERVICE_HLS = "https://sns-video-bd.xhscdn.com/smoke-stream.m3u8"
+DOUYIN_GALLERY = {
+    "aweme_id": AWEME, "desc": "Smoke gallery work",
+    "author": {"nickname": "Contract"},
+    "images": [{"url_list": [DOUYIN_IMAGE_ONE]}, {"url_list": [DOUYIN_IMAGE_TWO]}],
+}
 
 
 class CountedBody(BytesIO):
@@ -50,6 +65,12 @@ class SmokeTransport(OfflineTransport):
         self.media_status = 206
         self.service_size_missing = False
         self.ultra_payload = json.loads(json.dumps(ULTRA_PAYLOAD))
+        self.douyin_aweme = json.loads(json.dumps(NATIVE_AWEME))
+        self.xhs_service_payload = None
+        self.ultra_delay = 0
+        self.ultra_status = 200
+        self.ultra_finished = threading.Event()
+        self.ultra_finished.set()
 
     def answer(self, request, *, body=b"", status=200, content_type="text/html"):
         response = requests.Response()
@@ -62,9 +83,15 @@ class SmokeTransport(OfflineTransport):
 
     def send(self, request, **kwargs):
         parsed = urlsplit(request.url)
-        if request.url in {MEDIA, ULTRA_MEDIA, NATIVE_MEDIA, IMAGE_ONE, IMAGE_TWO, COVER_URL, VIDEO_URL}:
+        image_urls = {IMAGE_ONE, IMAGE_TWO, COVER_URL, DOUYIN_IMAGE_ONE, DOUYIN_IMAGE_TWO}
+        if request.url in {MEDIA, ULTRA_MEDIA, NATIVE_MEDIA, VIDEO_URL,
+                           XHS_SERVICE_AUDIO, XHS_SERVICE_HLS} | image_urls:
             self.media_requests.append(request)
-            kind = "image/jpeg" if request.url in {IMAGE_ONE, IMAGE_TWO, COVER_URL} else "video/mp4"
+            kind = "image/jpeg" if request.url in image_urls else "video/mp4"
+            if request.url == XHS_SERVICE_AUDIO:
+                kind = "audio/mpeg"
+            elif request.url == XHS_SERVICE_HLS:
+                kind = "application/vnd.apple.mpegurl"
             response = self.answer(request, body=b"\x00\x00\x00\x18ftypisom" + b"x" * 8192,
                                    status=self.media_status, content_type=kind)
             response.headers["Content-Range"] = "bytes 0-1023/8204"
@@ -76,10 +103,21 @@ class SmokeTransport(OfflineTransport):
             note = self.notes_by_url.get(request.url, self.note)
             return self.answer(request, body=hydration_html(note_payload(note, note_id=note["noteId"])).encode())
         if parsed.hostname == "aweme.snssdk.com":
-            return self.answer(request, body=json.dumps({"aweme_list": [NATIVE_AWEME]}).encode(),
+            return self.answer(request, body=json.dumps({"aweme_list": [self.douyin_aweme]}).encode(),
                                content_type="application/json")
+        if parsed.hostname in {"www.iesdouyin.com", "www.douyin.com"}:
+            return self.answer(request, body=b"<html><body>No media</body></html>")
         if request.url == SERVICE and AWEME in str(request.body):
-            return self.answer(request, body=json.dumps(self.ultra_payload).encode(), content_type="application/json")
+            self.ultra_finished.clear()
+            try:
+                time.sleep(self.ultra_delay)
+                return self.answer(request, body=json.dumps(self.ultra_payload).encode(),
+                                   status=self.ultra_status, content_type="application/json")
+            finally:
+                self.ultra_finished.set()
+        if request.url == SERVICE and self.xhs_service_payload is not None:
+            return self.answer(request, body=json.dumps(self.xhs_service_payload).encode(),
+                               content_type="application/json")
         response = super().send(request, **kwargs)
         if request.url == SERVICE and self.service_size_missing:
             payload = response.json()
@@ -186,6 +224,313 @@ class DownloadSmokeExecutionTests(TransactionTestCase):
         self.assertEqual(run.provider, "tiantianjiexi")
         self.assertTrue(run.download_smoke_details["fields"]["quality"])
         self.assertTrue(run.download_smoke_details["fields"]["size"])
+
+    @override_settings(TIANTIANJIEXI_PROVIDER_ENABLED=False)
+    def test_douyin_gallery_is_a_user_result_and_downloads_only_first_image(self):
+        self.transport.douyin_aweme = DOUYIN_GALLERY
+        run = self.execute("download_smoke_douyin")
+        self.assert_prefix(run, DOUYIN_IMAGE_ONE)
+        self.assertEqual(run.provider, "mobile_feed")
+        self.assertEqual(run.download_smoke_details.get("media_type"), "image")
+        self.assertEqual(run.download_smoke_details["fields"], {
+            "title": True, "cover": True, "quality": False, "size": False,
+        })
+        self.assertEqual(len(self.transport.parse_requests), 1)
+
+    def test_sample_name_does_not_override_actual_image_assets(self):
+        run = self.execute("download_smoke_xhs_video")
+        self.assert_prefix(run, IMAGE_ONE)
+        self.assertEqual(run.download_smoke_details["media_type"], "image")
+
+    def test_candidate_only_service_images_do_not_gain_download_authority(self):
+        self.runtime.third_party_allowed_public_platforms = "upstream:tiantianjiexi_generic"
+        self.runtime.save()
+        self.transport.note = image_note(imageList=[])
+        self.transport.xhs_service_payload = {"code": 200, "data": {
+            "title": "TianTian image work", "images": [IMAGE_ONE, IMAGE_TWO],
+        }}
+        response = self.client.get("/results/", {"q": NOTE_URL},
+                                   HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+        self.assertEqual(response.status_code, 200)
+        html = response.json()["html"]
+        self.assertNotIn('id="download-btn"', html)
+        self.assertNotIn('data-type="image"', html)
+        run = self.execute("download_smoke_xhs_video")
+        self.assertEqual(run.status, "failed")
+        self.assertEqual(run.error_code, "SMOKE_RESOURCE_MISSING")
+        self.assertEqual(run.download_smoke_details["provider"], "")
+        self.assertEqual(run.download_smoke_details["download"]["request_count"], 0)
+        self.assertEqual(self.transport.media_requests, [])
+        self.assertEqual(sum(request.url == SERVICE for request in self.transport.parse_requests), 1)
+
+    def configure_xhs_service(self, payload, *, native_images=False):
+        self.runtime.third_party_allowed_public_platforms = "upstream:tiantianjiexi_generic"
+        self.runtime.save()
+        self.transport.note = image_note() if native_images else image_note(imageList=[])
+        self.transport.xhs_service_payload = {"code": 200, "data": payload}
+
+    def public_xhs_selection(self):
+        response = self.client.get("/results/", {"q": NOTE_URL},
+                                   HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+        self.assertEqual(response.status_code, 200, response.content[:1000])
+        soup = BeautifulSoup(response.json()["html"], "html.parser")
+        picker = soup.select_one("[data-ytdlp-picker]")
+        self.assertIsNotNone(picker)
+        selected = picker.select_one("[data-picker-radio][checked]")
+        self.assertIsNotNone(selected)
+        return soup, picker, selected
+
+    def assert_browser_only_xhs_selection_is_skipped(self, payload, media_type, url):
+        self.configure_xhs_service(payload)
+        _, picker, selected = self.public_xhs_selection()
+        self.assertEqual(selected["data-kind"], media_type)
+        self.assertEqual(selected["data-can-download"], "true")
+        response = self.client.post(picker["data-selection-url"], {
+            "candidate_id": selected["value"], "resource_token": selected["data-token"],
+            "action": "download",
+        }, content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content[:1000])
+        descriptor = response.json()["item"]
+        self.assertEqual(descriptor["url"], url)
+        self.assertEqual(descriptor["type"], media_type)
+        self.assertEqual(descriptor["candidate_id"], selected["value"])
+        self.assertEqual(descriptor["provider"], "tiantianjiexi_generic")
+        self.assertTrue(descriptor["asset_id"].startswith("upstream:selection:"))
+        self.assertEqual(self.transport.media_requests, [])
+
+        # Daily must obtain a fresh result rather than reuse the public parse cache.
+        cache.clear()
+        self.transport.parse_requests.clear()
+        run = self.execute("download_smoke_xhs_video")
+        self.assertEqual(run.status, "skipped", run.download_smoke_details)
+        self.assertEqual(run.error_code, "SMOKE_BROWSER_ONLY_RESOURCE")
+        self.assertEqual(run.provider, "tiantianjiexi_generic")
+        details = run.download_smoke_details
+        self.assertEqual(details["access_scope"], "anonymous_policy")
+        self.assertEqual(details["media_type"], media_type)
+        self.assertEqual(details["stage"], "admission")
+        self.assertEqual(details["download"]["status"], "not_run")
+        self.assertEqual(details["download"]["error_code"], "SMOKE_BROWSER_ONLY_RESOURCE")
+        self.assertEqual(details["download"]["request_count"], 0)
+        self.assertEqual(details["download"]["bytes_received"], 0)
+        self.assertEqual(self.transport.media_requests, [])
+        self.assertEqual(self.transport.bodies, [])
+        self.assertEqual(sum(request.url == SERVICE for request in self.transport.parse_requests), 1)
+        self.assertNotIn(url, json.dumps(details))
+
+    def test_browser_only_service_video_action_succeeds_but_daily_skips_without_fetch(self):
+        self.assert_browser_only_xhs_selection_is_skipped({
+            "title": "Service video work",
+            "videos": [{"url": VIDEO_URL, "quality": "1080p"}],
+        }, "video", VIDEO_URL)
+
+    def test_audio_service_action_succeeds_and_daily_preserves_type_when_skipping(self):
+        self.assert_browser_only_xhs_selection_is_skipped({
+            "title": "Service audio work", "audio_url": XHS_SERVICE_AUDIO,
+        }, "audio", XHS_SERVICE_AUDIO)
+
+    def test_unavailable_hls_candidate_does_not_block_native_first_image(self):
+        self.configure_xhs_service({
+            "title": "Service stream candidate",
+            "videos": [{"url": XHS_SERVICE_HLS, "quality": "1080p"}],
+        }, native_images=True)
+        soup, picker, selected = self.public_xhs_selection()
+        self.assertEqual(selected["data-can-download"], "false")
+        self.assertEqual(selected["data-can-legacy"], "false")
+        images = soup.select('.asset-card[data-type="image"]')
+        self.assertEqual([image["data-url"] for image in images], [IMAGE_ONE, IMAGE_TWO])
+        response = self.client.post(picker["data-selection-url"], {
+            "candidate_id": selected["value"], "resource_token": selected["data-token"],
+            "action": "download",
+        }, content_type="application/json")
+        self.assertEqual(response.status_code, 409, response.content[:1000])
+        self.assertEqual(self.transport.media_requests, [])
+
+        cache.clear()
+        self.transport.parse_requests.clear()
+        run = self.execute("download_smoke_xhs_gallery")
+        self.assert_prefix(run, IMAGE_ONE)
+        self.assertEqual(run.download_smoke_details["media_type"], "image")
+        self.assertEqual(run.provider, "native")
+        self.assertEqual(sum(request.url == SERVICE for request in self.transport.parse_requests), 1)
+
+    def test_browser_only_service_video_still_obeys_visitor_download_denial(self):
+        from download_console.models import DownloadRuntimeSetting
+        self.configure_xhs_service({
+            "title": "Service video work",
+            "videos": [{"url": VIDEO_URL, "quality": "1080p"}],
+        })
+        runtime = DownloadRuntimeSetting.load()
+        runtime.visitor_video_download_enabled = False
+        runtime.save()
+        _, picker, selected = self.public_xhs_selection()
+        self.assertEqual(selected["data-can-download"], "true")
+        response = self.client.post(picker["data-selection-url"], {
+            "candidate_id": selected["value"], "resource_token": selected["data-token"],
+            "action": "download",
+        }, content_type="application/json")
+        self.assertEqual(response.status_code, 403, response.content[:1000])
+        self.assertEqual(response.json()["error_code"], "VISITOR_VIDEO_DOWNLOAD_DISABLED")
+        run = self.execute("download_smoke_xhs_video")
+        self.assertEqual(run.status, "failed", run.download_smoke_details)
+        self.assertEqual(run.error_code, "VISITOR_VIDEO_DOWNLOAD_DISABLED")
+        self.assertEqual(run.download_smoke_details["stage"], "admission")
+        self.assertEqual(run.download_smoke_details["media_type"], "video")
+        self.assertEqual(run.download_smoke_details["download"]["status"], "not_run")
+        self.assertEqual(run.download_smoke_details["download"]["request_count"], 0)
+        self.assertEqual(run.download_smoke_details["download"]["bytes_received"], 0)
+        self.assertEqual(self.transport.media_requests, [])
+
+    def test_wrong_platform_sample_is_rejected_before_any_network(self):
+        self.setting.douyin_url = SOURCE
+        run = self.execute("download_smoke_douyin")
+        self.assertEqual(run.error_code, "SAMPLE_URL_POLICY_REJECTED")
+        self.assertEqual(self.transport.parse_requests, [])
+        self.assertEqual(self.transport.media_requests, [])
+
+    @override_settings(TIANTIANJIEXI_PROVIDER_ENABLED=False)
+    def test_douyin_no_media_does_not_invent_a_selected_native_provider(self):
+        self.transport.douyin_aweme = {"aweme_id": AWEME, "images": []}
+        run = self.execute("download_smoke_douyin")
+        self.assertEqual(run.status, "failed")
+        self.assertEqual(run.download_smoke_details["provider"], "")
+        self.assertNotEqual(run.provider, "native")
+        self.assertFalse(run.download_smoke_details.get("media_type"))
+        self.assertEqual(run.download_smoke_details["download"]["request_count"], 0)
+        self.assertEqual(self.transport.media_requests, [])
+
+    def defer_douyin_service(self, *, native=True, status=200, delay=1.6):
+        self.runtime.douyin_ultra_total_timeout_seconds = 1.0
+        self.runtime.save()
+        self.transport.ultra_delay = delay
+        self.transport.ultra_status = status
+        if not native:
+            self.transport.douyin_aweme = {"aweme_id": AWEME, "images": []}
+        # Keep the final HTTP boundary installed until background provider work settles.
+        self.addCleanup(self.wait_for_deferred_service)
+
+    def wait_for_deferred_service(self):
+        self.assertTrue(self.transport.ultra_finished.wait(self.transport.ultra_delay + 2),
+                        "deferred HTTP never completed")
+        time.sleep(0.2)
+
+    def assert_douyin_not_replayed(self):
+        urls = [request.url for request in self.transport.parse_requests]
+        self.assertEqual(urls.count(SERVICE), 1, urls)
+        native = [url for url in urls if urlsplit(url).hostname == "aweme.snssdk.com"]
+        self.assertEqual(len(native), 1, urls)
+
+    def poll_public_continuation(self, token):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            response = self.client.post("/media/douyin-continuation/",
+                                        {"continuation_token": token},
+                                        content_type="application/json")
+            self.assertEqual(response.status_code, 200, response.content[:1000])
+            body = response.json()
+            if body["status"] != "continuation_pending":
+                return body
+            time.sleep(0.2)
+        self.fail("public continuation did not settle")
+
+    def assert_public_and_daily_select_late_service(self, *, native):
+        self.defer_douyin_service(native=native)
+        response = self.client.get("/results/", {"q": DOUYIN_SOURCE, "ultra_hd": "1"},
+                                   HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+        self.assertEqual(response.status_code, 200, response.content[:1000])
+        initial = response.json()
+        self.assertEqual(initial["status"], "continuation_pending", initial)
+        self.assertEqual(initial["has_results"], native, initial)
+        if native:
+            self.assertIn(NATIVE_TITLE, initial["html"])
+        self.assertNotIn(ULTRA_TITLE, initial["html"])
+        settled = self.poll_public_continuation(initial["continuation_token"])
+        self.assertEqual(settled["status"], "success", settled)
+        self.assertIn(ULTRA_TITLE, settled["html"])
+        self.assert_douyin_not_replayed()
+        self.wait_for_deferred_service()
+
+        # Repeat the same HTTP fixture as a fresh Daily parse, not a payload-cache hit.
+        cache.clear()
+        self.transport.parse_requests.clear()
+        self.transport.media_requests.clear()
+        self.transport.bodies.clear()
+        from .services import provider_download_smoke
+        with patch.object(provider_download_smoke, "parse_sample",
+                          wraps=provider_download_smoke.parse_sample) as parse:
+            run = self.execute("download_smoke_douyin")
+        self.assertEqual(parse.call_count, 1)
+        self.assert_prefix(run, ULTRA_MEDIA)
+        self.assertEqual(run.provider, "tiantianjiexi")
+        self.assertEqual(run.download_smoke_details.get("media_type"), "video")
+        self.assertTrue(all(run.download_smoke_details["fields"].values()))
+        continuation = run.download_smoke_details.get("continuation", {})
+        self.assertEqual(continuation.get("status"), "success")
+        self.assertEqual(continuation.get("error_code"), "")
+        self.assertGreater(continuation.get("poll_count", 0), 0)
+        self.assert_douyin_not_replayed()
+
+    def test_public_and_daily_empty_initial_result_both_select_late_service(self):
+        self.assert_public_and_daily_select_late_service(native=False)
+
+    def test_public_and_daily_native_initial_result_both_upgrade_to_late_service(self):
+        self.assert_public_and_daily_select_late_service(native=True)
+
+    def test_daily_keeps_native_fallback_when_continuation_fails(self):
+        self.defer_douyin_service(status=503)
+        from .services import provider_download_smoke
+        with patch.object(provider_download_smoke, "parse_sample",
+                          wraps=provider_download_smoke.parse_sample) as parse:
+            run = self.execute("download_smoke_douyin")
+        self.assertEqual(parse.call_count, 1)
+        self.assertTrue(self.transport.ultra_finished.is_set(),
+                        "Daily must consume continuation before keeping Native")
+        self.assert_prefix(run, NATIVE_MEDIA)
+        self.assertEqual(run.provider, "mobile_feed")
+        self.assertEqual(run.download_smoke_details.get("media_type"), "video")
+        self.assertTrue(run.download_smoke_details["fields"]["title"])
+        self.assertTrue(run.download_smoke_details["fields"]["cover"])
+        continuation = run.download_smoke_details.get("continuation", {})
+        self.assertEqual(continuation.get("status"), "failed")
+        self.assertEqual(continuation.get("error_code"), "DOUYIN_CONTINUATION_FAILED")
+        self.assertGreater(continuation.get("poll_count", 0), 0)
+        self.assert_douyin_not_replayed()
+
+    def test_daily_keeps_native_fallback_when_continuation_naturally_expires(self):
+        from .services import provider_download_smoke
+        from .services.douyin_continuation import (
+            DOUYIN_CONTINUATION_TTL_SECONDS, DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS,
+        )
+        delay = DOUYIN_CONTINUATION_TTL_SECONDS + DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS + 2
+        self.defer_douyin_service(delay=delay)
+        with patch.object(provider_download_smoke, "parse_sample",
+                          wraps=provider_download_smoke.parse_sample) as parse:
+            run = self.execute("download_smoke_douyin")
+        self.assertEqual(parse.call_count, 1)
+        self.assert_prefix(run, NATIVE_MEDIA)
+        self.assertEqual(run.provider, "mobile_feed")
+        continuation = run.download_smoke_details.get("continuation", {})
+        self.assertIn(continuation.get("status"), {"timeout", "failed"})
+        self.assertIn(continuation.get("error_code"), {
+            "DOUYIN_CONTINUATION_EXPIRED", "DOUYIN_CONTINUATION_NOT_FOUND",
+            "DOUYIN_CONTINUATION_TIMEOUT",
+        })
+        self.assertGreater(continuation.get("poll_count", 0), 0)
+        self.assert_douyin_not_replayed()
+
+    def test_daily_empty_fallback_preserves_terminal_continuation_failure(self):
+        self.defer_douyin_service(native=False, status=503)
+        run = self.execute("download_smoke_douyin")
+        self.assertEqual(run.status, "failed")
+        self.assertEqual(run.error_code, "DOUYIN_CONTINUATION_FAILED")
+        self.assertEqual(run.download_smoke_details["provider"], "")
+        self.assertEqual(run.download_smoke_details["download"]["request_count"], 0)
+        self.assertEqual(self.transport.media_requests, [])
+        continuation = run.download_smoke_details.get("continuation", {})
+        self.assertEqual(continuation.get("status"), "failed")
+        self.assertEqual(continuation.get("error_code"), "DOUYIN_CONTINUATION_FAILED")
+        self.assertGreater(continuation.get("poll_count", 0), 0)
+        self.assert_douyin_not_replayed()
 
     def test_daily_audit_staff_flag_does_not_grant_fallback(self):
         self.runtime.third_party_allowed_public_platforms = ""

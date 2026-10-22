@@ -197,7 +197,8 @@ class DownloadSmokeReportingTests(TestCase):
         secret = "https://private.example.test/path?token=do-not-display"
         details = smoke_details()
         details.update(platform=secret, provider=secret, raw_response=secret,
-                       access_scope=secret, error_type=secret, stage=secret)
+                       access_scope=secret, error_type=secret, stage=secret, media_type=secret,
+                       continuation={"status": secret, "error_code": secret, "poll_count": secret})
         details["fields"] = dict.fromkeys(("title", "cover", "quality", "size"), secret)
         details["download"] = dict.fromkeys(details["download"], secret)
         details["download"]["error_message"] = secret
@@ -212,6 +213,32 @@ class DownloadSmokeReportingTests(TestCase):
             self.assertIn("fields: title=- cover=- quality=- size=-", output)
             self.assertIn("status=- error_code=- http_status=-", output)
         self.assertEqual(details, before)
+
+    def test_actual_resource_kind_and_continuation_are_reported_without_payloads(self):
+        details = smoke_details()
+        details.update(media_type="image", continuation={
+            "status": "failed", "error_code": "DOUYIN_CONTINUATION_FAILED", "poll_count": 1,
+        })
+        run = self.make_run(details)
+        for output in (self.render_report([run]), self.deliver([run])):
+            self.assertIn("media_type=image", output)
+            self.assertIn("continuation: status=failed error_code=DOUYIN_CONTINUATION_FAILED poll_count=1", output)
+            self.assertIn("download: status=success", output)
+
+    def test_browser_only_probe_is_explicitly_unverified_and_never_recovery(self):
+        previous = self.make_run(smoke_details(status="failed", error_code="MEDIA_HTTP_403"))
+        self.deliver([previous])
+        details = smoke_details(status="not_run", error_code="SMOKE_BROWSER_ONLY_RESOURCE",
+                                request_count=0, bytes_received=0, http_status=None)
+        details["media_type"] = "video"
+        skipped = self.make_run(details, status=ProviderHealthTestStatus.SKIPPED)
+        self.assertEqual(plan_notification_events(skipped.suite_run, [skipped], self.setting), ())
+        self.assertEqual(len(mail.outbox), 1)
+        for surface in ("daily", "history", "card"):
+            output = self.render_report([skipped], surface=surface)
+            self.assertIn("status=not_run error_code=SMOKE_BROWSER_ONLY_RESOURCE", output)
+            self.assertIn("bytes_received=0 request_count=0", output)
+            self.assertNotIn("download: status=success", output)
 
     def test_parse_failure_and_optional_scope_use_only_recorded_safe_values(self):
         details = {
