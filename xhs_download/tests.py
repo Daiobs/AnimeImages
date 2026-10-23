@@ -7307,6 +7307,11 @@ class XhsDownloadViewTests(TestCase):
             requires_merge=True,
             requires_cookie=True,
             browser_direct_fetch_safe=False,
+            requires_context=True,
+            ip_bound=True,
+            required_headers=["Referer"],
+            headers={"Cookie": "client-forged-secret"},
+            http_headers={"Authorization": "client-forged-auth"},
         )
 
         route = decide_download_route(request, [item], requested_mode="auto")
@@ -7316,7 +7321,69 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
         self.assertTrue(route["items"][0]["browser_direct_fetch_safe"])
         self.assertFalse(route["items"][0]["requires_merge"])
-        self.assertFalse(route["items"][0]["requires_cookie"])
+        self.assertIsNone(route["items"][0]["requires_cookie"])
+        self.assertEqual(route["items"][0]["request_context_status"], "no_known_requirement")
+        self.assertEqual(route["items"][0]["download_strategy"], "browser_streaming")
+        self.assertNotIn("client-forged", json.dumps(route))
+
+    def test_upstream_route_recovers_private_context_instead_of_client_flags(self):
+        from .services.upstream_delivery import _issue_assets
+
+        request = RequestFactory().post("/media/download-images/")
+        restrictions = (
+            ({"Cookie": "issuer-private-cookie"}, {}),
+            ({"Authorization": "issuer-private-auth"}, {}),
+            ({"X-Media-Token": "issuer-private-token"}, {}),
+            ({"Referer": "https://source.example/"}, {"required_headers": ["Referer"]}),
+            ({}, {"requires_cookie": True}),
+            ({}, {"requires_context": True}),
+            ({}, {"ip_bound": True}),
+            ({}, {"headers_present": True}),
+        )
+        for headers, context in restrictions:
+            with self.subTest(headers=tuple(headers), context=context):
+                asset = _issue_assets((MediaAsset(
+                    media_type="video", platform="upstream", url="https://cdn.example.org/private.mp4",
+                    headers=headers, request_context=context,
+                ),), match={"provider_id": "yt_dlp_generic"}, source_url="https://source.example/work")[0]
+                item = {**asset.to_download_item(), "headers": {}, "http_headers": {},
+                        "required_headers": [], "requires_cookie": False, "requires_context": False,
+                        "ip_bound": False, "headers_present": False, "browser_direct_fetch_safe": True}
+
+                route = decide_download_route(request, [item], requested_mode="auto")
+
+                self.assertEqual(route["route_type"], ROUTE_BLOCKED)
+                self.assertFalse(route["items"][0]["browser_direct_fetch_safe"])
+                self.assertEqual(route["server_egress_estimated_bytes"], 0)
+                self.assertNotIn("issuer-private", json.dumps(route))
+
+    def test_upstream_route_drops_forged_restrictions_but_requires_private_authority(self):
+        from .services.upstream_delivery import _issue_assets
+
+        request = RequestFactory().post("/media/download-images/")
+        asset = _issue_assets((MediaAsset(
+            media_type="video", platform="upstream", url="https://cdn.example.org/video.mp4",
+            headers={"User-Agent": "issuer-default", "Referer": "https://source.example/"},
+        ),), match={"provider_id": "yt_dlp_generic"}, source_url="https://source.example/work")[0]
+        item = {**asset.to_download_item(), "size_bytes": 2000, "requires_merge": True,
+                "requires_cookie": True, "browser_direct_fetch_safe": False, "ip_bound": True,
+                "http_headers": {"Authorization": "client-forged-auth"},
+                "required_headers": ["Referer"], "has_drm": True, "protocol": "m3u8_native"}
+
+        route = decide_download_route(request, [item], requested_mode="auto")
+
+        self.assertEqual(route["route_type"], ROUTE_DIRECT)
+        self.assertTrue(route["items"][0]["browser_direct_fetch_safe"])
+        self.assertEqual(route["items"][0]["download_strategy"], "browser_streaming")
+        self.assertIsNone(route["items"][0]["requires_cookie"])
+        self.assertEqual(route["items"][0]["request_context_status"], "no_known_requirement")
+        self.assertEqual(route["server_egress_estimated_bytes"], 0)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
+        self.assertNotIn("client-forged", json.dumps(route))
+        cache.clear()
+        expired = decide_download_route(request, [item], requested_mode="auto")
+        self.assertEqual(expired["route_type"], ROUTE_BLOCKED)
+        self.assertFalse(expired["items"][0]["browser_direct_fetch_safe"])
 
     def test_download_route_mixed_items_use_zip(self):
         request = RequestFactory().post("/media/download-images/")

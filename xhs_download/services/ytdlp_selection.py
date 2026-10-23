@@ -15,11 +15,7 @@ PROVIDER = 'yt_dlp_generic'
 SCHEMA = 'ytdlp_selected_format_v1'
 VIDEO_EXTENSIONS = frozenset({'mp4', 'webm', 'mov', 'm4v', 'mkv'})
 AUDIO_EXTENSIONS = frozenset({'m4a', 'mp3', 'aac', 'ogg', 'opus', 'flac', 'wav', 'weba', 'webm'})
-CONTEXT_POLICY_REVISION = 2
-# These preferences can be omitted on a credential-free browser attempt. In
-# particular Referer, Origin, Cookie and Authorization are NOT in this set.
-OPTIONAL_HEADERS = frozenset({'user-agent', 'accept', 'accept-language', 'accept-encoding', 'connection',
-                              'sec-fetch-mode'})
+CONTEXT_POLICY_REVISION = 3
 LIMITATIONS = {
     'stream': '这是流媒体格式，当前选择器不合并分片；可在技术详情中复制来源。',
     'merge': '此格式需要合并音视频；当前选择器不将它当作完整文件下载。',
@@ -63,13 +59,12 @@ def public_work(work):
             'cover_available': bool(work.get('cover_url'))}
 
 
-def context_required(headers, *, headers_present=False, requires_cookie=False):
-    if requires_cookie:
-        return True
-    if headers_present and not headers:
-        return True  # The importer knows headers exist but did not retain them.
-    return bool(headers and (not isinstance(headers, dict)
-                or any(str(key).lower() not in OPTIONAL_HEADERS for key in headers)))
+def context_required(headers, *, headers_present=False, requires_cookie=None,
+                     required_headers=(), requires_context=None, ip_bound=None):
+    from .request_context import request_context_compatible
+    return not request_context_compatible(
+        headers, headers_present=headers_present, requires_cookie=requires_cookie,
+        required_headers=required_headers, requires_context=requires_context, ip_bound=ip_bound)
 
 
 def capability(candidate):
@@ -358,12 +353,11 @@ def selection_expires_at(record):
 def selected_descriptor(record):
     """Fresh browser-only authority: no caller-supplied URL or format facts."""
     from .upstream_delivery import safe_resource_url
-    from .provider_strategy import browser_transport_hint
+    from .provider_strategy import browser_transport_hint, media_request_context
     public = record.get('public', {})
     if (record.get('provider_id') != PROVIDER or not isinstance(public, dict)
             or public.get('provider_id') != PROVIDER or not capability(public)['can_download']
-            or context_required(record.get('headers'), headers_present=record.get('headers_present'),
-                                requires_cookie=record.get('requires_cookie'))):
+            or context_required(record.get('headers'), **media_request_context(record))):
         raise ValueError('selected_format_not_direct')
     url = safe_resource_url(record.get('url'))
     if not url:
@@ -374,7 +368,8 @@ def selected_descriptor(record):
             'type': public['media_type'], 'provider': PROVIDER, 'source_platform': 'upstream',
             'asset_id': 'upstream:selection:' + record['candidate_id'],
             'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
-            'requires_merge': False, 'requires_cookie': False,
+            'requires_merge': False, 'requires_cookie': record.get('requires_cookie'),
+            'request_context_status': 'no_known_requirement',
             'audio_tracks': public.get('audio_tracks'), 'video_tracks': public.get('video_tracks'),
             'size_bytes': number(public.get('size_bytes')) or 0,
             'size_is_estimate': bool(public.get('size_is_estimate'))}

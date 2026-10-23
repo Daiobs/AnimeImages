@@ -1,5 +1,7 @@
 from urllib.parse import urlsplit
 from time import time
+import ipaddress
+import re
 
 
 DOWNLOAD_STRATEGY_BROWSER_BLOB = "browser_blob"
@@ -15,15 +17,7 @@ FALLBACK_SERVER_ZIP = "server_zip"
 FALLBACK_BROWSER_BLOB = "browser_blob"
 FALLBACK_NONE = "none"
 
-BROWSER_BLOB_VIDEO_PROVIDERS = {
-    "kukutool",
-    "tiantianjiexi",
-    "kukutool_generic",
-    "tiantianjiexi_generic",
-}
-BROWSER_DIRECT_FETCH_SAFE_PROVIDERS = frozenset({"kukutool", "tiantianjiexi"})
 SERVER_MERGE_PROVIDERS = {"youtube_merge", "yt_dlp_merge"}
-SERVER_ATTACHMENT_VIDEO_PROVIDERS = {"yt_dlp_generic"}
 
 
 def normalize_provider(value):
@@ -35,12 +29,11 @@ def normalize_media_type(value):
 
 
 def browser_streaming_resource_url_is_allowed(value):
-    """The reviewed initial SW hosts, without DNS or provider-specific priority."""
-    from .platforms.douyin_media_policy import is_allowed_douyin_media_hostname
-    from .platforms.xiaohongshu import xhs_native_video_url_is_browser_streaming_allowed
-    from .platforms.xhs_tiantian_media_policy import xhs_tiantian_media_url_is_allowed
-    from .common import host_matches
+    """Transport syntax only, after source admission and resource authorization.
 
+    Server requests additionally validate and pin DNS at every hop. A browser
+    response still has to pass CORS, MIME and size checks; this is no CORS grant.
+    """
     url = str(value or "")
     try:
         parsed = urlsplit(url)
@@ -52,25 +45,49 @@ def browser_streaming_resource_url_is_allowed(value):
             return False
     except ValueError:
         return False
+    host = (parsed.hostname or "").lower()
+    if (not host or len(host) > 253 or host.endswith('.')
+            or re.search(r'(?:^|\.)(?:localhost|local|internal|test|invalid|home|lan)$', host)):
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        return bool('.' in host and all(re.fullmatch(
+            r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in host.split('.')))
+
+
+def browser_video_access_is_compatible(item):
+    """File and access facts, independent of parser labels and authorization."""
+    from .request_context import request_context_compatible
     return bool(
-        is_allowed_douyin_media_hostname(parsed.hostname, existing_suffixes=("365yg.com", "douyinvod.com"))
-        or xhs_native_video_url_is_browser_streaming_allowed(url)
-        or xhs_tiantian_media_url_is_allowed(url)
-        or host_matches(parsed.hostname, ("bilivideo.com", "bilivideo.cn"))
+        item.get('type') == 'video'
+        and browser_streaming_resource_url_is_allowed(item.get('url'))
+        and not any(item.get(key) for key in (
+            'requires_merge', 'requires_cookie', 'has_drm', 'requires_context',
+            'download_context_required', 'ip_bound'))
+        and item.get('video_tracks') != 'absent'
+        and item.get('delivery_state') not in {'streaming_media', 'separate_media_tracks', 'silent_video'}
+        and not any(marker in str(item.get('protocol') or '').lower() for marker in ('m3u8', 'dash'))
+        and request_context_compatible(item.get('http_headers') or item.get('headers'),
+                                       **media_request_context(item))
     )
+
+
+def media_request_context(item):
+    return {key: item[key] for key in (
+        'required_headers', 'requires_cookie', 'requires_context', 'ip_bound', 'headers_present',
+    ) if key in item}
 
 
 def browser_transport_hint(item):
     """Presentation only: callers must establish browser authority first."""
-    if (item.get("type") != "video" or item.get("browser_direct_fetch_safe") is not True
-            or item.get("requires_merge") is not False or item.get("requires_cookie") is not False
-            or any(item.get(key) for key in ("has_drm", "requires_context", "download_context_required"))
-            or item.get("video_tracks") == "absent"):
+    if item.get("browser_direct_fetch_safe") is not True or not browser_video_access_is_compatible(item):
         return {}
-    from .quality import native_attachment_expiry, native_request_context_is_compatible
-    compatible = all(native_request_context_is_compatible(item.get(key)) for key in ('headers', 'http_headers'))
-    expires_at = native_attachment_expiry(item.get('url')) if compatible else 0
-    if expires_at and browser_streaming_resource_url_is_allowed(item.get('url')):
+    from .quality import browser_response_evidence, native_attachment_expiry
+    expires_at = native_attachment_expiry(
+        item.get('url'), item.get('http_headers') or item.get('headers'), **media_request_context(item))
+    if expires_at:
         selection_expiry = item.get('selection_expires_at')
         if selection_expiry is not None:
             try:
@@ -80,11 +97,36 @@ def browser_transport_hint(item):
         if expires_at > time() * 1000:
             return {'download_strategy': DOWNLOAD_STRATEGY_BROWSER_NATIVE,
                     'fallback_strategy': FALLBACK_NONE, 'native_download_expires_at': expires_at}
-    streaming = browser_streaming_resource_url_is_allowed(item.get("url"))
-    return {
-        "download_strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING if streaming else DOWNLOAD_STRATEGY_BROWSER_BLOB,
-        "fallback_strategy": FALLBACK_BROWSER_BLOB if streaming else FALLBACK_NONE,
+    hint = {
+        "download_strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
+        "fallback_strategy": FALLBACK_BROWSER_BLOB,
     }
+    evidence = browser_response_evidence(
+        item.get('url'), item.get('http_headers') or item.get('headers'), **media_request_context(item))
+    if evidence and browser_streaming_resource_url_is_allowed(evidence[0]):
+        final_url, response_expiry = evidence
+        try:
+            response_expiry = min(response_expiry, int(item.get('selection_expires_at') or response_expiry))
+        except (TypeError, ValueError, OverflowError):
+            response_expiry = 0
+        if response_expiry > time() * 1000:
+            hint['browser_response_hosts'] = list(dict.fromkeys((
+                urlsplit(item['url']).hostname, urlsplit(final_url).hostname)))
+            hint['browser_response_hosts_expires_at'] = response_expiry
+    return hint
+
+
+def prepare_browser_transport(item, *, request_context=None):
+    """Called only after action authorization/limits, for this selected file."""
+    from .quality import ensure_native_attachment_evidence
+    context = request_context or {}
+    facts = {**item, **media_request_context(context),
+             'headers': context.get('http_headers') or context.get('headers') or {}}
+    if item.get('browser_direct_fetch_safe') is True and browser_video_access_is_compatible(facts):
+        ensure_native_attachment_evidence(
+            item['url'], facts['headers'], authorized_resource=True,
+            **media_request_context(facts))
+    return {**item, **browser_transport_hint(facts)}
 
 
 def build_download_strategy(asset, *, result_platform="", result_metadata=None):
@@ -101,19 +143,9 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
             "cors_expected": True,
             "browser_direct_fetch_safe": False,
             "requires_merge": False,
-            "requires_cookie": False,
+            "requires_cookie": (getattr(asset, 'request_context', {}) or {}).get('requires_cookie'),
             "strategy_label": "下载",
         }
-    is_xhs_tiantian_video = bool(
-        result_platform == "xiaohongshu"
-        and effective_provider == "tiantianjiexi_generic"
-        and (result_metadata or {}).get("xhs_tiantian_hybrid_status") == "success"
-    )
-    is_xhs_native_video = bool(
-        result_platform == "xiaohongshu"
-        and media_type == "video"
-        and effective_provider in {"", "native"}
-    )
 
     if media_type == "image":
         is_parsehub_xhs_image = effective_provider == "parsehub_xhs_images"
@@ -146,77 +178,38 @@ def build_download_strategy(asset, *, result_platform="", result_metadata=None):
         }
 
     # Transport is a property of the file's access conditions, not its parser.
-    headers = getattr(asset, "headers", {}) or {}
-    if (media_type == "video" and browser_streaming_resource_url_is_allowed(asset.url)
-            and not any(str(key).lower() in {"cookie", "authorization", "proxy-authorization"}
-                        and value for key, value in headers.items())):
+    file_facts = {'type': media_type, 'url': asset.url,
+                  'headers': getattr(asset, 'headers', {}) or {},
+                  **(getattr(asset, 'request_context', {}) or {})}
+    if browser_video_access_is_compatible(file_facts):
         return {
             "download_strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
             "fallback_strategy": FALLBACK_BROWSER_BLOB,
             "cors_expected": True,
             "browser_direct_fetch_safe": True,
             "requires_merge": False,
-            "requires_cookie": False,
+            "requires_cookie": file_facts.get('requires_cookie'),
+            "request_context_status": "no_known_requirement",
             "strategy_label": "浏览器下载",
         }
 
-    if media_type == "video" and (is_xhs_tiantian_video or is_xhs_native_video):
+    if media_type == "video" and urlsplit(asset.url).scheme == 'http':
         return {
-            "download_strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
-            "fallback_strategy": FALLBACK_BROWSER_BLOB,
-            "cors_expected": True,
-            "browser_direct_fetch_safe": True,
-            "requires_merge": False,
-            "requires_cookie": False,
-            "strategy_label": "浏览器下载",
+            'download_strategy': DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
+            'fallback_strategy': FALLBACK_NONE, 'cors_expected': False,
+            'browser_direct_fetch_safe': False, 'requires_merge': False,
+            'requires_cookie': file_facts.get('requires_cookie'),
+            'strategy_label': '已有 HTTP 附件路径',
         }
-
-    if effective_provider in BROWSER_BLOB_VIDEO_PROVIDERS:
-        browser_direct_fetch_safe = (
-            effective_provider in BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
-        )
-        return {
-            "download_strategy": (
-                DOWNLOAD_STRATEGY_BROWSER_STREAMING
-                if browser_direct_fetch_safe
-                else DOWNLOAD_STRATEGY_SERVER_ATTACHMENT
-            ),
-            "fallback_strategy": (
-                FALLBACK_BROWSER_BLOB
-                if browser_direct_fetch_safe
-                else FALLBACK_SERVER_ATTACHMENT
-            ),
-            "cors_expected": browser_direct_fetch_safe,
-            "browser_direct_fetch_safe": browser_direct_fetch_safe,
-            "requires_merge": False,
-            "requires_cookie": False,
-            "strategy_label": (
-                "浏览器下载"
-                if browser_direct_fetch_safe
-                else "服务端可观测下载"
-            ),
-        }
-
-    if effective_provider in SERVER_ATTACHMENT_VIDEO_PROVIDERS:
-        return {
-            "download_strategy": DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
-            "fallback_strategy": FALLBACK_NONE,
-            "cors_expected": False,
-            "browser_direct_fetch_safe": False,
-            "requires_merge": False,
-            "requires_cookie": False,
-            "strategy_label": "服务端单文件下载",
-        }
-
     if media_type == "video":
         return {
             "download_strategy": DOWNLOAD_STRATEGY_BROWSER_DIRECT,
-            "fallback_strategy": FALLBACK_SERVER_ATTACHMENT,
+            "fallback_strategy": FALLBACK_NONE,
             "cors_expected": False,
-            "browser_direct_fetch_safe": not bool(effective_provider),
-            "requires_merge": False,
-            "requires_cookie": False,
-            "strategy_label": "视频直链优先",
+            "browser_direct_fetch_safe": False,
+            "requires_merge": file_facts.get('requires_merge'),
+            "requires_cookie": file_facts.get('requires_cookie'),
+            "strategy_label": "此资源的访问条件暂不支持浏览器保存",
         }
 
     return {
@@ -236,13 +229,13 @@ def build_download_strategy_matrix():
             "source": "抖音天天解析",
             "strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
             "fallback": FALLBACK_BROWSER_BLOB,
-            "note": "浏览器流式保存源文件；仅在任务启动前能力不可用时回退浏览器内存保存，不转服务器中转。",
+            "note": "完整视频按资源条件优先原生附件，否则使用已有浏览器流式交付；不按来源强制传输方式。",
         },
         {
             "source": "抖音 KuKuTool",
             "strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
             "fallback": FALLBACK_BROWSER_BLOB,
-            "note": "普通视频默认由浏览器流式保存；服务端不传输媒体正文。",
+            "note": "与其他已授权完整视频共用原生附件／浏览器流式判断；服务端不传输媒体正文。",
         },
         {
             "source": "小红书图片",
@@ -258,9 +251,9 @@ def build_download_strategy_matrix():
         },
         {
             "source": "yt-dlp 长尾视频",
-            "strategy": DOWNLOAD_STRATEGY_SERVER_ATTACHMENT,
-            "fallback": FALLBACK_NONE,
-            "note": "平台 headers/签名差异较大，默认服务端处理更稳。",
+            "strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING,
+            "fallback": FALLBACK_BROWSER_BLOB,
+            "note": "完整文件按最终附件证据和实际访问条件选择原生或浏览器流式；分离轨与必要上下文另行判断。",
         },
         {
             "source": "gallery-dl 图集",

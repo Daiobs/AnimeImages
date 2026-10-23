@@ -1359,6 +1359,7 @@ class TianTianJieXiResultNormalizer:
 
     def normalize(self, *, rule, platform_name, source_url, payload):
         from ..service_format_selection import attach_service_picker
+        from ..provider_strategy import media_request_context
         if not isinstance(payload, dict):
             raise ValueError("天天解析结果格式无效")
         payload = filter_service_format_rows(self.normalize_payload(payload), rule)
@@ -1410,6 +1411,8 @@ class TianTianJieXiResultNormalizer:
                     cover_preview_url=cover_url,
                     quality_label=resource["quality"],
                     size_bytes=resource["size"],
+                    headers=resource.get('http_headers') or resource.get('headers') or {},
+                    request_context=media_request_context(resource),
                     **self.build_provider_asset_fields(
                         rule,
                         source_url,

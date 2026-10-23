@@ -66,7 +66,14 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
                 break
             headers[name] = value
     headers_present = bool(supplied_headers) or metadata.get('headers_present') is True
-    requires_cookie = metadata.get('requires_cookie') is True or any(name.lower() == 'cookie' for name in headers)
+    requires_cookie = metadata.get('requires_cookie')
+    if any(name.lower() == 'cookie' and value for name, value in headers.items()):
+        requires_cookie = True
+    from .provider_strategy import media_request_context
+    from .ytdlp_selection import context_required
+    request_context = {**media_request_context(metadata),
+                       'headers_present': headers_present, 'requires_cookie': requires_cookie}
+    needs_context = context_required(supplied_headers, **request_context)
     protocol = metadata.get('protocol')
     path = urlsplit(url).path.lower()
     if not protocol:
@@ -95,13 +102,11 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
         'acodec': safe_public_text(metadata.get('acodec'), 80) or None,
         'size_is_estimate': metadata['size_is_estimate'] if type(metadata.get('size_is_estimate')) is bool else
                             not bool(metadata.get('filesize')) and bool(metadata.get('filesize_approx')),
-        'requires_context': headers_present or requires_cookie,
+        'requires_context': needs_context,
         'headers_present': headers_present, 'requires_cookie': requires_cookie,
     }
     if provider == 'yt_dlp_generic':
-        from .ytdlp_selection import context_required
-        public['download_context_required'] = context_required(
-            supplied_headers, headers_present=headers_present, requires_cookie=requires_cookie)
+        public['download_context_required'] = needs_context
         public['has_drm'] = metadata.get('has_drm') is True
         public['dynamic_range'] = safe_public_text(metadata.get('dynamic_range'), 30) or None
         public['audio_bitrate'] = _number(metadata.get('abr'))
@@ -132,6 +137,7 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
         'source_digest': sha256(source_url.encode()).hexdigest(),
         'provider_id': provider, 'public': public, 'match': dict(match or {'provider_id': provider}),
         'headers': headers, 'headers_present': headers_present, 'requires_cookie': requires_cookie,
+        **request_context,
         'expires_at': time.time() + TTL,
     }
     if provider in {'tiantianjiexi_generic', 'kukutool_generic', 'tiantianjiexi', 'kukutool'}:

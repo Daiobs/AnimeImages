@@ -15,6 +15,7 @@ from .assets import MediaAsset, ParseResult
 from .common import XhsParseError, clean_filename, validate_public_download_url
 from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid, provider_manifest_expires_at
 from .provider_access import UPSTREAM_PROVIDER_IDS
+from .provider_strategy import media_request_context
 from .platforms.gallerydl_generic import media_type_from_metadata, extension_from_url, VIDEO_EXTENSIONS
 from .platforms.ytdlp_generic import (
     YtDlpResultNormalizer, format_url_is_direct_http,
@@ -77,6 +78,13 @@ def upstream_manifest_item_is_allowed(item):
     return _authorized_resource_record(item) is not None
 
 
+def upstream_resource_context(item):
+    record = _authorized_resource_record(item)
+    if record is None:
+        return {'requires_context': True}
+    return {**record.get('request_context', {}), 'headers': record.get('headers', {})}
+
+
 def upstream_video_resource_binding(item):
     """Project original issuer authority; reading a route never renews it."""
     record = _authorized_resource_record(item)
@@ -110,6 +118,7 @@ def _issue_assets(assets, *, match, source_url):
         token = build_provider_manifest_token(**fields, url=asset.url, media_type=asset.media_type)
         bound = replace(asset, **fields, provider_manifest_token=token)
         record = bound.to_download_item()
+        record.update(headers=dict(asset.headers), request_context=dict(asset.request_context))
         if asset.media_type == 'video':
             record['expires_at'] = min(time() + RESOURCE_TTL, provider_manifest_expires_at(token))
         # Only issuer-produced exact URLs enter this cache. No client-supplied host grant.
@@ -167,7 +176,9 @@ class _UnboundVideoNormalizer(YtDlpResultNormalizer):
             candidates.append(dict(
                 url=url, quality_label=str(item.get('format_note') or item.get('format_id') or 'video'),
                 size_bytes=integer_value(item.get('filesize') or item.get('filesize_approx')),
-                size_is_estimate=ytdlp_size_is_estimate(item), score=ytdlp_format_score(item)))
+                size_is_estimate=ytdlp_size_is_estimate(item), score=ytdlp_format_score(item),
+                headers=dict(item.get('http_headers') or payload.get('http_headers') or {}),
+                request_context=media_request_context({**payload, **item})))
         if not candidates:
             for code in ('unknown_media_tracks', 'streaming_media', 'separate_media_tracks'):
                 if code in states:
@@ -247,7 +258,9 @@ def _normalize_downloadable_result(payload, *, match, source_url):
                 url_ext = extension_from_url(url)
                 ext = url_ext if f'.{url_ext}' in VIDEO_EXTENSIONS else 'mp4'
             assets.append(MediaAsset(media_type=media_type, url=url, platform='third_party',
-                                     preview_url=url if media_type == 'image' else '', ext=ext))
+                                     preview_url=url if media_type == 'image' else '', ext=ext,
+                                     headers=dict(metadata.get('http_headers') or metadata.get('headers') or {}),
+                                     request_context=media_request_context(metadata)))
             if len(assets) > MAX_ASSETS:
                 raise XhsParseError('上游图片结果超出单条内容限制。')
     checked = []
@@ -255,7 +268,7 @@ def _normalize_downloadable_result(payload, *, match, source_url):
         if not safe_resource_url(asset.url):
             continue
         cover = safe_resource_url(asset.cover_url) if asset.cover_url else ''
-        checked.append(replace(asset, cover_url=cover, cover_preview_url=cover, headers={}))
+        checked.append(replace(asset, cover_url=cover, cover_preview_url=cover))
     if not checked:
         if limited_media_count:
             raise UpstreamMediaError('unknown_media_tracks')

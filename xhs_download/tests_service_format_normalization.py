@@ -207,7 +207,7 @@ class ServiceFormatNormalizationTests(SimpleTestCase):
     def test_mixed_header_aliases_and_parent_restrictions_reject_download(self):
         from .services.service_format_selection import capability, selected_descriptor
         restrictions = (
-            {'headers': {'Referer': SOURCE}},
+            {'headers': {'Referer': SOURCE}, 'required_headers': ['Referer']},
             {'headers': {'Cookie': 'synthetic=not-a-real-account'}},
             {'http_headers': {'Authorization': 'synthetic-only'}},
             {'requires_cookie': True}, {'requires_context': True},

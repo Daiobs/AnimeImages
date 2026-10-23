@@ -36,6 +36,39 @@ function response(content, source, type = "video/mp4", overrides = {}) {
         body: bytes.stream(), blob: async () => bytes, ...overrides};
 }
 
+test("direct action descriptors preserve unknown Cookie facts only with explicit no-known-requirement status", async () => {
+    for (const requires_cookie of [false, null, undefined]) {
+        const media = item("fmt720", "video", {requires_cookie, request_context_status: "no_known_requirement",
+            download_strategy: "browser_streaming"});
+        if (requires_cookie === undefined) delete media.requires_cookie;
+        const before = JSON.stringify(media);
+        let actions = 0;
+        const received = await picker.descriptor(root, selected(), "download", {documentObject, windowObject: win,
+            fetchImpl: async (_url, options) => {
+                actions += 1;
+                assert.equal(JSON.parse(options.body).action, "download");
+                return {ok: true, json: async () => ({status: "success", item: media})};
+            }});
+        assert.equal(received, media);
+        assert.equal(received.requires_cookie, requires_cookie);
+        assert.equal(JSON.stringify(media), before);
+        assert.equal(actions, 1);
+    }
+    for (const changes of [
+        {requires_cookie: null}, {requires_cookie: undefined},
+        {requires_cookie: null, request_context_status: "unknown"},
+        {requires_cookie: null, request_context_status: "required"},
+        {requires_cookie: false, request_context_status: "required"},
+        ...[true, "false", 0, "unknown"].map(requires_cookie => ({requires_cookie,
+            request_context_status: "no_known_requirement"})),
+        {requires_cookie: null, request_context_status: "no_known_requirement", browser_direct_fetch_safe: false},
+    ]) {
+        await assert.rejects(picker.descriptor(root, selected(), "download", {documentObject, windowObject: win,
+            fetchImpl: async () => ({ok: true, json: async () => ({status: "success", item: item("fmt720", "video", changes)})}),
+        }), /返回格式/);
+    }
+});
+
 for (const provider of LEGACY_SERVICE_PROVIDERS) {
     test(`${provider} legacy delivery is exact-candidate video only and never an ordinary fetch grant`, async () => {
         const selection = {...serviceSelection(provider), canLegacy: true, legacyAssetId: "third_party:source:video:1"};
@@ -194,8 +227,7 @@ for (const provider of SERVICE_PROVIDERS) {
                 assert.equal(calls, 1);
             }
         }
-        for (const change of [{selection_schema: picker.SCHEMA}, {selection_schema: ""},
-            {candidate_id: ""}, {browser_upstream_bound: false}, {source_platform: ""},
+        for (const change of [{candidate_id: ""}, {browser_upstream_bound: false}, {source_platform: ""},
             {requires_cookie: true}, {requires_merge: true}, {browser_direct_fetch_safe: false}]) {
             assert.equal(ordinary.isOrdinaryMediaItem(serviceItem(provider, "service720", "video", change)), false);
         }
@@ -392,9 +424,13 @@ test("switching two selected video descriptors uses the selected URL and no serv
     for (const id of ["1080", "720"]) {
         const video = item(id);
         const saved = await ordinary.download(video, {filename: video.filename,
-            fetchImpl: async (url) => { seen.push(url); return response(id, url); },
-            handoffBlob: async (blob, filename) => { assert.equal(await blob.text(), id); assert.equal(filename, id + ".mp4"); },
-            streamingClient: {capabilityAvailable() { assert.fail("bound selection must not switch to server/other transport"); }},
+            fetchImpl: () => assert.fail("No page media fetch"),
+            handoffBlob: () => assert.fail("No Blob handoff"),
+            streamingClient: {capabilityAvailable: () => true, async start(media) {
+                seen.push(media.url);
+                assert.equal(media.filename, id + ".mp4");
+                return {downloadId: id, completion: Promise.resolve({filename: media.filename, receivedBytes: id.length})};
+            }},
         });
         assert.equal(saved.receivedBytes, id.length);
     }

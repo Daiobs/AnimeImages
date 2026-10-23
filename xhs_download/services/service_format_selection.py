@@ -22,13 +22,12 @@ def public_service_work(work):
 
 
 def candidate_facts(metadata, url, kind):
+    from .provider_strategy import media_request_context
     legacy = metadata.get('_service_legacy_item') or {}
     return {
         'service_file_eligible': metadata.get('_service_picker_issued') is True,
-        'download_context_required': metadata.get('requires_context') is True or picker.context_required(
-            metadata.get('http_headers') or metadata.get('headers'),
-            headers_present=bool(metadata.get('headers_present')),
-            requires_cookie=metadata.get('requires_cookie') is True),
+        'download_context_required': picker.context_required(
+            metadata.get('http_headers') or metadata.get('headers'), **media_request_context(metadata)),
         'has_drm': metadata.get('has_drm') is True,
         'same_resource_labels': metadata.get('_same_resource_labels') is True,
         'legacy_asset_id': legacy.get('asset_id', ''),
@@ -367,11 +366,10 @@ def selected_legacy_descriptor(record):
 
 def selected_descriptor(record):
     from .upstream_delivery import safe_resource_url
-    from .provider_strategy import browser_transport_hint, browser_streaming_resource_url_is_allowed
+    from .provider_strategy import browser_transport_hint, browser_streaming_resource_url_is_allowed, media_request_context
     public = record.get('public', {})
     if (public.get('service_file_eligible') is not True or not capability(public)['can_download'] or picker.context_required(
-            record.get('headers'), headers_present=record.get('headers_present'),
-            requires_cookie=record.get('requires_cookie'))):
+            record.get('headers'), **media_request_context(record))):
         raise ValueError('service_format_not_direct')
     link = selected_link_descriptor(record)
     if not safe_resource_url(link['url']):
@@ -394,14 +392,16 @@ def selected_descriptor(record):
         item.pop('selection_delivery', None)
         item = {**item, 'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
                 'selection_expires_at': selection_expires_at,
-                'requires_merge': False, 'requires_cookie': False,
+                'requires_merge': False, 'requires_cookie': record.get('requires_cookie'),
+                'request_context_status': 'no_known_requirement',
                 'size_bytes': picker.number(public.get('size_bytes')) or 0,
                 'size_is_estimate': bool(public.get('size_is_estimate'))}
         return {**item, **browser_transport_hint(item)}
     item = {**link, 'source_platform': 'upstream', 'asset_id': 'upstream:selection:' + record['candidate_id'],
             'selection_expires_at': selection_expires_at,
             'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
-            'requires_merge': False, 'requires_cookie': False,
+            'requires_merge': False, 'requires_cookie': record.get('requires_cookie'),
+            'request_context_status': 'no_known_requirement',
             'service_audio_file': public.get('media_type') == 'audio',
             'audio_tracks': public.get('audio_tracks'), 'video_tracks': public.get('video_tracks'),
             'size_bytes': picker.number(public.get('size_bytes')) or 0,

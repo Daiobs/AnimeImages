@@ -70,11 +70,14 @@
             return item;
         }
         if (delivery !== "direct") throw new Error("交付方式无效，未开始下载。");
+        const cookieCompatible = item && (item.requires_cookie === false
+            || (item.requires_cookie == null && item.request_context_status === "no_known_requirement"));
         if (!item || item.selection_schema !== (selection.schema || SCHEMA) || item.provider !== (selection.provider || "yt_dlp_generic")
                 || item.candidate_id !== selection.id || item.type !== selection.kind
                 || (selection.formatId !== undefined && item.selected_format_id !== selection.formatId)
                 || item.browser_upstream_bound !== true || item.browser_direct_fetch_safe !== true
-                || item.requires_merge !== false || item.requires_cookie !== false) throw new Error("返回格式与本次选择不一致，未开始下载。");
+                || item.requires_merge !== false || !cookieCompatible
+                || item.request_context_status === "required") throw new Error("返回格式与本次选择不一致，未开始下载。");
         if (["tiantianjiexi", "kukutool"].includes(item.provider)) {
             validateLinkItem(item, selection);
             if (selection.schema !== "service_selected_format_v1" || selection.kind !== "video"

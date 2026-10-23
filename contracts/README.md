@@ -44,10 +44,16 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
 - INV-03 checks highest default, exact alternative resource/token, SW streaming with
   a bound selection, legacy Worker messaging, and the existing unsupported-browser
   Blob compatibility path. Bilibili Native and service HTTPS complete files use
-  the same reviewed browser-first route with their original authorization. HTTP
+  the same browser-first route with their original authorization. Authorized
+  ordinary HTTPS complete videos are not limited to a Provider or static CDN list.
+  Customary UA/Accept/Referer/Origin and case-insensitive `Sec-Fetch-Mode` headers
+  alone are not required access context. Known required cookies, authentication,
+  custom headers, explicit `required_headers`, missing context and IP binding
+  remain restrictive; this is not a blanket exception for `Sec-*`. HTTP
   resources keep the existing attachment path; no scheme is silently rewritten.
-  The Worker executes generic endpoint constraints derived from the page's unchanged
-  resource policy. The public Worker response includes its dependency as one update
+  The Worker executes generic HTTPS and safe-endpoint constraints after resource
+  authorization, with CORS, redirect, MIME and size checks retained. The public
+  Worker response includes its dependency as one update
   unit. Old-Worker URL rejection, registration errors and startup timeouts never
   silently select Blob; actual missing browser capability retains bounded Blob.
   Unknown registration, cancellation and media-response failures never trigger a
@@ -55,9 +61,17 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
   Native attachment navigation now precedes Worker setup when the existing bounded
   metadata request's final adopted result observed a same-URL video attachment
   with a valid source filename and matching extension, under navigation-compatible
-  request conditions. That fact is short-lived,
-  is not authorization, and causes no additional probe. The public parse/action
-  contract retains one HEAD and the frontend contract retains the selected URL,
+  request conditions; native attachment navigation does not require CORS.
+  Ordinary metadata probes naturally populate short-lived positive and negative
+  evidence keyed by URL and necessary context. If no valid evidence exists, the
+  download action may use the same bounded probe for the selected video only,
+  after admission, cost and rate limits. It does not probe the candidate list,
+  extend authorization, or bypass per-hop server DNS/address safety. An existing
+  parse-time fact is reused without another HEAD. SW response scope uses the initial
+  host plus the adopted probe's observed final host, bounded by evidence and candidate
+  expiry, in the existing wire policy. No platform family or empty-policy exception
+  authorizes redirects; absent evidence still allows a same-host transfer.
+  The frontend retains the selected URL,
   with no fetch/Blob/Worker call and no completion claim. The fallback uses the
   existing Worker under its download-only scope, independent of an old root page
   controller; the wire shape and old in-flight tasks are retained. Prepared tasks
@@ -73,7 +87,10 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
 - INV-06 includes raw Douyin captions through the public result and nondefault
   selection endpoint: short title, description and hashtags remain separate.
   Native attachment filenames may use a reasonable source basename; controlled
-  filename paths retain the short-title rule. A synthetic .bin counterexample is
+  filename paths retain the short-title rule. `filename*` has strict priority:
+  an unknown charset or invalid extended value cannot fall back to `filename`
+  to assert native eligibility. The decoded extension must match response MIME.
+  A synthetic .bin counterexample is
   not evidence that a live Douyin CDN returned that filename.
 - INV-07 checks anonymous, ordinary authenticated and Staff presentation. Public
   authorization attributes remain available for legitimate selection actions.
@@ -94,6 +111,7 @@ not syntax/import errors. The Nginx countercheck is also an executable CI test.
 | INV-02 | Failure cache retained for 24 hours | Failure, timeout and disconnect could not recover into usable public HTML |
 | INV-03 | Choose lowest default; force bound selections to Blob; require Worker v4 | Wrong default; no SW navigation; incompatible legacy registration |
 | INV-03 (browser first) | Unchanged `c26453c` through public Bilibili parse and action routes | Native auto route was `proxy`; service HTTPS selected download returned 409 instead of a direct descriptor |
+| INV-03/06 (generic delivery) | Unchanged `7ab8296`, with only the new normal-entry contract copied into an isolated archive | Three authorized default-header/outside-list cases returned 409; the admission and required-context rejection cases still passed |
 | INV-04 | Premature saved copy; attachment `DENY` instead of `SAMEORIGIN` | Controller rejects premature completion; both UA response checks reject framing |
 | INV-04 (transfer observation) | Unchanged `8e8beda` | Three-minute observation ends as `poll_timeout`; slow HTTP transfer status returns 410 after 60 s; downstream close reports `UPSTREAM_CONNECTION_ERROR` |
 | INV-05 | Remove fallback; call service before Native; bypass admission; allow 404 fallback | Failure classification, order and permission assertions fail |

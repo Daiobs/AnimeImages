@@ -13,32 +13,29 @@ function item(type = "video") {
         browser_direct_fetch_safe: true, url: `https://media.example.org/a.${type === "video" ? "mp4" : "jpg"}`};
 }
 
-test("an authorized video outside the reviewed SW URL scope retains strict Blob compatibility", async () => {
-    let saved = false;
+test("an authorized video outside the old CDN list uses the same streaming client", async () => {
+    let starts = 0;
     const result = await ordinary.download(item(), {
-        streamingClient: {capabilityAvailable() { throw new Error("must not use SW"); }},
-        fetchImpl: async (url, options) => {
-            assert.equal(url, item().url);
-            assert.equal(options.redirect, "error");
-            assert.equal(options.credentials, "omit");
-            assert.equal(options.mode, "cors");
-            return new Response(new Blob(["video"], {type: "video/mp4"}));
-        },
-        handoffBlob: async () => { saved = true; },
+        streamingClient: {capabilityAvailable: () => true, async start(media) {
+            starts += 1;
+            assert.equal(media.url, item().url);
+            return {downloadId: "stream", completion: Promise.resolve({filename: "video.mp4", receivedBytes: 5})};
+        }},
+        fetchImpl: () => assert.fail("No page media fetch"),
+        handoffBlob: () => assert.fail("No Blob handoff"),
     });
-    assert.equal(result.transport, "browser_blob");
-    assert.equal(saved, true);
+    assert.equal(result.transport, "browser_streaming");
+    assert.equal(starts, 1);
 });
 
 test("prefix, server flag and source URL are all required", async () => {
     for (const changes of [{browser_upstream_bound: false}, {browser_upstream_bound: "true"},
-        {source_platform: "other"}, {url: "http://example.org/a.mp4"},
-        {url: "https://user:pass@example.org/a.mp4"}, {provider: "kukutool"}]) {
+        {url: "http://example.org/a.mp4"}, {url: "https://user:pass@example.org/a.mp4"}]) {
         assert.equal(ordinary.isOrdinaryMediaItem({...item(), ...changes}), false);
     }
     await assert.rejects(ordinary.download({...item(), asset_id: "legacy:video:1"}, {
         forceBlob: true, fetchImpl() { throw new Error("must not fetch arbitrary host"); },
-    }), {errorCode: "UPSTREAM_MEDIA_INVALID"});
+    }), {errorCode: "BROWSER_DOWNLOAD_NOT_ORDINARY_MEDIA"});
 });
 
 test("redirected response and fetch failure never fall back to server", async () => {
@@ -103,7 +100,7 @@ test("upstream Blob rejects HTTP, content type, empty, oversized and truncated b
                 return response;
             },
             handoffBlob: async () => { saved = true; },
-            streamingClient: {capabilityAvailable() { throw new Error("No fallback permitted"); }},
+            streamingClient: {capabilityAvailable: () => false},
         }), {errorCode});
         assert.equal(calls, 1);
         assert.equal(saved, false);
