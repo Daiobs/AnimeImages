@@ -76,14 +76,42 @@ class DouyinGalleryContinuationTests(TestCase):
 
     def test_continuation_description_is_bounded_without_changing_source(self):
         description = "\u56fe" * 2500
-        original = self.result(title="Gallery title", description=description)
-        payload = serialize_douyin_continuation_result(original)
-        restored = deserialize_douyin_continuation_result(payload)
-        self.assertEqual(restored.metadata.get("description"), description[:2000])
+        for title in ("Gallery title", ""):
+            with self.subTest(title=title):
+                original = self.result(title=title, description=description)
+                payload = serialize_douyin_continuation_result(original)
+                restored = deserialize_douyin_continuation_result(payload)
+                self.assertEqual(restored.metadata.get("description"), description[:2000])
+                self.assertEqual(original.metadata["description"], description)
+                self.assertLessEqual(
+                    len(json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")),
+                    DOUYIN_CONTINUATION_MAX_CACHE_BYTES,
+                )
+
+    def test_titleless_long_gallery_description_and_tail_topic_survive_continuation(self):
+        details = "\u56fe\u6587\u6b63\u6587" * 150
+        description = f"Gallery lead\n{details} #tailtopic"
+        self.assertGreater(len(description), 200)
+        self.assertLessEqual(len(description), 2000)
+        original = self.result(description=description)
+        restored = deserialize_douyin_continuation_result(
+            serialize_douyin_continuation_result(original)
+        )
+        self.assertEqual(original.metadata["title"], "")
+        self.assertEqual(restored.metadata["title"], "")
         self.assertEqual(original.metadata["description"], description)
-        self.assertLessEqual(
-            len(json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")),
-            DOUYIN_CONTINUATION_MAX_CACHE_BYTES,
+        self.assertEqual(restored.metadata["description"], description)
+        before = build_result_display_context(original, probe_missing_video_sizes=False)
+        after = build_result_display_context(restored, probe_missing_video_sizes=False)
+        self.assertEqual(after["display_title"], "Gallery lead")
+        self.assertEqual(after["base_filename"], "Gallery lead")
+        self.assertIn(details, after["display_description"])
+        self.assertEqual(after["display_topics"], ["tailtopic"])
+        for key in ("display_title", "display_description", "display_topics", "base_filename"):
+            self.assertEqual(after[key], before[key], key)
+        self.assertEqual(
+            [asset.to_download_item() for asset in restored.assets],
+            [asset.to_download_item() for asset in original.assets],
         )
 
     def test_large_gallery_caption_fits_complete_cache_record_without_losing_images(self):
@@ -92,10 +120,10 @@ class DouyinGalleryContinuationTests(TestCase):
         room = DOUYIN_CONTINUATION_MAX_CACHE_BYTES - len(
             json.dumps(base, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
         )
-        for length in (2000, (room - 30) // 6):
-            with self.subTest(description_length=length):
+        for title, length in (("Gallery title", 2000), ("Gallery title", (room - 30) // 6), ("", 2000)):
+            with self.subTest(title=title, description_length=length):
                 description = "\u56fe" * length
-                original = self.result(title="Gallery title", description=description)
+                original = self.result(title=title, description=description)
                 coordinator = DouyinContinuationCoordinator(1, first_upgrade_wins=True)
                 self.addCleanup(coordinator.abandon)
                 future = Future()
