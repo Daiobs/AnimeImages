@@ -1,5 +1,6 @@
 """Dedicated Douyin service -> real result consumers, no remote requests."""
 import json
+from io import BytesIO
 import tempfile
 from copy import deepcopy
 from dataclasses import replace
@@ -7,7 +8,9 @@ from pathlib import Path
 from time import time
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from urllib.parse import urlsplit
 
+import requests
 from bs4 import BeautifulSoup
 from django.core import signing
 from django.core.cache import cache
@@ -93,10 +96,10 @@ class DouyinFormatSelectionTests(SimpleTestCase):
     def setUp(self):
         cache.clear()
         self.addCleanup(cache.clear)
-        for target in ('requests.sessions.Session.request', 'socket.getaddrinfo'):
-            guard = patch(target, side_effect=AssertionError('Unexpected network request'))
-            guard.start()
-            self.addCleanup(guard.stop)
+        self.enterContext(patch('socket.getaddrinfo', return_value=[(2, 1, 6, '', ('8.8.8.8', 443))]))
+        self.enterContext(patch('socket.socket.connect', side_effect=AssertionError('Unexpected network request')))
+        self.media_requests = []
+        self.enterContext(patch('requests.adapters.HTTPAdapter.send', side_effect=self.media_metadata_http))
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         for target, replacement in (
@@ -121,6 +124,23 @@ class DouyinFormatSelectionTests(SimpleTestCase):
                 {'url': BASE + 'low.mp4', 'qualityLabel': '流畅', 'sizeInBytes': 2000},
             ]}],
         }}
+
+    def media_metadata_http(self, request, **kwargs):
+        self.assertIn(urlsplit(request.url).hostname, {'v3-dy-o.zjcdn.com', 'v26-default.365yg.com'})
+        self.assertIn(request.method, {'HEAD', 'GET'})
+        if request.method == 'GET':
+            self.assertEqual(request.headers.get('Range'), 'bytes=0-0')
+        self.media_requests.append((request.method, request.url))
+        response = requests.Response()
+        response.status_code = 200 if request.method == 'HEAD' else 206
+        response.url = request.url
+        response.request = request
+        response.headers.update({'Content-Type': 'video/mp4', 'Content-Disposition': 'inline',
+                                 'Content-Length': '2000' if request.method == 'HEAD' else '1'})
+        if request.method == 'GET':
+            response.headers['Content-Range'] = 'bytes 0-0/2000'
+        response.raw = BytesIO(b'')
+        return response
 
     def result(self, aweme=AWEME, race=False):
         context = DouyinParseContext(url=f'https://www.douyin.com/video/{aweme}', aweme_id=aweme, prefer_ultra_hd=True)
@@ -183,6 +203,7 @@ class DouyinFormatSelectionTests(SimpleTestCase):
                 self.assertEqual(self.record(row), saved_record)
         self.assertEqual(result.metadata, original_metadata)
         self.session.post.assert_called_once()
+        self.assertEqual(self.media_requests, [('HEAD', self.record(row)['url']) for row in rows[:2]])
 
     def bridge_result(self, provider, candidates, *, payload=None, missing_manifest=False):
         context = DouyinParseContext(url=f'https://www.douyin.com/video/{AWEME}', aweme_id=AWEME)
@@ -331,6 +352,7 @@ class DouyinFormatSelectionTests(SimpleTestCase):
             self.assertEqual(self.download_action(row).status_code, 409)
         self.assertEqual(self.record(row)['service_legacy_item']['provider_manifest_token'],
                          record['service_legacy_item']['provider_manifest_token'])
+        self.assertEqual(self.media_requests, [])
 
     def test_download_action_rejects_cross_candidate_work_and_manifest(self):
         rows = self.result().metadata['upstream_candidates']
@@ -345,6 +367,7 @@ class DouyinFormatSelectionTests(SimpleTestCase):
                 token = self.record(other)['service_legacy_item']['provider_manifest_token']
                 self.update_cached_record(row, service_legacy_item={**original, 'provider_manifest_token': token})
                 self.assertEqual(self.download_action(row).status_code, 409)
+        self.assertEqual(self.media_requests, [])
 
     def test_same_url_aliases_keep_exact_default_and_real_main_binding(self):
         winner = MediaCandidate(url=BASE + 'main.mp4', quality_label='Original', size_bytes=9000000)

@@ -214,8 +214,10 @@ class SelectedVideoOpenTests(SimpleTestCase):
         self.assert_restricted({'url': 'http://media.example/video.mp4', 'protocol': 'http'})
 
     def test_secret_or_required_headers_are_rejected(self):
-        for header in ('Cookie', 'Authorization', 'Referer', 'Origin'):
+        for header in ('Cookie', 'Authorization'):
             self.assert_restricted({'http_headers': {header: 'private-fixture'}})
+        for header in ('Referer', 'Origin'):
+            self.assert_restricted({'http_headers': {header: SOURCE}, 'required_headers': [header]})
 
     def test_cookie_requirement_and_unretained_headers_are_rejected(self):
         self.assert_restricted({'requires_cookie': True})
@@ -272,7 +274,8 @@ class SelectedVideoOpenTests(SimpleTestCase):
         for provider in PROVIDERS:
             with self.subTest(provider=provider):
                 candidate = self.fixture.candidates(provider, {
-                    'http_headers': {'User-Agent': 'fixture', 'Accept': '*/*', 'Sec-Fetch-Mode': 'navigate'}})[0]
+                    'http_headers': {'User-Agent': 'fixture', 'Accept': '*/*', 'Referer': SOURCE,
+                                     'Origin': 'https://source.example', 'Sec-Fetch-Mode': 'navigate'}})[0]
                 self.assert_open(provider, candidate)
 
     def test_cross_candidate_and_cross_endpoint_tokens_are_rejected(self):

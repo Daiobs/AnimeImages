@@ -117,6 +117,7 @@ from .services.download_routing import (
     ROUTE_ZIP,
     decide_download_route,
     item_is_upstream,
+    prepare_browser_route_items,
     request_is_mobile,
 )
 from .services.downloads import (
@@ -3994,9 +3995,13 @@ def log_parse_request_event(
 @require_GET
 def ordinary_media_service_worker_view(request):
     worker_path = settings.BASE_DIR / "static" / "js" / "ordinary_media_download_sw.js"
-    if not worker_path.is_file():
+    protocol_path = worker_path.with_name("ordinary_media_streaming_protocol.js")
+    if not worker_path.is_file() or not protocol_path.is_file():
         raise Http404("Service Worker is unavailable.")
-    response = FileResponse(worker_path.open("rb"), content_type="text/javascript; charset=utf-8")
+    # One update unit: dependency changes must change the worker response bytes,
+    # without coupling transport compatibility to a protocol-version query string.
+    source = protocol_path.read_bytes() + b"\n;\n" + worker_path.read_bytes()
+    response = HttpResponse(source, content_type="text/javascript; charset=utf-8")
     response["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response["Service-Worker-Allowed"] = "/"
     response["X-Content-Type-Options"] = "nosniff"
@@ -6548,6 +6553,31 @@ def download_images_api(request):
             return download_guard_error_response(
                 "资源链接授权不可用或已失效，请重新解析。",
                 status=403, error_code="RESOURCE_LINK_REJECTED",
+            )
+
+    if (download_mode in routed_download_modes and route_info.get("route_type") == ROUTE_DIRECT
+            and not resource_link and (not route_only or data.get("intent") == "download")
+            and any(download_item_is_video(item) for item in media_items)):
+        try:
+            _, limit_response = check_download_request_limits(request)
+            if limit_response is not None:
+                return limit_response
+            route_info["items"] = prepare_browser_route_items(request, media_items)
+            # A bounded probe can outlast authority or a current admission decision.
+            guard = check_download_cost_preflight(request, media_items, get_download_runtime_setting())
+            if guard:
+                code, message, status = guard
+                return download_guard_error_response(message, status=status, error_code=code)
+        except (XhsError, ValueError, KeyError, TypeError):
+            return download_guard_error_response(
+                "下载授权不可用或已失效，请重新解析。", status=403,
+                error_code="DOWNLOAD_AUTHORIZATION_EXPIRED",
+            )
+        except Exception:
+            logger.exception("Browser download preparation failed")
+            return download_guard_error_response(
+                "下载准备服务暂时不可用，请稍后再试。", status=503,
+                error_code="BROWSER_PREPARATION_UNAVAILABLE",
             )
 
     if download_mode in routed_download_modes and route_info.get("route_type") == ROUTE_DIRECT:

@@ -4,6 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from unittest.mock import Mock, patch
 
@@ -112,6 +113,43 @@ class TrackingThreadPoolExecutor:
 
 
 class ProviderDownloadStrategyTests(SimpleTestCase):
+    @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+    def test_native_attachment_fact_is_exact_short_lived_and_not_authorization(self):
+        from django.core.cache import cache
+        from .services.quality import QualityProbe
+        from .services.provider_strategy import browser_transport_hint
+        from time import time
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+        item = dict(type='video', url='https://v26-default.365yg.com/selected.mp4',
+                    browser_direct_fetch_safe=True, requires_merge=False, requires_cookie=False)
+        for disposition in ('inline', '', 'ATTACHMENT; filename="source.mp4"'):
+            response = Mock(status_code=200, url=item['url'], headers={
+                'Content-Type': 'video/mp4', 'Content-Length': '10', 'Content-Disposition': disposition})
+            with patch('xhs_download.services.quality._request_with_retry', return_value=response) as request:
+                self.assertTrue(QualityProbe().probe(item['url'], allow_fallback=False).reachable)
+            self.assertEqual(request.call_count, 1)
+            expected = 'browser_native' if disposition.startswith('ATTACHMENT') else 'browser_streaming'
+            self.assertEqual(browser_transport_hint(item)['download_strategy'], expected)
+        self.assertEqual(browser_transport_hint({**item, 'browser_direct_fetch_safe': False}), {})
+        self.assertEqual(browser_transport_hint({**item, 'url': item['url'] + '?other=1'})['download_strategy'], 'browser_streaming')
+        with patch('xhs_download.services.quality.time.time', return_value=time() + 61):
+            self.assertEqual(browser_transport_hint(item)['download_strategy'], 'browser_streaming')
+        for headers, response_url, mime in (
+            ({'Authorization': 'fixture'}, item['url'], 'video/mp4'),
+            ({}, item['url'] + '?redirected', 'video/mp4'),
+            ({}, item['url'], 'text/html'),
+            ({}, item['url'], 'video/unknown'),
+        ):
+            response = Mock(status_code=200, url=response_url, headers={
+                'Content-Type': mime, 'Content-Length': '10', 'Content-Disposition': 'attachment'})
+            with patch('xhs_download.services.quality._request_with_retry', return_value=response):
+                QualityProbe().probe(item['url'], headers=headers, allow_fallback=False)
+            self.assertEqual(browser_transport_hint(item)['download_strategy'], 'browser_streaming')
+        with patch('xhs_download.services.quality.cache.get', side_effect=OSError('unavailable')):
+            self.assertEqual(browser_transport_hint(item)['download_strategy'], 'browser_streaming')
+
     def test_authorized_browser_transport_depends_on_resource_not_provider(self):
         from .services.provider_strategy import browser_transport_hint
 
@@ -123,20 +161,22 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
                 self.assertEqual(browser_transport_hint({**item, 'provider': provider})['download_strategy'],
                                  'browser_streaming')
                 self.assertEqual(browser_transport_hint({**item, 'provider': provider,
-                    'url': 'https://media.example/video.mp4'})['download_strategy'], 'browser_blob')
+                    'url': 'https://media.example/video.mp4'})['download_strategy'], 'browser_streaming')
         for fields in ({'type': 'audio'}, {'browser_direct_fetch_safe': False},
                        {'requires_merge': True}, {'requires_cookie': True}, {'has_drm': True},
                        {'requires_context': True}, {'download_context_required': True}, {'video_tracks': 'absent'}):
             self.assertEqual(browser_transport_hint({**item, **fields}), {})
 
-    def test_browser_resource_policy_does_not_expand_reviewed_sw_hosts(self):
+    def test_browser_resource_policy_accepts_public_hosts_without_weakening_url_checks(self):
         from .services.provider_strategy import browser_streaming_resource_url_is_allowed
 
         for host in ('v26-default.365yg.com', 'v3.douyinvod.com', 'v3-dy-a-x.ixigua.com',
-                     'sns-video-bd.xhscdn.com', 'sns-video-hw.xhscdn.com'):
+                     'sns-video-bd.xhscdn.com', 'sns-video-hw.xhscdn.com',
+                     'v3.zjcdn.com', 'v3.bdcgslb.com', 'media.new-source.example',
+                     'other.xhscdn.com', 'v3-dy-b-x.ixigua.com'):
             self.assertTrue(browser_streaming_resource_url_is_allowed(f'https://{host}/video.mp4'))
-        for url in ('https://v3.zjcdn.com/video.mp4', 'https://v3.bdcgslb.com/video.mp4',
-                    'https://other.xhscdn.com/video.mp4', 'https://v3-dy-b-x.ixigua.com/video.mp4',
+        for url in ('https://localhost/video.mp4', 'https://127.0.0.1/video.mp4',
+                    'https://10.0.0.1/video.mp4', 'https://metadata.internal/video.mp4',
                     'http://v3.365yg.com/video.mp4', 'https://user@v3.365yg.com/video.mp4',
                     'https://v3.365yg.com:444/video.mp4', 'https://v3.365yg.com/video.mp4#part',
                     'https://v3.365yg.com/video.m3u8', 'https://v3.365yg.com/video.mpd',
@@ -151,6 +191,23 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertEqual(response["Service-Worker-Allowed"], "/")
         self.assertEqual(response["Cache-Control"], "no-cache, no-store, must-revalidate")
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+
+    def test_worker_and_dependency_are_one_update_unit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "static" / "js"
+            scripts.mkdir(parents=True)
+            worker = scripts / "ordinary_media_download_sw.js"
+            protocol = scripts / "ordinary_media_streaming_protocol.js"
+            worker.write_text("// unchanged worker\n", encoding="utf-8")
+            protocol.write_text("// first dependency\n", encoding="utf-8")
+            with override_settings(BASE_DIR=root):
+                first = self.client.get(reverse("ordinary_media_service_worker"))
+                protocol.write_text("// changed dependency\n", encoding="utf-8")
+                second = self.client.get(reverse("ordinary_media_service_worker"))
+            self.assertEqual(first.content, b"// first dependency\n\n;\n// unchanged worker\n")
+            self.assertNotEqual(first.content, second.content)
+            self.assertIn(b"// changed dependency", second.content)
 
     def test_tiantianjiexi_video_uses_browser_streaming_with_blob_capability_fallback(self):
         strategy = build_download_strategy(
@@ -188,7 +245,7 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
         self.assertTrue(strategy["cors_expected"])
         self.assertTrue(strategy["browser_direct_fetch_safe"])
 
-    def test_native_public_video_keeps_browser_direct_strategy(self):
+    def test_native_public_video_uses_same_streaming_strategy_as_selected_video(self):
         strategy = build_download_strategy(
             MediaAsset(
                 media_type="video",
@@ -199,9 +256,22 @@ class ProviderDownloadStrategyTests(SimpleTestCase):
 
         self.assertEqual(
             strategy["download_strategy"],
-            DOWNLOAD_STRATEGY_BROWSER_DIRECT,
+            DOWNLOAD_STRATEGY_BROWSER_STREAMING,
         )
         self.assertTrue(strategy["browser_direct_fetch_safe"])
+
+    def test_reviewed_complete_file_transport_is_independent_of_parser_label(self):
+        for provider in ("", "native", "tiantianjiexi_generic", "kukutool_generic", "yt_dlp_generic"):
+            with self.subTest(provider=provider):
+                strategy = build_download_strategy(MediaAsset(
+                    media_type="video", platform="bilibili", provider=provider,
+                    url="https://upos-sz-mirrorcos.bilivideo.com/video.mp4"))
+                self.assertEqual(strategy["download_strategy"], DOWNLOAD_STRATEGY_BROWSER_STREAMING)
+                self.assertEqual(strategy["fallback_strategy"], DOWNLOAD_STRATEGY_BROWSER_BLOB)
+        for url in ("http://upos.bilivideo.com/video.mp4", "https://upos.bilivideo.com/video.m4s",
+                    "https://upos.bilivideo.com/video.m3u8", "https://bilivideo.com.evil.test/video.mp4"):
+            from .services.provider_strategy import browser_streaming_resource_url_is_allowed
+            self.assertFalse(browser_streaming_resource_url_is_allowed(url))
 
     def test_youtube_merge_requires_server_merge(self):
         strategy = build_download_strategy(

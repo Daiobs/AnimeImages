@@ -136,13 +136,94 @@ function mountPicker(app) {
     }};
 }
 
-function attachWorker(app, {legacy = false, unavailable = false} = {}) {
+for (const batch of [false, true]) {
+    test(`INV03 ${batch ? 'Batch' : 'homepage'} ordinary click uses newly prepared native descriptor`, async () => {
+        const requests = [], links = [];
+        const mediaUrl = 'https://media.bilivideo.com/known-size.mp4';
+        const app = browser(async (url, options) => {
+            const payload = JSON.parse(options.body);
+            requests.push(payload);
+            assert.equal(payload.intent, 'download');
+            assert.equal(payload.route_only, true);
+            assert.equal(payload.media_items.length, 1);
+            assert.equal(payload.media_items[0].url, mediaUrl);
+            return json({status: 'routed', route_type: 'direct', items: [{...payload.media_items[0],
+                browser_direct_fetch_safe: true, requires_merge: false,
+                download_strategy: 'browser_native', native_download_expires_at: Date.now() + 60000}]});
+        });
+        app.win.navigator.serviceWorker = {register() { assert.fail('fresh native evidence must bypass SW'); }};
+        const create = app.doc.createElement;
+        app.doc.createElement = tag => {
+            const node = create(tag);
+            if (tag === 'a') node.click = () => links.push(node.href);
+            return node;
+        };
+        for (const name of ['ordinary_media_streaming_protocol.js', 'ordinary_media_streaming.js',
+            'ordinary_media_download.js', 'download_reliability.js']) app.load(name);
+        let scope, button;
+        if (batch) {
+            scope = new DomNode('main', {class: 'batch-parse-page', 'data-batch-download-url': '/download'});
+            const csrf = new DomNode('input', {name: 'csrfmiddlewaretoken', value: 'csrf'});
+            const card = new DomNode('article', {class: 'batch-direct-item', 'data-batch-download-item': '', 'data-type': 'video'});
+            button = new DomNode('button', {'data-batch-direct-download': '', 'data-batch-direct-url': mediaUrl,
+                'data-batch-direct-size-bytes': '12345', 'data-batch-browser-fetch-safe': 'true'});
+            card.append(button); scope.append(csrf, card); app.doc.body.append(scope);
+            app.load('batch_parse.js');
+        } else {
+            const page = new DomNode('main', {class: 'xhs-download-page', 'data-download-url': '/download'});
+            scope = new DomNode('section', {id: 'parse-results-region'});
+            const card = new DomNode('article', {class: 'asset-card', 'data-type': 'video',
+                'data-url': mediaUrl, 'data-size-bytes': '12345'});
+            button = new DomNode('button', {id: 'download-btn'});
+            scope.append(card, button, new DomNode('p', {id: 'status'}));
+            page.append(scope); app.doc.body.append(page);
+            app.load('xhs_download.js'); app.doc.listeners.DOMContentLoaded();
+            await scope.listeners.click({target: card, preventDefault() {}});
+        }
+        await scope.listeners.click({target: button, preventDefault() {}});
+        for (let i = 0; i < 10 && links.length === 0; i++) await tick();
+        assert.equal(requests.length, 1);
+        assert.deepEqual(links, [mediaUrl]);
+    });
+}
+
+test('INV03 native attachment handoff preserves selection without Worker, Blob or completion claims', async () => {
+    const requests = [], links = [];
+    const app = browser(async (url, options) => {
+        requests.push(url);
+        assert.equal(url, 'https://product.example/media/service-selected-format/');
+        const body = JSON.parse(options.body);
+        return json({status: 'success', item: {...selectionItem(body.candidate_id),
+            download_strategy: 'browser_native', native_download_expires_at: Date.now() + 60000}});
+    });
+    app.win.navigator.serviceWorker = {register() { assert.fail('Native must not register a Worker'); },
+        controller: {postMessage() { assert.fail('Native must not wait for an old controller'); }}};
+    const create = app.doc.createElement;
+    app.doc.createElement = tag => {
+        const node = create(tag);
+        if (tag === 'a') node.click = () => links.push({url: node.href, target: node.target});
+        return node;
+    };
+    for (const name of ['ordinary_media_streaming_protocol.js', 'ordinary_media_streaming.js',
+        'ordinary_media_download.js', 'ytdlp_result_picker.js']) app.load(name);
+    const mounted = mountPicker(app);
+    mounted.choose('720');
+    await mounted.controller.save();
+    assert.equal(requests.length, 1);
+    assert.deepEqual(links, [{url: selectionItem('720').url, target: '_blank'}]);
+    const status = mounted.root.querySelector('[data-picker-status]').textContent;
+    assert.match(status, /已发起下载请求/);
+    assert.doesNotMatch(status, /已保存|保存成功|100%/);
+    mounted.controller.destroy();
+});
+
+function attachWorker(app, {legacy = false, unavailable = false, rejectedUrl = false} = {}) {
     const messages = [], navigations = [], mediaRequests = [], workerListeners = new Map();
     const statusListeners = new Set(), statuses = new Map(), responses = [], endings = [];
     let protocol;
     const emit = status => {
         statuses.set(status.downloadId, status);
-        statusListeners.forEach(listener => listener({data: {
+        statusListeners.forEach(listener => listener({source: worker, data: {
             type: `DOWNLOAD_${status.state.toUpperCase()}`, status, telemetryOwner: false,
         }}));
     };
@@ -157,6 +238,10 @@ function attachWorker(app, {legacy = false, unavailable = false} = {}) {
             }
             const reply = data => ports[0].postMessage(data);
             if (message.type === "REGISTER_DOWNLOAD") {
+                if (rejectedUrl) {
+                    reply({ok: false, code: "STREAMING_URL_UNSUPPORTED"});
+                    return;
+                }
                 const descriptor = message.descriptor;
                 const status = {...descriptor, protocolVersion: 2, state: "prepared",
                     receivedBytes: 0, totalBytes: 2, streamingStarted: false};
@@ -171,10 +256,11 @@ function attachWorker(app, {legacy = false, unavailable = false} = {}) {
             }
         },
     };
-    const waiting = {state: "installed", postMessage() { assert.fail("Must not force waiting Worker takeover"); }};
+    const registration = {active: worker, waiting: null, installing: null,
+        async update() { return this; }};
     const serviceWorker = {
         controller: worker,
-        async register() { return {active: worker, waiting}; },
+        async register() { return registration; },
         addEventListener(name, listener) { if (name === "message") statusListeners.add(listener); },
         removeEventListener(name, listener) { if (name === "message") statusListeners.delete(listener); },
     };
@@ -317,6 +403,26 @@ test("INV03 unavailable Worker uses one bounded Blob fallback and INV06 real MIM
         assert.deepEqual(saves, [{filename: "Contract short title.mp4", href: "blob:contract"}]);
         assert.deepEqual(Array.from(new Uint8Array(await blob.arrayBuffer())), [1, 2]);
         assert.equal(worker.navigations.length, 0);
+    } finally { picker.controller.destroy(); await worker.close(); }
+});
+
+test("INV03 old Worker resource rules cannot silently change a selected download to Blob", async () => {
+    const requests = [];
+    const app = browser(async (url, options) => {
+        requests.push(url);
+        assert.equal(url, "https://product.example/media/service-selected-format/");
+        return json({status: "success", item: selectionItem(JSON.parse(options.body).candidate_id)});
+    });
+    const worker = attachWorker(app, {legacy: true, rejectedUrl: true});
+    const picker = mountPicker(app);
+    try {
+        picker.choose("720");
+        await picker.controller.save();
+        assert.equal(requests.length, 1, "only the original authorization request, no media retry");
+        assert.equal(worker.navigations.length, 0);
+        assert.equal(worker.messages.filter(message => message.type === "REGISTER_DOWNLOAD").length, 1);
+        assert.equal(worker.messages.some(message => /CAPABILIT|SKIP_WAITING|ACTIVATE/.test(message.type)), false);
+        assert.doesNotMatch(picker.root.querySelector("[data-picker-status]").textContent, /已交给|已保存/);
     } finally { picker.controller.destroy(); await worker.close(); }
 });
 

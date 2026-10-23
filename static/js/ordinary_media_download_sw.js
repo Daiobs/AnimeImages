@@ -1,14 +1,16 @@
 "use strict";
 
-const STREAMING_PROTOCOL_ASSET_VERSION = "4";
-importScripts(
-    `/static/js/ordinary_media_streaming_protocol.js?v=${STREAMING_PROTOCOL_ASSET_VERSION}`,
-);
+// The public endpoint serves this file and its dependency as one atomic script.
+// Standalone loading remains useful for existing static consumers and tests.
+if (!self.AnimeImagesOrdinaryMediaStreamingProtocol) {
+    importScripts("/static/js/ordinary_media_streaming_protocol.js");
+}
 
 const protocol = self.AnimeImagesOrdinaryMediaStreamingProtocol;
 const downloads = new Map();
 const PROGRESS_INTERVAL_MS = 350;
 const TERMINAL_RETENTION_MS = 60000;
+const PREPARATION_TIMEOUT_MS = 8000;
 const ALLOW_LOOPBACK_HTTP = protocol.isLoopbackHostname(self.location.hostname);
 
 function deferred() {
@@ -68,9 +70,21 @@ async function replyWithTelemetryOwner(port, payload, state, sourceClientId) {
 }
 
 function settle(state) {
+    finishPreparation(state);
     if (state.settled) {
         state.settled.resolve();
         state.settled = null;
+    }
+}
+
+function finishPreparation(state) {
+    if (state.preparation) {
+        state.preparation.resolve();
+        state.preparation = null;
+    }
+    if (state.expiryTimer !== null) {
+        clearTimeout(state.expiryTimer);
+        state.expiryTimer = null;
     }
 }
 
@@ -232,16 +246,18 @@ function createDownloadState(descriptor, ownerClientId) {
         downstreamController: null,
         expiryTimer: null,
         settled: deferred(),
+        preparation: deferred(),
         progressEstimator: protocol.createProgressEstimator(),
         lastProgressAt: 0,
     };
     state.expiryTimer = setTimeout(() => {
         if (state.state === "prepared") {
-            markTerminal(state, "failed", "DESCRIPTOR_EXPIRED", {
+            markTerminal(state, "failed", Date.now() >= descriptor.expiresAt
+                ? "DESCRIPTOR_EXPIRED" : "STREAMING_START_TIMEOUT", {
                 failureStage: "DESCRIPTOR_FAILURE",
             });
         }
-    }, Math.max(0, descriptor.expiresAt - Date.now()));
+    }, Math.max(0, Math.min(PREPARATION_TIMEOUT_MS, descriptor.expiresAt - Date.now())));
     return state;
 }
 
@@ -268,7 +284,7 @@ self.addEventListener("message", (event) => {
         return;
     }
     const existing = downloads.get(protocol.normalizeDownloadId(message.downloadId));
-    if (existing && existing.selectionBinding
+    if (existing && (existing.selectionBinding || existing.responsePolicy)
         && ["DELETE_DOWNLOAD", "CANCEL_DOWNLOAD"].includes(message.type)
         && (!event.source || event.source.id !== existing.ownerClientId)) {
         reply(port, {ok: false, code: "DOWNLOAD_OWNER_MISMATCH"});
@@ -282,10 +298,10 @@ self.addEventListener("message", (event) => {
                     || message.descriptor.protocolVersion !== protocol.PROTOCOL_VERSION)) {
                 throw new Error("STREAMING_PROTOCOL_UNSUPPORTED");
             }
-            const descriptor = protocol.createDescriptor(message.descriptor, {
+            const descriptor = protocol.createWorkerDescriptor(message.descriptor, {
                 allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
             });
-            if (descriptor.selectionBinding && !(event.source && event.source.id)) {
+            if ((descriptor.selectionBinding || descriptor.responsePolicy) && !(event.source && event.source.id)) {
                 throw new Error("DOWNLOAD_OWNER_MISSING");
             }
             if (downloads.has(descriptor.downloadId)) {
@@ -296,6 +312,9 @@ self.addEventListener("message", (event) => {
                 event.source && event.source.id,
             );
             downloads.set(descriptor.downloadId, state);
+            // Keep this registration's owner alive only until navigation takes
+            // over, cancellation or the bounded preparation deadline.
+            event.waitUntil(state.preparation.promise);
             reply(port, {ok: true, status: safeStatus(state)});
         } catch (error) {
             reply(port, {ok: false, code: String(error && error.message || "INVALID_DESCRIPTOR")});
@@ -412,8 +431,7 @@ async function streamDownload(state) {
     state.firstResponseAt = Date.now();
     const contentType = protocol.normalizeContentType(upstream.headers.get("Content-Type"));
     const contentLength = protocol.positiveInteger(upstream.headers.get("Content-Length"));
-    let responseGate = protocol.classifyResponseRejection(upstream, {
-        initialUrl,
+    let responseGate = protocol.classifyTransportResponse(upstream, state, {
         allowLoopbackHttp: ALLOW_LOOPBACK_HTTP,
     });
     if (selected && (upstream.redirected || upstream.type === "opaque" || upstream.type === "opaqueredirect"
@@ -569,6 +587,7 @@ self.addEventListener("fetch", (event) => {
         return;
     }
     const lifecyclePromise = state.settled.promise;
-    event.respondWith(streamDownload(state));
     event.waitUntil(lifecyclePromise);
+    event.respondWith(streamDownload(state));
+    finishPreparation(state);
 });

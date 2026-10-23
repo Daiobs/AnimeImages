@@ -18,6 +18,8 @@
     const INITIAL_MEDIA_HOST_SUFFIXES = Object.freeze([
         "365yg.com",
         "douyinvod.com",
+        "bilivideo.com",
+        "bilivideo.cn",
     ]);
     const INITIAL_EXACT_MEDIA_HOSTS = Object.freeze([
         "v3-dy-a-x.ixigua.com",
@@ -33,6 +35,7 @@
         "DOUYIN_IXIGUA_EXACT",
         "XHS_TIANTIAN_HW_EXACT",
         "XHS_NATIVE_REVIEWED",
+        "BILIBILI_PUBLIC",
         "LOOPBACK_TEST",
         "UNKNOWN",
     ]);
@@ -279,6 +282,10 @@
             return "UNKNOWN";
         }
         const hostname = String(url.hostname || "").toLowerCase();
+        if (hostnameMatchesSuffix(hostname, "bilivideo.com")
+                || hostnameMatchesSuffix(hostname, "bilivideo.cn")) {
+            return /\.(?:m4s|m3u8|mpd)$/i.test(url.pathname) ? "UNKNOWN" : "BILIBILI_PUBLIC";
+        }
         if (hostnameMatchesSuffix(hostname, "365yg.com")) {
             return "DOUYIN_365YG";
         }
@@ -306,6 +313,41 @@
 
     function isAllowedStreamingUrl(value, options) {
         return isAllowedInitialMediaUrl(value, options);
+    }
+
+    function isPublicMediaUrl(value, options) {
+        const settings = options || {};
+        if (typeof value !== "string" || value.length > 8192 || /[\s\\\u0000-\u001f\u007f]/.test(value)) return false;
+        try {
+            const url = new URL(value);
+            if (url.username || url.password || url.hash || /\.(?:m4s|m3u8|mpd)$/i.test(url.pathname)) return false;
+            if (settings.allowLoopbackHttp && isLoopbackHostname(url.hostname)) {
+                return url.protocol === "http:" || url.protocol === "https:";
+            }
+            return isSecureProviderUrl(url) && url.hostname.length <= 253 && url.hostname.includes(".")
+                && url.pathname.replace(/\//g, "").length > 0
+                && !/(?:^|\.)(?:localhost|local|internal|test|invalid|home|lan)$/.test(url.hostname);
+        } catch (_) { return false; }
+    }
+
+    function hasUnsupportedRequestContext(item) {
+        if (!item || item.request_context_status === "required"
+            || ["requires_cookie", "requires_context", "download_context_required", "ip_bound", "has_drm"]
+            .some(key => item[key] && item[key] !== "false")) return true;
+        const required = item.required_headers;
+        if (required !== undefined && required !== null
+            && (!Array.isArray(required) || required.length)) return true;
+        // Defaults are not proof of a requirement. Unknown/custom credentials
+        // cannot be silently discarded by the credentialless browser transport.
+        const defaults = ["user-agent", "accept", "accept-encoding", "accept-language", "referer", "origin",
+            "connection", "cache-control", "pragma", "sec-fetch-mode"];
+        return ["headers", "http_headers"].some(key => {
+            const headers = item[key];
+            if (headers === undefined || headers === null) return false;
+            if (typeof headers !== "object" || Array.isArray(headers)) return true;
+            return Object.entries(headers).some(([name, value]) => value !== "" && value !== null
+                && value !== undefined && !defaults.includes(name.toLowerCase()));
+        });
     }
 
     function sanitizeMediaHost(value, options) {
@@ -408,6 +450,8 @@
         let allowed = false;
         if (initialMediaFamily === "LOOPBACK_TEST") {
             allowed = finalInitialFamily === "LOOPBACK_TEST";
+        } else if (initialMediaFamily === "BILIBILI_PUBLIC") {
+            allowed = finalInitialFamily === "BILIBILI_PUBLIC";
         } else if (
             initialMediaFamily === "XHS_TIANTIAN_HW_EXACT"
             || initialMediaFamily === "XHS_NATIVE_REVIEWED"
@@ -426,6 +470,7 @@
                 finalInitialFamily !== "UNKNOWN"
                 && finalInitialFamily !== "XHS_TIANTIAN_HW_EXACT"
                 && finalInitialFamily !== "XHS_NATIVE_REVIEWED"
+                && finalInitialFamily !== "BILIBILI_PUBLIC"
             );
             if (
                 !allowed
@@ -601,28 +646,38 @@
         return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
     }
 
-    function createSelectionBinding(value) {
+    function createSelectionBinding(value, options) {
         const binding = value.selectionBinding || value;
         if (!value.selectionBinding && !value.selection_schema && !value.browser_upstream_bound) return null;
         const safeIdentity = (field, allowEmpty = false) => typeof binding[field] === "string"
             && (allowEmpty || binding[field].length > 0)
             && binding[field].length <= 8192 && !/[\s\\\u0000-\u001f\u007f]/.test(binding[field]);
-        const dedicated = binding.source_platform === "douyin"
-            && binding.selection_schema === "service_selected_format_v1"
-            && ["tiantianjiexi", "kukutool"].includes(value.provider);
-        const upstream = binding.source_platform === "upstream" && (
-            binding.selection_schema === "ytdlp_selected_format_v1" && value.provider === "yt_dlp_generic"
-            || binding.selection_schema === "service_selected_format_v1"
-                && ["tiantianjiexi_generic", "kukutool_generic"].includes(value.provider));
-        const resource = binding.source_platform === "upstream"
-            && binding.selection_schema === "upstream_resource_v1"
-            && ["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(value.provider);
-        if ((!dedicated && !upstream && !resource) || binding.type !== "video"
+        const legacy = options && options.legacy;
+        const dedicated = binding.selection_schema === "service_selected_format_v1"
+            && (legacy ? binding.source_platform === "douyin"
+                : [binding.asset_id, binding.provider_cache_key].some(value => String(value || "").startsWith("douyin:")));
+        const bilibili = binding.selection_schema === "service_selected_format_v1"
+            && (legacy ? binding.source_platform === "bilibili"
+                : [binding.asset_id, binding.provider_cache_key].some(value => String(value || "").startsWith("bilibili:")));
+        const upstream = ["ytdlp_selected_format_v1", "service_selected_format_v1"].includes(binding.selection_schema);
+        const resource = binding.selection_schema === "upstream_resource_v1";
+        if (legacy && !(dedicated && binding.source_platform === "douyin"
+                && ["tiantianjiexi", "kukutool"].includes(value.provider)
+            || bilibili && binding.source_platform === "bilibili" && value.provider === "tiantianjiexi_generic"
+            || binding.source_platform === "upstream" && (
+                binding.selection_schema === "ytdlp_selected_format_v1" && value.provider === "yt_dlp_generic"
+                || binding.selection_schema === "service_selected_format_v1"
+                    && ["tiantianjiexi_generic", "kukutool_generic"].includes(value.provider)
+                || resource && ["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(value.provider)))) {
+            throw new Error("INVALID_SELECTION_BINDING");
+        }
+        if ((!dedicated && !bilibili && !upstream && !resource) || binding.type !== "video"
             || (binding.selection_delivery || "direct") !== "direct"
             || binding.browser_upstream_bound !== true || binding.browser_direct_fetch_safe !== true
-            || binding.requires_merge !== false || binding.requires_cookie !== false
-            || binding.has_drm || binding.requires_context || binding.download_context_required
+            || binding.requires_merge !== false || legacy && binding.requires_cookie !== false
+            || hasUnsupportedRequestContext(binding)
             || binding.video_tracks === "absent"
+            || !safeIdentity("source_platform")
             || (!resource && (!safeIdentity("candidate_id") || !safeIdentity("selected_format_id", true)))
             || !safeIdentity("asset_id")
             || !Number.isSafeInteger(binding.selection_expires_at) || binding.selection_expires_at <= 0) {
@@ -637,22 +692,29 @@
                     && /^[a-f0-9]{24}$/.test(binding.asset_id.slice(`${prefix}:format:`.length)))) {
                 throw new Error("INVALID_SELECTION_BINDING");
             }
+        } else if (bilibili) {
+            if (!/^bilibili:service:BV[A-Za-z0-9]{10}:p[1-9][0-9]*:video:[a-f0-9]{24}$/.test(binding.asset_id)
+                || !/^[a-f0-9]{64}$/.test(binding.provider_resource_id)
+                || binding.provider_cache_key !== `bilibili:service:${value.provider}:${binding.provider_resource_id}`
+                || !safeIdentity("provider_manifest_token")) throw new Error("INVALID_SELECTION_BINDING");
         } else if (resource) {
             const asset = /^upstream:([a-f0-9]{32}):video:([1-9][0-9]?)$/.exec(binding.asset_id);
             if (!asset || !/^[a-f0-9]{64}$/.test(binding.provider_resource_id)
                 || binding.provider_cache_key !== `upstream:${asset[1]}`
                 || !safeIdentity("provider_manifest_token")) throw new Error("INVALID_SELECTION_BINDING");
-        } else if (binding.asset_id !== `upstream:selection:${binding.candidate_id}`) {
+        } else if (binding.asset_id !== `upstream:selection:${binding.candidate_id}`
+            || !legacy && ["provider_resource_id", "provider_manifest_token", "provider_cache_key"].some(key => binding[key])) {
             throw new Error("INVALID_SELECTION_BINDING");
         }
         // Server action validation is authoritative; this projection retains its exact task identity.
         return Object.freeze({
             selection_schema: binding.selection_schema, source_platform: binding.source_platform,
             type: "video", selection_delivery: "direct", browser_upstream_bound: true,
-            browser_direct_fetch_safe: true, requires_merge: false, requires_cookie: false,
+            browser_direct_fetch_safe: true, requires_merge: false,
+            ...(Object.hasOwn(binding, "requires_cookie") ? {requires_cookie: binding.requires_cookie} : {}),
             ...(!resource ? {candidate_id: binding.candidate_id, selected_format_id: binding.selected_format_id} : {}),
             asset_id: binding.asset_id, selection_expires_at: binding.selection_expires_at,
-            ...(dedicated || resource ? {provider_resource_id: binding.provider_resource_id,
+            ...(dedicated || bilibili || resource ? {provider_resource_id: binding.provider_resource_id,
                 provider_manifest_token: binding.provider_manifest_token,
                 provider_cache_key: binding.provider_cache_key} : {}),
         });
@@ -672,7 +734,7 @@
         const now = positiveInteger(settings.nowEpochMs) || Date.now();
         const ttlMs = positiveInteger(settings.ttlMs) || DEFAULT_STREAM_DESCRIPTOR_TTL_MS;
         const expectedBytes = value.size_is_estimate === true ? 0 : positiveInteger(value.expectedBytes || value.size_bytes);
-        const selectionBinding = createSelectionBinding(value);
+        const selectionBinding = createSelectionBinding(value, {legacy: true});
         if (!id) {
             throw new Error("INVALID_DOWNLOAD_ID");
         }
@@ -713,26 +775,141 @@
         const value = input && typeof input === "object" ? input : {};
         const settings = options && typeof options === "object" ? options : {};
         const now = positiveInteger(settings.nowEpochMs) || Date.now();
-        const binding = createSelectionBinding(value);
+        if (value.browser_direct_fetch_safe !== true) throw new Error("BROWSER_DOWNLOAD_NOT_ORDINARY_MEDIA");
+        if (hasUnsupportedRequestContext(value)) throw new Error("UNSUPPORTED_REQUEST_CONTEXT");
+        const binding = value.selection_schema || value.selectionBinding ? createSelectionBinding(value) : null;
         if (binding) {
-            const url = new URL(value.url);
-            if (!isSecureProviderUrl(url) || url.hash) throw new Error("INVALID_SELECTION_BINDING");
             if (binding.selection_expires_at <= now) throw new Error("DESCRIPTOR_EXPIRED");
         }
+        const responsePolicy = createResponsePolicy(value.url, {...settings, nowEpochMs: now,
+            browser_response_hosts: value.browser_response_hosts,
+            browser_response_hosts_expires_at: value.browser_response_hosts_expires_at});
+        const responseExpiresAt = value.browser_response_hosts !== undefined
+            && value.browser_response_hosts_expires_at > now ? value.browser_response_hosts_expires_at : Infinity;
         // Authorization is checked before handoff. The worker receives only the
         // same bounded transfer request used by ordinary videos, never business tokens.
-        const descriptor = createDescriptor({
-            downloadId: value.downloadId,
-            url: value.url,
-            filename: value.filename,
-            expectedBytes: value.expectedBytes,
-            size_is_estimate: value.size_is_estimate,
+        const descriptor = createWorkerDescriptor({
+            ...value,
+            expectedBytes: value.size_is_estimate === true ? 0 : value.expectedBytes,
+            expiresAt: Math.min(positiveInteger(value.expiresAt) || Infinity,
+                (positiveInteger(value.createdAt) || now) + (positiveInteger(settings.ttlMs) || DEFAULT_STREAM_DESCRIPTOR_TTL_MS),
+                binding ? binding.selection_expires_at : Infinity, responseExpiresAt),
+            responsePolicy,
         }, settings);
         return Object.freeze({
             downloadId: descriptor.downloadId, url: descriptor.url,
             filename: descriptor.filename, expectedBytes: descriptor.expectedBytes,
             createdAt: descriptor.createdAt, expiresAt: descriptor.expiresAt,
+            responsePolicy: descriptor.responsePolicy,
         });
+    }
+
+    // Resource admission stays on the page. The worker consumes generic endpoint
+    // constraints, not a second, installed snapshot of the platform catalogue.
+    function createResponsePolicy(url, options) {
+        if (!isPublicMediaUrl(url, options)) throw new Error("STREAMING_URL_UNSUPPORTED");
+        const settings = options || {};
+        const initialHost = new URL(url).hostname;
+        const entries = settings.browser_response_hosts;
+        const expiresAt = settings.browser_response_hosts_expires_at;
+        const now = positiveInteger(settings.nowEpochMs) || Date.now();
+        let hosts = [initialHost];
+        if (entries !== undefined) {
+            if (!Array.isArray(entries) || !entries.length || entries.length > 2)
+                throw new Error("INVALID_RESPONSE_POLICY");
+            const observedHosts = [];
+            for (const entry of entries) {
+                if (typeof entry !== "string") throw new Error("INVALID_RESPONSE_POLICY");
+                const host = entry.toLowerCase();
+                if (sanitizeObservedMediaHostname(host) !== host
+                    || !isPublicMediaUrl(`https://${host}/media`)) throw new Error("INVALID_RESPONSE_POLICY");
+                observedHosts.push(host);
+            }
+            if (!observedHosts.includes(initialHost)) throw new Error("INVALID_RESPONSE_POLICY");
+            if ((expiresAt !== undefined || observedHosts.some(host => host !== initialHost))
+                && (!Number.isSafeInteger(expiresAt) || expiresAt <= 0)) throw new Error("INVALID_RESPONSE_POLICY");
+            // Stale evidence removes only its extra endpoint, not direct admission.
+            if (expiresAt > now) hosts = [...new Set(observedHosts)];
+        } else if (expiresAt !== undefined) {
+            throw new Error("INVALID_RESPONSE_POLICY");
+        }
+        return Object.freeze({
+            hosts: Object.freeze(hosts), suffixes: Object.freeze([]),
+            redirectSuffixes: Object.freeze([]),
+        });
+    }
+
+    function normalizeResponsePolicy(value, options) {
+        const settings = options || {};
+        if (!value || typeof value !== "object") throw new Error("INVALID_RESPONSE_POLICY");
+        const policy = {};
+        for (const key of ["hosts", "suffixes", "redirectSuffixes"]) {
+            const entries = value[key];
+            if (!Array.isArray(entries) || entries.length > 16) throw new Error("INVALID_RESPONSE_POLICY");
+            policy[key] = Object.freeze(entries.map(entry => {
+                const host = String(entry || "").toLowerCase();
+                const loopback = key === "hosts" && settings.allowLoopbackHttp && isLoopbackHostname(host);
+                if (!loopback && (sanitizeObservedMediaHostname(host) !== host || !host.includes(".")
+                    || /(?:^|\.)(?:localhost|local|internal|test|invalid)$/.test(host))) {
+                    throw new Error("INVALID_RESPONSE_POLICY");
+                }
+                return host;
+            }));
+        }
+        if (!policy.hosts.length && !policy.suffixes.length) throw new Error("INVALID_RESPONSE_POLICY");
+        return Object.freeze(policy);
+    }
+
+    function transportUrlAllowed(value, policy, options, redirected) {
+        if (!isPublicMediaUrl(value, options)) return false;
+        const observed = observedFinalUrl(value, options);
+        if (!observed.secure || !observed.url || observed.url.hash
+            || /\.(?:m4s|m3u8|mpd)$/i.test(observed.url.pathname)) return false;
+        const host = observed.hostname;
+        return policy.hosts.includes(host)
+            || policy.suffixes.some(suffix => hostnameMatchesSuffix(host, suffix))
+            || (Boolean(redirected) && policy.redirectSuffixes.some(suffix => hostnameIsStrictSubdomain(host, suffix)));
+    }
+
+    function createWorkerDescriptor(input, options) {
+        const value = input || {};
+        const settings = options || {};
+        // Retain the already-deployed message boundary for open old pages (G1).
+        // New requests always use the same generic transport path below.
+        if (!value.responsePolicy) return createDescriptor(value, settings);
+        const responsePolicy = normalizeResponsePolicy(value.responsePolicy, settings);
+        const downloadId = normalizeDownloadId(value.downloadId);
+        if (!downloadId) throw new Error("INVALID_DOWNLOAD_ID");
+        if (!transportUrlAllowed(value.url, responsePolicy, settings, false)) throw new Error("STREAMING_URL_UNSUPPORTED");
+        const now = positiveInteger(settings.nowEpochMs) || Date.now();
+        const createdAt = positiveInteger(value.createdAt) || now;
+        const expiresAt = Math.min(createdAt + DEFAULT_STREAM_DESCRIPTOR_TTL_MS,
+            positiveInteger(value.expiresAt) || Infinity);
+        if (createdAt > now || expiresAt <= now) throw new Error("DESCRIPTOR_EXPIRED");
+        const expectedBytes = positiveInteger(value.expectedBytes);
+        if (expectedBytes > MAX_STREAM_BYTES) throw new Error("EXPECTED_SIZE_TOO_LARGE");
+        return Object.freeze({downloadId, url: String(value.url), filename: sanitizeFilename(value.filename),
+            expectedBytes, createdAt, expiresAt, maxBytes: MAX_STREAM_BYTES, responsePolicy,
+            mediaHost: new URL(value.url).hostname});
+    }
+
+    function classifyTransportResponse(response, descriptor, options) {
+        if (!descriptor.responsePolicy) return classifyResponseRejection(response, {...options, initialUrl: descriptor.url});
+        const contentType = response.headers && response.headers.get("Content-Type");
+        const observed = observedFinalUrl(response.url, options);
+        const allowed = transportUrlAllowed(response.url, descriptor.responsePolicy, options, response.redirected);
+        let responseRejectReason = "";
+        if (!response.ok) responseRejectReason = "HTTP_STATUS_REJECTED";
+        else if (!response.body || response.type === "opaque" || response.type === "opaqueredirect") responseRejectReason = "BODY_UNAVAILABLE";
+        else if (!isAllowedMediaContentType(contentType)) responseRejectReason = "CONTENT_TYPE_REJECTED";
+        else if (!allowed) responseRejectReason = "FINAL_HOST_REJECTED";
+        return Object.freeze({rejected: Boolean(responseRejectReason), responseRejectReason,
+            httpStatus: normalizeHttpStatus(response.status), contentTypeClass: classifyContentType(contentType),
+            // Classification is diagnostic only; it never changes admission.
+            initialMediaFamily: classifyInitialMediaFamily(descriptor.url, options),
+            finalMediaHost: allowed ? observed.hostname : "unknown", observedFinalHost: observed.hostname,
+            observedFinalHostClass: classifyObservedFinalHost(observed.hostname, options),
+            redirected: Boolean(response.redirected)});
     }
 
     function downloadPath(downloadId, scopePath) {
@@ -741,6 +918,7 @@
             throw new Error("INVALID_DOWNLOAD_ID");
         }
         const base = String(scopePath || "/static/js/").replace(/\/*$/, "/");
+        if (base === `/${DOWNLOAD_PATH_SEGMENT}/`) return `${base}${id}`;
         return `${base}${DOWNLOAD_PATH_SEGMENT}/${id}`;
     }
 
@@ -898,6 +1076,9 @@
         classifyResponseRejection,
         createDescriptor,
         createTransportDescriptor,
+        createResponsePolicy,
+        createWorkerDescriptor,
+        classifyTransportResponse,
         createSelectionBinding,
         filenameFromContentType,
         createProgressEstimator,
@@ -907,6 +1088,8 @@
         isAllowedInitialMediaUrl,
         isAllowedMediaContentType,
         isAllowedStreamingUrl,
+        isPublicMediaUrl,
+        hasUnsupportedRequestContext,
         isLoopbackHostname,
         normalizeFailureClass,
         normalizeFailureStage,

@@ -84,12 +84,101 @@ test("ordinary media classification requires a safe plain video", () => {
     assert.equal(ordinary.isOrdinaryMediaItem(ordinaryItem({url: "javascript:alert(1)"})), false);
 });
 
+test('native handoff is one navigation, ignores Worker state and never claims bytes or filename', async () => {
+    const links = [], stages = [], progress = [];
+    const documentObject = {body: {appendChild() {}}, createElement() {
+        return {click() { links.push(this.href); }, remove() {}};
+    }};
+    const item = ordinaryItem({download_strategy: 'browser_native', native_download_expires_at: Date.now() + 60000});
+    const result = await ordinary.download(item, {documentObject,
+        streamingClient: {capabilityAvailable() { assert.fail('No Worker setup'); }},
+        fetchImpl() { assert.fail('No media fetch'); },
+        onStage: stage => stages.push(stage), onProgress: value => progress.push(value)});
+    assert.deepEqual(links, [item.url]);
+    assert.deepEqual(stages, ['handed_off']);
+    assert.deepEqual(progress, []);
+    assert.equal(result.transport, 'browser_native');
+    assert.equal(result.filename, '');
+    assert.equal(result.receivedBytes, undefined);
+    for (const options of [{native_download_expires_at: 1}, {requires_cookie: true}]) {
+        await assert.rejects(ordinary.download({...item, ...options}, {documentObject}));
+    }
+    const signal = AbortSignal.abort();
+    await assert.rejects(ordinary.download(item, {documentObject, signal}));
+    assert.equal(links.length, 1);
+});
+
 test("browser fetch options omit credentials, cache, and page referrer", () => {
     const options = ordinary.browserFetchOptions(undefined);
     assert.equal(options.method, "GET");
     assert.equal(options.credentials, "omit");
     assert.equal(options.cache, "no-store");
     assert.equal(options.referrerPolicy, "no-referrer");
+});
+
+test("native delivery preserves unknown Cookie facts and uses attachment evidence, not CORS or source identity", async () => {
+    const cases = ["tiantianjiexi_generic", "new_public_adapter"]
+        .flatMap(provider => [null, undefined, false].map(requiresCookie => [provider, requiresCookie]));
+    for (const [provider, requires_cookie] of cases) {
+        const clicks = [];
+        const item = unknownServiceFile(provider, "video", {
+            source_platform: "new_public_source", download_strategy: "browser_native", cors_expected: false,
+            requires_cookie, request_context_status: "no_known_requirement",
+            native_download_expires_at: Date.now() + 60000,
+            headers: {"User-Agent": "Default agent", Accept: "*/*", Referer: "https://source.example.org/"},
+        });
+        const before = JSON.stringify(item);
+        const result = await ordinary.download(item, {
+            documentObject: {body: {appendChild() {}}, createElement() {
+                return {click() { clicks.push(this.href); }, remove() {}};
+            }},
+            streamingClient: {capabilityAvailable: () => assert.fail("Native requires no Worker or CORS")},
+            fetchImpl: () => assert.fail("No page fetch"), handoffBlob: () => assert.fail("No Blob"),
+        });
+        assert.equal(result.state, "handed_off");
+        assert.equal(result.transport, "browser_native");
+        assert.deepEqual(clicks, [item.url]);
+        assert.equal(JSON.stringify(item), before);
+    }
+});
+
+test("required context and credentials cannot start native, streaming or compatibility media", async () => {
+    const cases = [{requires_cookie: true}, {requires_context: true}, {download_context_required: true},
+        {has_drm: true}, {ip_bound: true}, {required_headers: ["Referer"]}, {request_context_status: "required"},
+        {headers: {Authorization: "secret"}}, {http_headers: {Cookie: "secret"}},
+        {headers: {"X-Auth-Token": "secret"}}, {headers: "unclassified"}];
+    for (const download_strategy of ["browser_native", "browser_streaming"]) {
+        for (const changes of cases) {
+            const item = unknownServiceFile("new_public_adapter", "video", {
+                download_strategy, native_download_expires_at: Date.now() + 60000, ...changes,
+            });
+            const before = JSON.stringify(item);
+            await assert.rejects(ordinary.download(item, {
+                documentObject: {body: {}, createElement: () => assert.fail("No native navigation")},
+                streamingClient: {capabilityAvailable: () => assert.fail("No Worker registration")},
+                fetchImpl: () => assert.fail("No media fetch"), handoffBlob: () => assert.fail("No Blob"),
+            }), error => error.errorCode === "BROWSER_REQUEST_CONTEXT_UNSUPPORTED" && !ordinary.canFallbackToBlob(error));
+            assert.equal(JSON.stringify(item), before);
+        }
+    }
+    assert.match(ordinary.safeErrorMessage({errorCode: "BROWSER_REQUEST_CONTEXT_UNSUPPORTED"}), /未开始下载/);
+});
+
+test("native evidence never bypasses malformed binding, expiry or the public URL boundary", async () => {
+    const item = unknownServiceFile("new_public_adapter", "video", {
+        download_strategy: "browser_native", native_download_expires_at: Date.now() + 60000,
+    });
+    for (const changes of [{selection_expires_at: Date.now() - 1}, {native_download_expires_at: 1},
+        {native_download_expires_at: Infinity}, {native_download_expires_at: "Infinity"},
+        {native_download_expires_at: Number.MAX_SAFE_INTEGER + 1},
+        {asset_id: "upstream:selection:other"}, {candidate_id: "other"}, {browser_upstream_bound: false},
+        {url: "https://127.0.0.1/video.mp4"}, {url: "https://media.internal/video.mp4"}]) {
+        await assert.rejects(ordinary.download({...item, ...changes}, {
+            documentObject: {body: {}, createElement: () => assert.fail("No native navigation")},
+            streamingClient: {capabilityAvailable: () => assert.fail("No Worker registration")},
+            fetchImpl: () => assert.fail("No media fetch"), handoffBlob: () => assert.fail("No Blob"),
+        }));
+    }
 });
 
 test("bounded diagnostic probe reads only the first non-empty chunk and returns no URL", async () => {
@@ -186,14 +275,14 @@ test("diagnostic probe safely distinguishes before-response and after-response f
     assert.doesNotMatch(JSON.stringify({beforeResponse, afterResponse}), /token|super-secret|https:\/\//i);
 });
 
-test("diagnostic probe rejects a final response outside the Worker media allowlist", async () => {
+test("diagnostic probe rejects a non-public final response before reading its body", async () => {
     const result = await ordinary.probeOrdinaryMediaFetch(ordinaryItem({
         url: "https://v11-default.365yg.com/media/source.mp4?fixture=fake",
     }), {
         fetchImpl: async () => ({
             ok: true,
             status: 200,
-            url: "https://attacker.example/redirected.mp4",
+            url: "https://127.0.0.1/redirected.mp4",
             headers: headers({"Content-Type": "video/mp4", "Content-Length": 10}),
             body: {
                 getReader() {
@@ -212,10 +301,12 @@ test("diagnostic probe rejects a final response outside the Worker media allowli
     assert.doesNotMatch(JSON.stringify(result), /attacker|redirected/i);
 });
 
-test("diagnostic probe accepts the reviewed 365yg to bdcgslb final relation", async () => {
+test("diagnostic probe accepts a 365yg to bdcgslb final host with current resource evidence", async () => {
     let cancelled = false;
     const result = await ordinary.probeOrdinaryMediaFetch(ordinaryItem({
         url: "https://v5-default.365yg.com/media/source.mp4?fixture=fake",
+        browser_response_hosts: ["v5-default.365yg.com", "random.edge.bdcgslb.com"],
+        browser_response_hosts_expires_at: Date.now() + 60000,
     }), {
         fetchImpl: async () => ({
             ok: true,
@@ -753,13 +844,13 @@ for (const provider of ["tiantianjiexi", "kukutool"]) {
         const changes = [
             {provider: "unknown"}, {provider: `${provider}_custom`}, {provider: `${provider}_generic`},
             {provider: provider === "kukutool" ? "tiantianjiexi" : "kukutool"},
-            {source_platform: "upstream"}, {source_platform: "third_party"}, {type: "audio", service_audio_file: true},
+            {source_platform: ""}, {source_platform: "bad\nsource"}, {type: "audio", service_audio_file: true},
             {asset_id: "upstream:selection:signed-candidate-low"}, {asset_id: `douyin:8123456789012345678:video:${provider}`},
             {asset_id: `${descriptor.asset_id}extra`}, {asset_id: `douyin:7123456789012345678:video:${provider}:format:xyz`},
             {provider_resource_id: "8123456789012345678"}, {provider_resource_id: 7123456789012345678},
             {provider_cache_key: "cache-for-another-work"}, {selected_format_id: undefined},
             {browser_upstream_bound: false}, {browser_upstream_bound: "true"}, {browser_direct_fetch_safe: "true"},
-            {requires_merge: undefined}, {requires_cookie: undefined}, {selection_delivery: "legacy_manifest"},
+            {requires_merge: undefined}, {selection_delivery: "legacy_manifest"},
             {url: "http://v11-default.365yg.com/media/low.mp4"},
             {url: "https://user:password@v11-default.365yg.com/media/low.mp4"},
             {url: `${descriptor.url}#fragment`}, {url: "https://v11-default.365yg.com:8443/media/low.mp4"},
@@ -825,7 +916,7 @@ test("a plausible error name without explicit unstarted proof never retries sele
     }
 });
 
-test("expiry during safe SW setup failure prevents a new Blob request", async t => {
+test("failed SW setup never renews an expiring selection or starts a Blob request", async t => {
     const now = Date.now();
     t.mock.method(Date, "now", () => now);
     const item = dedicatedServiceFile("tiantianjiexi", {selection_expires_at: now + 1000});
@@ -837,7 +928,7 @@ test("expiry during safe SW setup failure prevents a new Blob request", async t 
             });
         }},
         fetchImpl: () => assert.fail("expired authorization cannot start a fallback request"),
-    }), error => error.errorCode === "DESCRIPTOR_EXPIRED");
+    }), error => error.errorCode === "STREAMING_REGISTRATION_FAILED");
 });
 
 test("worker upgrade is not browser incapability and never starts a Blob request", async () => {
@@ -859,10 +950,11 @@ test("worker upgrade is not browser incapability and never starts a Blob request
     }
 });
 
-test("service schema cannot grant arbitrary non-upstream providers ordinary download permission", () => {
+test("complete authorized bindings do not need a Provider allowlist", () => {
     for (const provider of ["unknown", "yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"]) {
-        for (const source of [{}, {asset_id: "upstream:selection:service-selected-candidate", source_platform: "upstream"}]) {
-            assert.equal(ordinary.isOrdinaryMediaItem(dedicatedServiceFile(provider, source)), false);
+        for (const item of [dedicatedServiceFile(provider), unknownServiceFile(provider)]) {
+            assert.equal(ordinary.isOrdinaryMediaItem(item), true);
+            assert.equal(ordinary.isOrdinaryMediaItem({...item, browser_upstream_bound: false}), false);
         }
     }
 });

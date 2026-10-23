@@ -65,7 +65,7 @@ class BilibiliServiceResultTests(SimpleTestCase):
         self.assertEqual(asset.headers, BILIBILI_HEADERS)
         self.assertEqual(get_media_headers(asset.url, result.platform), BILIBILI_HEADERS)
         self.assertEqual(build_download_strategy(asset, result_platform=result.platform)["download_strategy"],
-                         "server_attachment")
+                         "browser_streaming")
         self.assertTrue(provider_manifest_allows_public_download(asset.to_download_item()))
         self.assertEqual(source_url_for_item(asset.to_download_item()), SOURCE)
         self.assertIn(":BV1xx411c7mD:p1:", asset.asset_id)
@@ -130,14 +130,18 @@ class BilibiliServiceResultTests(SimpleTestCase):
         for candidate in candidates:
             record = self.record(candidate)
             projected = choice(candidate)
-            self.assertFalse(projected["can_download"])
+            self.assertTrue(projected["can_download"])
             self.assertTrue(projected["can_legacy_download"])
             item = selected_legacy_descriptor(record)
             self.assertEqual(item["url"], record["url"])
             self.assertEqual(item["asset_id"], candidate["legacy_asset_id"])
             self.assertTrue(provider_manifest_allows_public_download(item))
-            with self.assertRaisesMessage(ValueError, "service_legacy_delivery_required"):
-                selected_descriptor(record)
+            with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+                direct = selected_descriptor(record)
+            for key in ("url", "asset_id", "provider_manifest_token", "filename"):
+                self.assertEqual(direct[key], item[key])
+            self.assertEqual(direct["download_strategy"], "browser_streaming")
+            self.assertEqual(direct["candidate_id"], candidate["candidate_id"])
 
     def test_cross_manifest_candidate_and_work_rejected(self):
         one, two = [self.result({"video": url}) for url in (MEDIA, MEDIA.replace("video.mp4", "other.mp4"))]
@@ -224,12 +228,12 @@ class BilibiliServiceResultTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             selected_descriptor(self.record(candidate))
 
-    def test_native_strategy_and_global_generic_matching_unchanged(self):
+    def test_native_strategy_is_browser_first_and_generic_matching_unchanged(self):
         from .services.assets import MediaAsset
         native = MediaAsset(media_type="video", platform="bilibili", url=MEDIA)
         strategy = build_download_strategy(native, result_platform="bilibili")
-        self.assertEqual(strategy["download_strategy"], "browser_direct")
-        self.assertEqual(strategy["fallback_strategy"], "server_attachment")
+        self.assertEqual(strategy["download_strategy"], "browser_streaming")
+        self.assertEqual(strategy["fallback_strategy"], "browser_blob")
         self.assertIsNone(GenericThirdPartyAdapter().get_rule_for_url(SOURCE))
 
 

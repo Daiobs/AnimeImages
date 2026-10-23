@@ -1,13 +1,141 @@
 from dataclasses import dataclass
+from hashlib import sha256
 import math
+import re
 import time
+import unicodedata
+from urllib.parse import unquote_to_bytes
 
 import requests
+from django.core.cache import cache
 
 from .common import (
     MEDIA_HOST_SUFFIXES, XhsDownloadError, XhsSecurityError,
     _RedirectBudget, _request_with_retry,
 )
+from .provider_strategy import browser_streaming_resource_url_is_allowed
+from .request_context import request_context_compatible, request_context_fingerprint
+
+
+def native_attachment_cache_key(url, headers=None, **context):
+    return ('media-attachment:v3:' + sha256(str(url).encode()).hexdigest() + ':'
+            + request_context_fingerprint(headers, **context))
+
+
+native_request_context_is_compatible = request_context_compatible
+
+
+def _native_attachment_evidence(url, headers=None, **context):
+    try:
+        value = cache.get(native_attachment_cache_key(url, headers, **context))
+    except Exception:
+        return None
+    if (isinstance(value, dict) and isinstance(value.get('expires_at'), int)
+            and value['expires_at'] > time.time() * 1000):
+        return value
+    return None
+
+
+def native_attachment_expiry(url, headers=None, **context):
+    """A short-lived response fact, never a substitute for resource authorization."""
+    if not request_context_compatible(headers, **context):
+        return 0
+    value = _native_attachment_evidence(url, headers, **context) or {}
+    expiry = value.get('native_expires_at', 0)
+    return expiry if isinstance(expiry, int) and expiry > time.time() * 1000 else 0
+
+
+def browser_response_evidence(url, headers=None, **context):
+    """Final adopted response scope, not a grant to use an arbitrary URL."""
+    if not request_context_compatible(headers, **context):
+        return None
+    evidence = _native_attachment_evidence(url, headers, **context)
+    if not evidence or not evidence.get('final_url'):
+        return None
+    return evidence['final_url'], evidence['expires_at']
+
+
+def ensure_native_attachment_evidence(url, headers=None, *, timeout=2,
+                                      authorized_resource=False, required_headers=(),
+                                      requires_cookie=None, requires_context=None,
+                                      ip_bound=None, headers_present=False):
+    """Reuse positive/negative facts; probe only this already selected resource."""
+    context = dict(required_headers=required_headers, requires_cookie=requires_cookie,
+                   requires_context=requires_context, ip_bound=ip_bound, headers_present=headers_present)
+    if not request_context_compatible(headers, **context):
+        return 0
+    probe = QualityProbe(authorized_resource=authorized_resource)
+    evidence = _native_attachment_evidence(url, headers, **context)
+    if evidence is not None and not (
+            evidence.get('security_rejected')
+            and evidence.get('host_scope') != probe.allowed_final_host_suffixes):
+        return native_attachment_expiry(url, headers, **context)
+    probe.probe(url, headers=headers, timeout=timeout, expected_type='video', **context)
+    return native_attachment_expiry(url, headers, **context)
+
+
+_HTTP_TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+_DISPOSITION_PARAMETER = re.compile(
+    rf';[ \t]*({_HTTP_TOKEN})[ \t]*=[ \t]*({_HTTP_TOKEN}|"(?:[^"\\\r\n]|\\[^\r\n])*")[ \t]*'
+)
+_EXT_VALUE = re.compile(r"([A-Za-z0-9-]+)'([A-Za-z0-9-]*)'((?:[!#$&+.^_`|~0-9A-Za-z-]|%[0-9A-Fa-f]{2})*)")
+_NATIVE_VIDEO_EXTENSIONS = {
+    'video/mp4': {'mp4'},
+    'video/webm': {'webm'},
+    'video/quicktime': {'mov'},
+}
+
+
+def attachment_filename(disposition):
+    """Decode RFC 6266/8187, without MIME continuations or ambiguous duplicates."""
+    if (not isinstance(disposition, str) or len(disposition) > 8192
+            or any(ord(char) < 32 and char != '\t' or ord(char) == 127 for char in disposition)):
+        return ''
+    kind, separator, rest = disposition.partition(';')
+    if kind.strip().lower() != 'attachment':
+        return ''
+    parameters = {}
+    tail = separator + rest
+    # General MIME parsers collapse filename/filename* or tolerate broken
+    # escapes; preserve both HTTP parameters until strict decoding succeeds.
+    while tail:
+        match = _DISPOSITION_PARAMETER.match(tail)
+        if not match:
+            return ''
+        name, value = match.groups()
+        name = name.lower()
+        if name in parameters or name.startswith('filename*') and name != 'filename*':
+            return ''
+        parameters[name] = value
+        tail = tail[match.end():]
+    if 'filename*' in parameters:
+        extended = _EXT_VALUE.fullmatch(parameters['filename*'])
+        if not extended:
+            return ''
+        charset, _, encoded = extended.groups()
+        try:
+            return unquote_to_bytes(encoded).decode(charset, errors='strict')
+        except (LookupError, UnicodeError):
+            # Unrecognized or invalid higher-priority names are uncertain,
+            # not permission to assert the browser will use filename instead.
+            return ''
+    filename = parameters.get('filename', '')
+    if filename.startswith('"'):
+        filename = re.sub(r'\\(.)', r'\1', filename[1:-1])
+    return filename
+
+
+def native_attachment_name_is_eligible(disposition, content_type):
+    extensions = _NATIVE_VIDEO_EXTENSIONS.get(normalize_content_type(content_type), set())
+    if not extensions:
+        return False
+    filename = attachment_filename(disposition)
+    if (not filename or filename != filename.strip()
+            or any(char in '/\\<>:"|?*' or unicodedata.category(char).startswith('C') for char in filename)
+            or len(filename.encode('utf-8')) > 255):
+        return False
+    stem, dot, extension = filename.rpartition('.')
+    return bool(dot and stem.strip(' .') and extension.lower() in extensions)
 
 
 @dataclass(frozen=True)
@@ -21,6 +149,7 @@ class QualityProbeResult:
     error: str = ""
     terminal: bool = False
     security_rejected: bool = False
+    native_attachment_expires_at: int = 0
 
 
 def parse_content_length(response):
@@ -58,8 +187,12 @@ def content_type_matches_expected(content_type, expected_type=""):
 
 
 class QualityProbe:
-    def __init__(self, allowed_final_host_suffixes=MEDIA_HOST_SUFFIXES):
-        self.allowed_final_host_suffixes = allowed_final_host_suffixes or MEDIA_HOST_SUFFIXES
+    def __init__(self, allowed_final_host_suffixes=MEDIA_HOST_SUFFIXES, *, authorized_resource=False):
+        # Only trusted callers that have established resource authorization may
+        # remove the domain scope. Common still validates and pins every hop.
+        self.allowed_final_host_suffixes = (
+            None if authorized_resource else allowed_final_host_suffixes or MEDIA_HOST_SUFFIXES)
+        self.allowed_hop_host_suffixes = None if authorized_resource else MEDIA_HOST_SUFFIXES
 
     def probe(
         self,
@@ -69,42 +202,67 @@ class QualityProbe:
         expected_type="",
         strategy="head_first",
         allow_fallback=True,
+        *,
+        required_headers=(),
+        requires_cookie=None,
+        requires_context=None,
+        ip_bound=None,
+        headers_present=False,
     ):
         timeout = float(timeout)
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
         deadline = time.monotonic() + timeout
+        context = dict(required_headers=required_headers, requires_cookie=requires_cookie,
+                       requires_context=requires_context, ip_bound=ip_bound, headers_present=headers_present)
+        cache_key = native_attachment_cache_key(url, headers, **context)
+        try:
+            cache.delete(cache_key)
+        except Exception:
+            pass
         redirects = _RedirectBudget(5)
         request_headers = headers or {}
         methods = ("RANGE", "HEAD") if strategy == "range_first" else ("HEAD", "RANGE")
 
-        primary_result = self._probe(url, request_headers, timeout, expected_type, methods[0], deadline, redirects)
+        primary_result = self._probe(url, request_headers, timeout, expected_type, methods[0], deadline, redirects, context)
         if primary_result.reachable and primary_result.size_bytes:
-            return primary_result
-        if not allow_fallback or primary_result.terminal:
-            return primary_result
+            result = primary_result
+        elif not allow_fallback or primary_result.terminal:
+            result = primary_result
+        else:
+            fallback_result = self._probe(url, request_headers, timeout, expected_type, methods[1], deadline, redirects, context)
+            if fallback_result.terminal or fallback_result.final_url or fallback_result.reachable:
+                # A received response or terminal refusal supersedes HEAD.
+                result = fallback_result
+            elif primary_result.reachable:
+                # Ordinary transport failure supplies no contrary response.
+                result = primary_result
+            else:
+                result = QualityProbeResult(url=url, error=fallback_result.error or primary_result.error)
+        try:
+            native_expiry = result.native_attachment_expires_at if result.reachable else 0
+            expires_at = native_expiry or int(time.time() * 1000) + 60000
+            remaining = expires_at / 1000 - time.time()
+            if remaining > 0:
+                cache.set(cache_key, {
+                    'expires_at': expires_at, 'native_expires_at': native_expiry,
+                    'security_rejected': result.security_rejected,
+                    'host_scope': self.allowed_final_host_suffixes,
+                    'final_url': result.final_url if result.reachable and content_type_matches_expected(
+                        result.content_type, 'video') else '',
+                }, timeout=math.ceil(remaining))
+        except Exception:
+            pass
+        return result
 
-        fallback_result = self._probe(url, request_headers, timeout, expected_type, methods[1], deadline, redirects)
-        if fallback_result.security_rejected:
-            return fallback_result
-        if fallback_result.reachable:
-            return fallback_result
-        if primary_result.reachable:
-            return primary_result
-        return QualityProbeResult(
-            url=url,
-            error=fallback_result.error or primary_result.error,
-            terminal=fallback_result.terminal,
-        )
-
-    def _probe(self, url, headers, timeout, expected_type, method, deadline, redirects):
+    def _probe(self, url, headers, timeout, expected_type, method, deadline, redirects, context):
         try:
             response = _request_with_retry(
                 url, method="HEAD" if method == "HEAD" else "GET",
                 headers=headers if method == "HEAD" else {**headers, "Range": "bytes=0-0"},
                 timeout=timeout, retries=2, stream=True,
                 accepted_statuses=None, deadline_monotonic=deadline,
-                redirect_budget=redirects, allowed_hop_host_suffixes=MEDIA_HOST_SUFFIXES,
+                redirect_budget=redirects, allowed_hop_host_suffixes=self.allowed_hop_host_suffixes,
                 allowed_final_host_suffixes=self.allowed_final_host_suffixes,
                 final_url_message="资源 URL 跳转到了不允许的下载域名",
             )
@@ -125,6 +283,15 @@ class QualityProbe:
                     if method == "RANGE" and response.status_code == 206
                     else parse_content_length(response)
                 )
+                native_expiry = 0
+                # The request layer validated every redirect hop. Qualify its
+                # final response, but keep evidence bound to the original URL
+                # and context, including requirements stripped across origins.
+                if (browser_streaming_resource_url_is_allowed(response.url)
+                        and request_context_compatible(headers, **context)
+                        and native_attachment_name_is_eligible(
+                            response.headers.get('Content-Disposition', ''), content_type)):
+                    native_expiry = int(time.time() * 1000) + 60000
                 return QualityProbeResult(
                     url=url,
                     final_url=response.url,
@@ -132,6 +299,7 @@ class QualityProbe:
                     size_bytes=size_bytes,
                     content_type=content_type,
                     method=method,
+                    native_attachment_expires_at=native_expiry,
                 )
             finally:
                 response.close()

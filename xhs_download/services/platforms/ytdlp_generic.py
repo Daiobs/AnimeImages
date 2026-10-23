@@ -9,6 +9,8 @@ from django.conf import settings
 from ..assets import MediaAsset, ParseResult
 from ..common import XhsProviderTimeoutError, clean_filename
 from ..provider_manifest import build_provider_manifest_token
+from ..provider_strategy import media_request_context
+from ..request_context import inherit_request_context
 from .douyin_kukutool import submit_provider_task
 from .external_tools import (
     cache_external_failure,
@@ -355,6 +357,7 @@ class YtDlpResultNormalizer:
                 )
                 if not url:
                     continue
+                context = inherit_request_context(payload, item)
                 candidates.append({
                     "url": url,
                     "quality_label": str(
@@ -367,6 +370,8 @@ class YtDlpResultNormalizer:
                         item.get("filesize") or item.get("filesize_approx")
                     ),
                     "size_is_estimate": ytdlp_size_is_estimate(item),
+                    "headers": context['headers'],
+                    "request_context": media_request_context(context),
                     "score": ytdlp_format_score(item),
                 })
 
@@ -381,6 +386,7 @@ class YtDlpResultNormalizer:
             and format_url_is_direct_http(payload)
             and ytdlp_format_has_explicit_complete_video(payload)
         ):
+            context = inherit_request_context(payload)
             candidates.append({
                 "url": fallback_url,
                 "quality_label": str(payload.get("format") or "yt-dlp resource"),
@@ -388,6 +394,8 @@ class YtDlpResultNormalizer:
                     payload.get("filesize") or payload.get("filesize_approx")
                 ),
                 "size_is_estimate": ytdlp_size_is_estimate(payload),
+                "headers": context['headers'],
+                "request_context": media_request_context(context),
                 "score": (
                     integer_value(payload.get("height")),
                     integer_value(payload.get("width")),
@@ -434,6 +442,8 @@ class YtDlpResultNormalizer:
             quality_label=selected["quality_label"],
             size_bytes=selected["size_bytes"],
             size_is_estimate=selected["size_is_estimate"],
+            headers=selected.get("headers", {}),
+            request_context=selected.get("request_context", {}),
             **self.build_provider_asset_fields(
                 rule,
                 source_url,

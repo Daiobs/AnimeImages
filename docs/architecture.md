@@ -210,7 +210,7 @@ Native 取得完整单文件时不调用服务。对于规范 BV/AV 视频第一
 
 不为预留兜底而缩短 Native 原有期限。调用方提供的总 deadline 仍是硬上限，耗尽就不再启动服务；未指定总 deadline 的普通入口，仅在 Native 失败后使用既有 `TIANTIANJIEXI_TIMEOUT_SECONDS` 作为服务阶段预算，排队同样计入。
 
-服务结果必须包含合法完整视频；封面不算成功。保留真实服务身份、作品引用和每个资源的独立签名，经共用选择器进入既有 Bilibili 附件下载入口，保持原 Referer/UA 和地址校验。HTTP CDN 返回保留原协议，不强行改为 HTTPS，也不送入浏览器直连路径。展示、选择、签发动作及实际下载不复用 Native 授权；下载时重新核验当前服务准入。不同出口上的 Native 可用性不同，此兜底不代表解除上游风控或保证所有作品成功。
+服务结果必须包含合法完整视频；封面不算成功。保留真实服务身份、作品引用和每个资源的独立签名。经核验且请求条件兼容的 HTTPS 完整文件，Native 和服务选择器均走共用浏览器下载入口，不限于 `bilivideo.com` / `bilivideo.cn`；服务器只签发授权及必要的有界元数据探测，不转发媒体正文。HTTP CDN 返回保留原协议，不强行改为 HTTPS，继续使用已有附件路径及原 Referer/UA、地址校验。展示、选择、签发动作及实际下载不复用 Native 授权；下载时重新核验当前服务准入。不同出口上的 Native 可用性不同，此兜底不代表解除上游风控或保证所有作品成功。
 
 访客只开放这一条兜底时，在现有 Provider 配置的“第三方访客允许平台”中追加
 `bilibili:tiantianjiexi_fallback`，不需要添加整站 Host 或开放所有天天来源。
@@ -248,7 +248,8 @@ Provider capability、public exposure、platform allowlist、rollout 和 safety 
 
 ```mermaid
 flowchart LR
-    C[Provider or CDN] --> S[Browser Service Worker]
+    C[Authorized HTTPS video] -->|Attachment evidence| M[Browser Download Manager]
+    C -->|Otherwise| S[Browser Service Worker]
     S --> M[Browser Download Manager]
     M --> K[Disk]
     A[AnimeImages control plane] -. descriptor and validation .-> S
@@ -256,9 +257,13 @@ flowchart LR
 
 普通视频的目标是 Browser Zero Relay：AnimeImages 不传输普通媒体 body，也不在 direct failure 后自动切入 Server Relay。
 
-图示适用于已授权且处于现有 SW 资源策略范围内的完整视频，不是所有 HTTPS 视频。范围外合法资源及独立音频仍按原条件走有界兼容路径；候选绑定或 Provider 名称不单独决定 Blob。选择器、动作描述符与共用入口保持所选资源、文件名和有效期一致，适用的旧资产/专用路径另核验准确 manifest，不把它强加为全部通用候选的契约。
+图示适用于已授权且请求条件兼容的普通 HTTPS 完整视频；原生与 SW 资格不按 Provider 或静态 CDN 名单决定，也不把任意 HTTPS URL 当作授权。默认 UA、Accept、Referer、Origin、大小写无关的 `Sec-Fetch-Mode` 等惯用媒体头不单独证明必要条件；明确必需 Cookie、认证、自定义头、`required_headers`、必要上下文或 IP 绑定仍阻挡直连，其私有事实不能在归一化或候选转换中丢失。独立音频和其他特殊资源保留各自路径；候选绑定不单独决定 Blob。选择器、动作描述符与共用入口保持所选资源、文件名和有效期一致，适用的旧资产/专用路径另核验准确 manifest，不把它强加为全部通用候选的契约。
 
-当前协议为 v4，客户端核验实际 controller。旧 Worker 等待更新时不静默 Blob，不用未知状态推断可以接管；正常更新后重新握手和检查原期限。具体用户操作和 Chrome/Safari/IAB 证据范围见 [格式选择指南](ytdlp-result-picker.md)。
+已有最终探测证据支持正常附件名和正确扩展名、且请求条件兼容时，原生 CDN 导航先于 Worker 设置，不要求源站支持 CORS。正常 QualityProbe 自然产生证据；动作端通过准入、成本和限额后，必要时只为所选视频调用 `ensure_native_attachment_evidence(..., authorized_resource=True)`。肯定和否定缓存按 URL 与必要上下文隔离，不为列表逐项探测、不续签授权。存在 `filename*` 时必须严格成功解码，不能以未知字符集或无效值降级使用 `filename` 宣称原生资格；合理源站基名允许保留。
+
+SW 备用客户端按需使用下载专用作用域的 active Worker，登记后状态与取消消息保持绑定原任务 Worker。登记事件仅在有界准备阶段保留生命周期，导航接入后由 fetch 事件负责传输；取消、过期或失败及时释放。资源准入仍在动作接口与页面执行；页面提供通用传输约束，Worker 按约束检查 HTTPS、安全目标、CORS、重定向终点、MIME 和大小，不凭内置平台或 CDN 清单决定新任务能否传输。候选/manifest 不进入新任务的 Worker 消息，原候选期限和来源授权不放宽。
+
+Worker 入口将实现与依赖作为一个完整脚本交付，依赖变更必然改变入口内容；需要 SW 备用交付时才注册，浏览器按正常生命周期更新。不增加下载时的版本门槛、强制接管或清数据要求。规则拒绝、注册失败和启动超时不代表浏览器缺少能力，不静默切换 Blob；只有实际缺少 SW 能力时才保留有界 Blob 兼容。旧报文入口按 G1 暂时保留，不是第二套 Worker。具体用户操作和 Chrome/Safari/IAB 证据范围见 [格式选择指南](ytdlp-result-picker.md)。
 
 ### Images And Archives
 
@@ -317,10 +322,14 @@ Requests 行为。同步 DNS/I/O 不能被期限强制中断，但超时返回�
 其他不可恢复解析错误明确报告 DNS 失败，而非危险跳转。解析到禁止地址仍
 立即拒绝。服务入口的来源 DNS 失败不记录为平台永久不支持。
 
-`QualityProbe` 的 HEAD/Range 复用上述逐跳逻辑，并在每跳应用媒体域名策略。
+`QualityProbe` 的 HEAD/Range 复用上述逐跳逻辑，默认仍在每跳应用原媒体域名策略。
+仅调用者已完成资源授权时显式使用 `authorized_resource=True`，将初始、逐跳和最终
+主机的静态后缀限制设为通用安全检查；协议、端口、公共 DNS、固定直连地址和跳转预算仍保留。
 两种方法共用一个总期限和五次跳转额度；HEAD 不支持或缺少大小时可尝试 Range，
 安全拒绝不 fallback。206 从 Content-Range 取总大小；只检查响应头并关闭响应，
 不因服务器忽略 Range 而读取完整媒体。探测可达不代表完整文件保存已通过。
+附件证据只随最终采用结果提交，最终否定撤销同一必要上下文的旧证据；仅普通网络
+失败且无相反响应时沿用可达 HEAD。证据自观察起最多缓存 60 秒，不因回退等待续期。
 
 这两条路径的**直连**使用本次已验证的数字地址，保留原 URL、Host、TLS SNI
 和证书校验；每次准入使用独立连接池。建连可在同一已验证地址集合内回退，
@@ -328,8 +337,8 @@ Requests 行为。同步 DNS/I/O 不能被期限强制中断，但超时返回�
 配置出口代理时保留 Requests 行为，代理自行解析的目标 **未固定 IP**，代理端
 出口约束仍是发布前待核验/待决风险，不能代替 Human 接受它。最小后续范围是
 核实实际代理和源站出口限制，必要时在代理端执行禁止地址策略，而非放宽应用
-白名单。本轮未迁移其他独立 Provider/签名请求客户端，亦未改变浏览器 SW/CDN
-传输和播放；单独调用 URL 校验函数本身不为其后任意客户端固定连接地址。
+白名单。上述逐跳与固定地址保证限于已接入的服务端请求 helper，不自动覆盖其他
+独立 Provider/签名客户端或浏览器传输；单独调用 URL 校验函数本身不为其后任意客户端固定连接地址。
 
 ## Batch
 

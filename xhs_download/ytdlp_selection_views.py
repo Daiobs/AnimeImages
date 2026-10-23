@@ -5,6 +5,7 @@ Every action rechecks current source/Provider admission and the private cache.
 """
 import json
 import logging
+from time import time
 from urllib.parse import urlsplit
 
 from django.http import JsonResponse
@@ -181,6 +182,16 @@ def ytdlp_selected_format_view(request, *, service=False):
         if data['action'] == 'preview':
             if not selection.capability(record['public'])['can_preview']:
                 return _response({'status': 'error', 'message': '此格式暂不支持内嵌预览。'}, 409)
+        if data['action'] == 'download' and item.get('type') == 'video':
+            from .services.provider_strategy import prepare_browser_transport
+            item = prepare_browser_transport(item, request_context=record)
+            # Metadata is bounded, but may finish after the original grant.
+            # Do not renew the candidate or reuse a prior admission decision.
+            current = resolve_candidate_record(data['resource_token'], data['candidate_id'])
+            if not _admitted(request, current, provider=provider, service=service):
+                return _response({'status': 'error', 'message': '当前无权使用此格式。'}, 403)
+            if item.get('selection_expires_at', 0) <= time() * 1000:
+                raise ValueError('selected_format_expired')
         # Issuing information is not proof that a file was downloaded or saved.
         logger.info('ytdlp_selected_descriptor_issued action=%s candidate_id=%s', data['action'], record['candidate_id'])
         return _response({'status': 'success', 'item': item,

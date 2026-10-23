@@ -21,6 +21,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -68,6 +69,9 @@ class OfflineTransport:
         self.sent_service_outcomes = []
         self.native_outcome = 412
         self.service_outcome = "success"
+        self.native_size = 12345
+        self.media_headers = {}
+        self.media_calls = []
 
     def send(self, request, **kwargs):
         parsed = urlsplit(request.url)
@@ -96,7 +100,7 @@ class OfflineTransport:
                     "pages": [{"cid": 456, "page": 1, "part": "Part one"}],
                 }
             elif parsed.path == "/x/player/playurl":
-                data = {"quality": 80, "durl": [{"url": MEDIA, "size": 12345}]}
+                data = {"quality": 80, "durl": [{"url": MEDIA, "size": self.native_size}]}
                 if self.native_outcome == "incomplete":
                     data = {"quality": 80, "dash": {
                         "video": [{"id": 80, "height": 1080, "width": 1920,
@@ -127,6 +131,16 @@ class OfflineTransport:
                     {"url": MEDIA, "quality": "1080P", "size": 12345},
                 ]}],
             }})
+        if request.url == MEDIA:
+            self.media_calls.append(request.method)
+            response = requests.Response()
+            response.status_code = 200
+            response.url = request.url
+            response.request = request
+            response.headers.update({'Content-Type': 'video/mp4', 'Content-Length': '12345', **self.media_headers})
+            response._content = b''
+            response._content_consumed = True
+            return response
         raise AssertionError(f"Unexpected outbound HTTP request: {request.method} {request.url}")
 
 
@@ -192,6 +206,101 @@ class BackendHTTPContracts(TestCase):
         self.assertNotContains(response, SERVICE_TITLE)
         self.assertGreater(len(self.transport.events), 0)
         self.assertEqual(set(self.transport.events), {"native"})
+
+    def test_inv03_bilibili_complete_file_is_browser_first_for_native_and_service(self):
+        for native_outcome in ("success", 412):
+            with self.subTest(native_outcome=native_outcome):
+                cache.clear()
+                self.transport.events.clear()
+                self.transport.native_outcome = native_outcome
+                page = self.parse()
+                self.assertEqual(page.status_code, 200)
+                soup = BeautifulSoup(page.content, "html.parser")
+                if native_outcome == "success":
+                    card = soup.select_one('[data-type="video"][data-url]')
+                    self.assertIsNotNone(card)
+                    item = {"type": "video", "url": card["data-url"],
+                            "source_platform": "bilibili"}
+                    response = self.client.post(reverse("download_images_api"), {
+                        "media_items": [item], "download_mode": "auto", "route_only": True,
+                    }, content_type="application/json")
+                    self.assertEqual(response.status_code, 200, response.content)
+                    self.assertEqual(response.json()["route_type"], "direct")
+                    item = response.json()["items"][0]
+                else:
+                    radio = soup.select_one('[data-picker-radio]')
+                    self.assertIsNotNone(radio)
+                    response = self.client.post(reverse("service_selected_format"), {
+                        "candidate_id": radio["value"],
+                        "resource_token": radio["data-token"], "action": "download",
+                    }, content_type="application/json")
+                    self.assertEqual(response.status_code, 200, response.content)
+                    item = response.json()["item"]
+                    self.assertEqual(item["source_platform"], "bilibili")
+                    self.assertEqual(item["provider"], "tiantianjiexi_generic")
+                    self.assertEqual(item["candidate_id"], radio["value"])
+                    self.assertTrue(item["provider_manifest_token"])
+                self.assertEqual(item["url"], MEDIA)
+                self.assertTrue(item["browser_direct_fetch_safe"])
+                self.assertEqual(item["download_strategy"], "browser_streaming")
+                self.assertNotIn("server_single_attachment", str(item))
+
+    def test_inv03_default_headers_metadata_probe_enables_native_without_reprobe(self):
+        self.transport.native_outcome = 'success'
+        self.transport.native_size = 0
+        self.transport.media_headers = {'Content-Disposition': 'attachment; filename="source.mp4"'}
+        page = self.parse()
+        self.assertEqual(page.status_code, 200)
+        soup = BeautifulSoup(page.content, 'html.parser')
+        card = soup.select_one('[data-type="video"][data-url]')
+        self.assertIsNotNone(card)
+        self.assertEqual(self.transport.media_calls, ['HEAD'])
+        response = self.client.post(reverse('download_images_api'), {
+            'media_items': [{'type': 'video', 'url': card['data-url'], 'source_platform': 'bilibili'}],
+            'download_mode': 'auto', 'route_only': True,
+        }, content_type='application/json')
+        self.assertEqual(response.status_code, 200, response.content)
+        item = response.json()['items'][0]
+        self.assertEqual(item['download_strategy'], 'browser_native')
+        self.assertGreater(item['native_download_expires_at'], time.time() * 1000)
+        self.assertEqual(self.transport.media_calls, ['HEAD'])
+        self.assertEqual(item['url'], MEDIA)
+
+    def test_inv06_public_action_uses_valid_source_filename_evidence_without_reprobe(self):
+        self.transport.native_outcome = 'success'
+        self.transport.native_size = 0
+        for disposition, expected in (
+            ('attachment; filename="12345.mp4"', 'browser_native'),
+            ("attachment; filename=wrong.bin; filename*=UTF-8''12345%2Emp4", 'browser_native'),
+            ('attachment; filename="12345.bin"', 'browser_streaming'),
+            ('attachment; filename="12345.webm"', 'browser_streaming'),
+            ("attachment; filename=12345.mp4; filename*=UTF-8''wrong.bin", 'browser_streaming'),
+            ('attachment', 'browser_streaming'),
+            ("attachment; filename*=UTF-8''broken%GG.mp4", 'browser_streaming'),
+        ):
+            with self.subTest(disposition=disposition):
+                cache.clear()
+                self.transport.media_calls.clear()
+                self.transport.media_headers = {'Content-Disposition': disposition}
+                page = self.parse()
+                self.assertEqual(page.status_code, 200)
+                card = BeautifulSoup(page.content, 'html.parser').select_one('[data-type="video"][data-url]')
+                self.assertIsNotNone(card)
+                self.assertEqual(self.transport.media_calls, ['HEAD'])
+                response = self.client.post(reverse('download_images_api'), {
+                    'media_items': [{'type': 'video', 'url': card['data-url'], 'source_platform': 'bilibili'}],
+                    'download_mode': 'auto', 'route_only': True,
+                }, content_type='application/json')
+                self.assertEqual(response.status_code, 200, response.content)
+                item = response.json()['items'][0]
+                self.assertEqual(item['download_strategy'], expected)
+                self.assertEqual(item['url'], MEDIA)
+                if expected == 'browser_native':
+                    self.assertGreater(item['native_download_expires_at'], time.time() * 1000)
+                    self.assertEqual(item['fallback_strategy'], 'none')
+                else:
+                    self.assertNotIn('native_download_expires_at', item)
+                self.assertEqual(self.transport.media_calls, ['HEAD'])
 
     def test_inv05_eligible_native_failures_use_admitted_tiantian(self):
         for outcome in (412, 429, 500, 503, 599, "timeout", "incomplete"):

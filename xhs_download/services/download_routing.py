@@ -1,15 +1,13 @@
+from time import time
 from urllib.parse import urlparse
 
 from download_console.models import DownloadRuntimeSetting
 from ..models import KukuToolDownloadDeliveryMode, ProviderRuntimeSetting
 
 from .downloads import provider_manifest_allows_public_download
-from .provider_strategy import BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
-from .platforms.xhs_tiantian_media_policy import (
-    xhs_tiantian_manifest_item_is_allowed,
-)
-from .platforms.xiaohongshu import (
-    xhs_native_video_url_is_browser_streaming_allowed,
+from .provider_strategy import (
+    SERVER_MERGE_PROVIDERS,
+    browser_video_access_is_compatible,
 )
 
 
@@ -30,12 +28,6 @@ SERVER_SIDE_PROVIDERS = {
     "kukutool_generic",
     "youtube_merge",
     "yt_dlp_merge",
-}
-BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS = BROWSER_DIRECT_FETCH_SAFE_PROVIDERS
-BROWSER_DIRECT_VIDEO_PROVIDERS = BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
-BROWSER_FIRST_VIDEO_PROVIDERS = {
-    "kukutool",
-    "tiantianjiexi",
 }
 SERVER_PROXY_VIDEO_PROVIDERS = {
     "kukutool",
@@ -82,10 +74,6 @@ def item_is_kukutool_video(item):
     return item_provider(item) == "kukutool" and item_is_video(item)
 
 
-def item_is_browser_first_provider_video(item):
-    return item_provider(item) in BROWSER_FIRST_VIDEO_PROVIDERS and item_is_video(item)
-
-
 def item_is_image(item):
     return item_type(item) == "image"
 
@@ -113,17 +101,6 @@ def item_is_xhs_zero_relay_image(item):
 def selection_has_xhs_zero_relay_image(items):
     normalized = [item for item in items or () if isinstance(item, dict)]
     return any(item_is_xhs_zero_relay_image(item) for item in normalized)
-
-
-def item_is_xhs_native_browser_video(item):
-    return bool(
-        isinstance(item, dict)
-        and item_is_video(item)
-        and not item_provider(item)
-        and str(item.get("source_platform") or "").strip().lower()
-        == "xiaohongshu"
-        and xhs_native_video_url_is_browser_streaming_allowed(item_url(item))
-    )
 
 
 def is_http_url(url):
@@ -205,27 +182,38 @@ def provider_item_requires_server(item):
     return not provider_manifest_allows_public_download(item)
 
 
-def item_can_browser_direct_video(item):
+def _authorized_browser_video_facts(item):
     if not isinstance(item, dict) or not item_is_video(item):
-        return False
+        return None
     url = item_url(item)
     if not is_http_url(url):
-        return False
+        return None
     provider = item_provider(item)
+    if provider in SERVER_MERGE_PROVIDERS:
+        return None
+    if provider:
+        if not provider_manifest_allows_public_download(item):
+            return None
+    else:
+        # Legacy Native cards have no issued provider token. Keep their
+        # existing source admission, separately from transport capability.
+        from .common import validate_media_url, XhsError
+        try:
+            validate_media_url(url)
+        except XhsError:
+            return None
+    # Legacy manifests authorize this exact resource, not client capability
+    # flags. Only issuer-held context may add restrictions to those facts.
+    facts = {"type": "video", "url": url}
     if item_is_upstream(item):
-        return provider_manifest_allows_public_download(item)
-    if item_is_xhs_native_browser_video(item):
-        return True
-    if (
-        provider == "tiantianjiexi_generic"
-        and xhs_tiantian_manifest_item_is_allowed(item)
-    ):
-        return True
-    return (
-        provider in BROWSER_DIRECT_VIDEO_PROVIDERS
-        and provider in BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
-        and provider_manifest_allows_public_download(item)
-    )
+        from .upstream_delivery import upstream_resource_context
+        facts.update(upstream_resource_context(item))
+    return facts
+
+
+def item_can_browser_direct_video(item):
+    facts = _authorized_browser_video_facts(item)
+    return facts is not None and browser_video_access_is_compatible(facts)
 
 
 def single_video_can_server_proxy_download(item):
@@ -285,18 +273,7 @@ def single_video_can_browser_direct_attempt(item):
 
 
 def single_video_prefers_browser_direct(item, runtime_setting=None):
-    if single_video_can_browser_direct_attempt(item):
-        return True
-    if not isinstance(item, dict) or not item_is_browser_first_provider_video(item):
-        return False
-    if not is_http_url(item_url(item)):
-        return False
-    runtime_setting = runtime_setting or ProviderRuntimeSetting.load()
-    return (
-        item_provider(item) in BROWSER_DIRECT_FETCH_SAFE_VIDEO_PROVIDERS
-        and kukutool_browser_first_enabled(runtime_setting)
-        and provider_manifest_allows_public_download(item)
-    )
+    return single_video_can_browser_direct_attempt(item)
 
 
 def single_image_can_attachment_download(item):
@@ -341,17 +318,21 @@ def public_route_item(item):
     if isinstance(item, dict):
         if item_is_upstream(item):
             public_item["browser_upstream_bound"] = provider_manifest_allows_public_download(item)
-        browser_direct_fetch_safe = item_can_browser_direct_video(item)
+        facts = _authorized_browser_video_facts(item)
+        browser_direct_fetch_safe = facts is not None and browser_video_access_is_compatible(facts)
         public_item["browser_direct_fetch_safe"] = browser_direct_fetch_safe
         if browser_direct_fetch_safe:
             public_item["requires_merge"] = False
-            public_item["requires_cookie"] = False
+            public_item["requires_cookie"] = facts.get("requires_cookie")
+            public_item["request_context_status"] = "no_known_requirement"
+            if not item_is_upstream(item):
+                public_item.update(browser_transport_hint({**public_item, **facts}))
             if item_is_upstream(item):
                 binding = upstream_video_resource_binding(item)
                 if binding:
                     public_item.update(binding)
                     if binding.get("selection_expires_at"):
-                        public_item.update(browser_transport_hint(public_item))
+                        public_item.update(browser_transport_hint({**public_item, **facts}))
                     else:
                         public_item["browser_upstream_bound"] = False
                         public_item["browser_direct_fetch_safe"] = False
@@ -359,6 +340,54 @@ def public_route_item(item):
                     public_item["browser_upstream_bound"] = False
                     public_item["browser_direct_fetch_safe"] = False
     return public_item
+
+
+def prepare_browser_route_items(request, media_items):
+    """Prepare only an explicit download, using the original resource authority."""
+    from .common import XhsParseError
+    from .provider_manifest import provider_manifest_expires_at
+    from .provider_strategy import prepare_browser_transport
+
+    def authorized_video(item):
+        facts = _authorized_browser_video_facts(item)
+        if facts is None or not browser_video_access_is_compatible(facts):
+            raise XhsParseError('下载授权不可用或已失效，请重新解析。')
+        if item_is_upstream(item):
+            from .upstream_delivery import upstream_resource_record
+            from ..ytdlp_selection_views import _admitted
+            record = upstream_resource_record(item)
+            if not record or not _admitted(request, {
+                    'provider_id': record['provider'], 'source_url': record.get('source_url', ''),
+                    'match': record.get('match', {}),
+            }, provider=record['provider'], service=record['provider'] in {
+                    'tiantianjiexi_generic', 'kukutool_generic'}):
+                raise XhsParseError('当前无权使用此资源，请重新解析。')
+        public = public_route_item(item)
+        if public.get('browser_direct_fetch_safe') is not True:
+            raise XhsParseError('下载授权不可用或已失效，请重新解析。')
+        # A route projection must not extend an issuer's original manifest TTL.
+        if item.get('provider_manifest_token'):
+            expires_at = provider_manifest_expires_at(item['provider_manifest_token']) * 1000
+            public['selection_expires_at'] = min(public.get('selection_expires_at', expires_at), expires_at)
+        if public.get('selection_expires_at', float('inf')) <= time() * 1000:
+            raise XhsParseError('下载授权已失效，请重新解析。')
+        if 'selection_expires_at' in public:
+            # Legacy cards lack a selection binding; the existing transport
+            # still enforces this trusted absolute deadline via expiresAt.
+            public['expiresAt'] = public['selection_expires_at']
+        return public, facts
+
+    # Validate the whole selected set before any metadata request.
+    authorized = [authorized_video(item) if item_is_video(item) else (public_route_item(item), None)
+                  for item in media_items]
+    prepared = [prepare_browser_transport(public, request_context=facts) if facts is not None else public
+                for public, facts in authorized]
+    for original, descriptor in zip(media_items, prepared):
+        if item_is_video(original):
+            authorized_video(original)
+            if descriptor.get('selection_expires_at', float('inf')) <= time() * 1000:
+                raise XhsParseError('下载授权已失效，请重新解析。')
+    return prepared
 
 
 def route_payload(
@@ -440,7 +469,7 @@ def decide_download_route(request, media_items, *, requested_mode="", platform_k
         )
         images_only = all(item_is_image(item) for item in normalized_items)
         browser_selection = images_only or (
-            len(normalized_items) == 1 and item_is_video(normalized_items[0])
+            len(normalized_items) == 1 and item_can_browser_direct_video(normalized_items[0])
         )
         allowed = valid and browser_selection and requested_mode in {"", "auto", "browser"}
         return route_payload(

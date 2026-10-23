@@ -70,11 +70,14 @@
             return item;
         }
         if (delivery !== "direct") throw new Error("交付方式无效，未开始下载。");
+        const cookieCompatible = item && (item.requires_cookie === false
+            || (item.requires_cookie == null && item.request_context_status === "no_known_requirement"));
         if (!item || item.selection_schema !== (selection.schema || SCHEMA) || item.provider !== (selection.provider || "yt_dlp_generic")
                 || item.candidate_id !== selection.id || item.type !== selection.kind
                 || (selection.formatId !== undefined && item.selected_format_id !== selection.formatId)
                 || item.browser_upstream_bound !== true || item.browser_direct_fetch_safe !== true
-                || item.requires_merge !== false || item.requires_cookie !== false) throw new Error("返回格式与本次选择不一致，未开始下载。");
+                || item.requires_merge !== false || !cookieCompatible
+                || item.request_context_status === "required") throw new Error("返回格式与本次选择不一致，未开始下载。");
         if (["tiantianjiexi", "kukutool"].includes(item.provider)) {
             validateLinkItem(item, selection);
             if (selection.schema !== "service_selected_format_v1" || selection.kind !== "video"
@@ -90,6 +93,18 @@
             if (!(item.asset_id === assetPrefix || item.asset_id.startsWith(`${assetPrefix}:format:`)
                     && /^[a-f0-9]{24}$/.test(item.asset_id.slice(`${assetPrefix}:format:`.length)))) {
                 throw new Error("返回资源身份与本次选择不一致，未开始下载。");
+            }
+        }
+        if (item.source_platform === "bilibili") {
+            validateLinkItem(item, selection);
+            if (selection.schema !== "service_selected_format_v1" || item.provider !== "tiantianjiexi_generic"
+                    || selection.kind !== "video" || !selection.legacyAssetId || item.asset_id !== selection.legacyAssetId
+                    || !/^bilibili:service:BV[A-Za-z0-9]{10}:p[1-9][0-9]*:video:[a-f0-9]{24}$/.test(item.asset_id)
+                    || !/^[a-f0-9]{64}$/.test(item.provider_resource_id)
+                    || item.provider_cache_key !== `bilibili:service:${item.provider}:${item.provider_resource_id}`
+                    || typeof item.provider_manifest_token !== "string" || !item.provider_manifest_token
+                    || /[\s\\\u0000-\u001f\u007f]/.test(item.provider_manifest_token)) {
+                throw new Error("返回资源授权与本次选择不一致，未开始下载。");
             }
         }
         sourceHttps(item.url);
@@ -464,11 +479,11 @@
                 const item = await descriptor(descriptorRoot, selection, "download", environment, operation.signal);
                 if (!isCurrent() || !current(operation) || operation.signal.aborted || !sameSelection(selection, snapshot)) return;
                 if (progress) { progress.hidden = false; progress.removeAttribute("value"); }
-                await ordinary.download(item, {
+                const saved = await ordinary.download(item, {
                     filename: item.filename, signal: operation.signal,
                     onStage(stage, message) {
                         if (!current(operation)) return;
-                        if (stage === "updating") { say(message); return; }
+                        if (stage === "updating" || stage === "handed_off") { say(message); return; }
                         const messages = {preparing: "正在准备浏览器保存…", fetching: "正在接收所选源文件…", saving: "正在交给浏览器保存…", completed: "已交给浏览器保存，请在下载列表中确认。"};
                         say(messages[stage] || "正在处理所选格式…");
                     },
@@ -479,7 +494,8 @@
                         else progress.removeAttribute("value");
                     },
                 });
-                if (current(operation)) say("已交给浏览器保存，请在下载列表中确认。");
+                if (current(operation)) say(saved && saved.transport === 'browser_native'
+                    ? saved.message : "已交给浏览器保存，请在下载列表中确认。");
             } catch (error) {
                 const cancellationUnknown = error && error.errorCode === "STREAMING_CANCEL_STATE_UNKNOWN";
                 if (current(operation)) say(cancellationUnknown ? "尚未确认下载已停止，请查看浏览器下载列表；未自动重试。" :

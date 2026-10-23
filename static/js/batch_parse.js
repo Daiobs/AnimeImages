@@ -534,7 +534,9 @@
     }
 
     async function authorizeBatchUpstreamItems(page, items, options) {
-        if (!items.some((item) => String(item.asset_id || "").startsWith("upstream:"))) {
+        const download = options && options.intent === "download";
+        if (!items.some((item) => String(item.asset_id || "").startsWith("upstream:")
+            || (download && item.type === "video"))) {
             return items;
         }
         const token = page && page.querySelector('input[name="csrfmiddlewaretoken"]');
@@ -545,7 +547,8 @@
             method: "POST",
             headers: {"Content-Type": "application/json", "X-CSRFToken": token.value},
             body: JSON.stringify({media_items: items, route_only: true, save_format: "original", base_filename: "media",
-                ...(options && options.intent === "resource_link" ? {intent: "resource_link"} : {})}),
+                ...(download ? {intent: "download"}
+                    : options && options.intent === "resource_link" ? {intent: "resource_link"} : {})}),
             signal: options && options.signal,
         });
         if (!response.ok) {
@@ -554,7 +557,8 @@
         const route = await response.json();
         if (route.route_type !== "direct" || !Array.isArray(route.items)
             || route.items.length !== items.length
-            || route.items.some((item, index) => item.browser_upstream_bound !== true
+            || route.items.some((item, index) => (String(items[index].asset_id || "").startsWith("upstream:")
+                && item.browser_upstream_bound !== true)
                 || item.asset_id !== items[index].asset_id || item.url !== items[index].url
                 || item.type !== items[index].type)) {
             throw new Error("下载授权已失效，请重新解析。");
@@ -1214,7 +1218,7 @@
         resetBatchDownloadProgress(button);
         try {
             const page = button.closest(".batch-parse-page");
-            const authorizedItems = await authorizeBatchUpstreamItems(page, [item]);
+            const authorizedItems = await authorizeBatchUpstreamItems(page, [item], {...options, intent: "download"});
             if (options.isCurrent && !options.isCurrent()) return;
             await ordinaryMediaDownloadApi.download(authorizedItems[0], {
                 filename: item.filename,

@@ -1927,7 +1927,7 @@
                 },
             });
             assertDownloadCurrent(operation);
-            return [result.filename];
+            return result;
         }
 
         async function postDownloadPayload(payload, operation) {
@@ -1966,11 +1966,13 @@
             }
             if (directRouteHasOrdinaryMedia(directItems)) {
                 try {
-                    const filenames = await downloadOrdinaryMediaRouteItems(directItems, baseFilename, operation);
+                    const result = await downloadOrdinaryMediaRouteItems(directItems, baseFilename, operation);
                     assertDownloadCurrent(operation);
                     setStatus(
                         getStatusElement(),
-                        `已交给浏览器保存：${filenames.join("、")}${routeWarningText(routeData.warnings)}`,
+                        result.transport === 'browser_native'
+                            ? result.message
+                            : `已交给浏览器保存：${result.filename}${routeWarningText(routeData.warnings)}`,
                         "text-success",
                     );
                 } catch (error) {
@@ -2124,6 +2126,7 @@
                 );
                 const payload = {
                     media_items: chosenItems,
+                    intent: "download",
                     base_filename: filenameBase,
                     download_mode: forceAutoMode ? "auto" : "browser",
                     save_dir: String(savedSettings.save_dir || "xhs").trim(),

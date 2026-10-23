@@ -45,6 +45,7 @@ class FrontendHttpContracts(TransactionTestCase):
             },
         )
         self.calls = []
+        self.media_scheme = 'https'
         self.enterContext(offline_requests(self.send))
 
     def send(self, request, **kwargs):
@@ -77,10 +78,10 @@ class FrontendHttpContracts(TransactionTestCase):
         elif parsed.path == "/x/player/playurl":
             body = json.dumps({"code": 0, "data": {
                 "quality": 80, "accept_quality": [80], "accept_description": ["1080P"],
-                "durl": [{"url": "https://media.bilivideo.com/resource", "size": 10}],
+                "durl": [{"url": f"{self.media_scheme}://media.hdslb.com/resource", "size": 10}],
             }}).encode()
             response.headers["Content-Type"] = "application/json"
-        elif parsed.hostname in {"media.bilivideo.com", "media.tiktokcdn.com"}:
+        elif parsed.hostname in {"media.hdslb.com", "media.tiktokcdn.com"}:
             body = b"first-last"
             response.headers["Content-Type"] = "video/mp4"
         else:
@@ -156,6 +157,15 @@ class FrontendHttpContracts(TransactionTestCase):
         outbound = []
 
         def send_caption(request, **kwargs):
+            if request.url.startswith(media_root):
+                self.assertEqual(request.method, 'HEAD')
+                outbound.append(request)
+                response = requests.Response()
+                response.status_code, response.url, response.request = 200, request.url, request
+                response.headers.update({'Content-Type': 'video/mp4', 'Content-Length': '2000',
+                                         'Content-Disposition': 'inline'})
+                response.raw = io.BytesIO(b'')
+                return response
             if request.url == "https://sidecar.invalid/health":
                 self.assertEqual(request.method, "GET")
                 body = {"status": "ok", "contract_version": "douyin-source-resolver.v1",
@@ -210,7 +220,8 @@ class FrontendHttpContracts(TransactionTestCase):
             self.assertLess(len(filename), len(caption))
             for excluded in (description[:12], "#", ".bin", *topics):
                 self.assertNotIn(excluded, filename)
-        self.assertEqual(len(outbound), requests_before_selection, "Selection must not reparse or fetch media")
+        self.assertEqual(len(outbound), requests_before_selection + 1, "Only the selected file needs a bounded HEAD")
+        self.assertEqual(outbound[-1].method, 'HEAD')
         self.assertEqual(sum(request.method == "POST" for request in outbound), 1)
 
     def test_INV07_public_hides_technical_details_while_staff_keeps_them(self):
@@ -237,7 +248,9 @@ class FrontendHttpContracts(TransactionTestCase):
             self.assertEqual("tiantianjiexi_generic" in text, staff)
 
     def test_INV04_INV06_bilibili_attachment_contract_for_safari_and_chrome_user_agents(self):
-        # UA coverage verifies server headers/bytes only, not real browser disk saving.
+        # Existing HTTP attachment delivery remains distinct from ordinary HTTPS.
+        # CDN identity does not force a server path. UAs do not prove disk saving.
+        self.media_scheme = 'http'
         user_agents = {
             "safari": "Mozilla/5.0 Version/18.0 Safari/605.1.15",
             "chrome": "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36",
@@ -250,7 +263,7 @@ class FrontendHttpContracts(TransactionTestCase):
                 self.assertIsNotNone(card, soup.get_text(" ", strip=True)[-1500:])
                 page = soup.select_one(".xhs-download-page")
                 payload = {
-                    "media_items": [{"type": "video", "url": card["data-url"]}],
+                    "media_items": [{"type": "video", "url": "http://media.hdslb.com/resource"}],
                     "platform_key": "bilibili",
                     "base_filename": page["data-base-filename"],
                 }
@@ -274,15 +287,16 @@ class FrontendHttpContracts(TransactionTestCase):
                 self.assertEqual(b"".join(stream.streaming_content), b"first-last")
                 self.assertEqual(self.client.get(ticket["status_url"]).json()["status"], "completed")
                 stream.close()
-                media_calls = [call for call in self.calls if "media.bilivideo.com" in call[1]]
+                media_calls = [call for call in self.calls if "media.hdslb.com" in call[1]]
                 self.assertTrue(media_calls)
                 self.assertIn("bilibili.com", media_calls[-1][2].get("Referer", ""))
 
     def attachment_ticket(self):
+        self.media_scheme = 'http'
         _, soup = self.result("https://www.bilibili.com/video/BV1xx411c7mD")
         card = soup.select_one('.asset-card[data-type="video"]')
         response = self.client.post("/media/download-prepare/", {
-            "media_items": [{"type": "video", "url": card["data-url"]}],
+            "media_items": [{"type": "video", "url": "http://media.hdslb.com/resource"}],
             "platform_key": "bilibili", "base_filename": "Contract short title",
         }, content_type="application/json")
         self.assertEqual(response.status_code, 200, response.content)
@@ -301,7 +315,7 @@ class FrontendHttpContracts(TransactionTestCase):
 
         def slow_send(request, **kwargs):
             response = self.send(request, **kwargs)
-            if urlsplit(request.url).hostname == "media.bilivideo.com":
+            if urlsplit(request.url).hostname == "media.hdslb.com":
                 response.raw = SlowBody()
                 response.raw._connection = SimpleNamespace(sock=SimpleNamespace(settimeout=lambda _: None))
                 response.headers["Content-Length"] = "30"
@@ -324,7 +338,7 @@ class FrontendHttpContracts(TransactionTestCase):
                 self.assertEqual(self.client.get(ticket["status_url"]).json()["status"], "completed")
                 self.assertEqual(self.client.get(ticket["download_url"]).status_code, 410)
                 self.assertEqual(self.client.get(ticket["status_url"], REMOTE_ADDR="127.0.0.2").status_code, 403)
-                self.assertEqual(sum("media.bilivideo.com" in call[1] for call in self.calls), 1)
+                self.assertEqual(sum("media.hdslb.com" in call[1] for call in self.calls), 1)
                 clock[0] += 601
                 self.assertEqual(self.client.get(ticket["status_url"]).status_code, 410)
             finally:
@@ -341,4 +355,4 @@ class FrontendHttpContracts(TransactionTestCase):
         self.assertEqual(observed.json()["error_code"], "DOWNLOAD_CONNECTION_CLOSED")
         self.assertNotIn("上游", observed.json()["message"])
         self.assertNotIn("取消", observed.json()["message"])
-        self.assertEqual(sum("media.bilivideo.com" in call[1] for call in self.calls), 1)
+        self.assertEqual(sum("media.hdslb.com" in call[1] for call in self.calls), 1)

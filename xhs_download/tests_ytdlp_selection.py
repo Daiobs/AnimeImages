@@ -1,8 +1,11 @@
 """Result selector and fresh selected-format authorization, without Provider I/O."""
 import json
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
+import requests
 from bs4 import BeautifulSoup
 from django.core.cache import cache
 from django.template.loader import render_to_string
@@ -28,8 +31,30 @@ class YtdlpSelectionTests(SimpleTestCase):
         ):
             guard = patch(name, side_effect=lambda url: url)
             guard.start(); self.addCleanup(guard.stop)
-        no_network = patch('requests.sessions.Session.request', side_effect=AssertionError('unexpected network'))
-        no_network.start(); self.addCleanup(no_network.stop)
+        self.enterContext(patch('socket.getaddrinfo', return_value=[(2, 1, 6, '', ('8.8.8.8', 443))]))
+        self.enterContext(patch('socket.socket.connect', side_effect=AssertionError('unexpected network')))
+        self.media_requests = []
+        self.head_has_length = True
+
+        def media_metadata_http(request, **kwargs):
+            self.assertIn(urlsplit(request.url).hostname, {'cdn.example.org', 'v26-default.365yg.com'})
+            self.assertIn(request.method, {'HEAD', 'GET'})
+            if request.method == 'GET':
+                self.assertEqual(request.headers.get('Range'), 'bytes=0-0')
+            self.media_requests.append((request.method, request.url))
+            response = requests.Response()
+            response.status_code = 200 if request.method == 'HEAD' else 206
+            response.url = request.url
+            response.request = request
+            response.headers.update({'Content-Type': 'video/mp4', 'Content-Disposition': 'inline'})
+            if request.method == 'GET':
+                response.headers.update({'Content-Length': '1', 'Content-Range': 'bytes 0-0/1000'})
+            elif self.head_has_length:
+                response.headers['Content-Length'] = '1000'
+            response.raw = BytesIO(b'')
+            return response
+
+        self.enterContext(patch('requests.adapters.HTTPAdapter.send', side_effect=media_metadata_http))
         self.match = {'provider_id': 'yt_dlp_generic', 'extractor_id': 'Fixture', 'version': '2026.6.9', 'label': 'Fixture'}
 
     def result(self, formats=None, **changes):
@@ -89,18 +114,24 @@ class YtdlpSelectionTests(SimpleTestCase):
             self.assertEqual(copied.status_code, 200)
             self.assertNotIn('selection_expires_at', copied.json()['item'])
 
-    def test_authorized_download_action_selects_transport_from_resource_url(self):
+    def test_authorized_download_action_uses_inline_probe_without_cdn_list_or_reprobe(self):
         self.gates()
-        for url, strategy in (('https://v26-default.365yg.com/video.mp4', 'browser_streaming'),
-                              ('https://cdn.example.org/video.mp4', 'browser_blob')):
+        for url, head_has_length in (('https://v26-default.365yg.com/video.mp4', True),
+                                    ('https://cdn.example.org/video.mp4', False)):
+            self.head_has_length = head_has_length
+            self.media_requests.clear()
             row = self.candidate(url=url)
             response = self.post(row)
             self.assertEqual(response.status_code, 200, response.content)
             item = response.json()['item']
             self.assertEqual(item['url'], url)
-            self.assertEqual(item['download_strategy'], strategy)
+            self.assertEqual(item['download_strategy'], 'browser_streaming')
             self.assertEqual(item['candidate_id'], row['candidate_id'])
+            self.assertIsNone(item['requires_cookie'])
+            self.assertEqual(item['request_context_status'], 'no_known_requirement')
             self.assertNotIn('download_strategy', self.post(row, 'link').json()['item'])
+            self.assertEqual(self.post(row).json()['item']['download_strategy'], 'browser_streaming')
+            self.assertEqual(self.media_requests, [('HEAD', url)] + ([] if head_has_length else [('GET', url)]))
 
     def test_missing_expiry_restricts_download_not_copy(self):
         candidate = self.candidate()
@@ -179,7 +210,7 @@ class YtdlpSelectionTests(SimpleTestCase):
         for changes in (
             {'protocol': 'm3u8_native'}, {'protocol': 'http_dash_segments'}, {'has_drm': True},
             {'url': 'http://cdn.example.org/file.mp4', 'protocol': 'http'},
-            {'http_headers': {'Referer': 'https://site.example.org/'}},
+            {'http_headers': {'Referer': 'https://site.example.org/'}, 'required_headers': ['Referer']},
             {'http_headers': {'Authorization': 'Bearer secret'}}, {'acodec': None, 'vcodec': None},
         ):
             with self.subTest(changes=changes):
@@ -191,8 +222,15 @@ class YtdlpSelectionTests(SimpleTestCase):
     def test_non_sensitive_preferences_do_not_become_fabricated_cookie_requirements(self):
         self.assertFalse(context_required({'User-Agent': 'x', 'Accept': '*/*'}, headers_present=True))
         self.assertTrue(context_required({}, headers_present=True))
-        self.assertTrue(context_required({'Origin': 'https://site.example.org'}))
+        self.assertFalse(context_required({'Origin': 'https://site.example.org'}))
+        self.assertTrue(context_required({'Origin': 'https://site.example.org'}, required_headers=['Origin']))
         self.assertTrue(context_required({'User-Agent': 'x'}, requires_cookie=True))
+        candidate = self.candidate(http_headers={'Referer': 'https://site.example.org/'})
+        self.assertIsNone(candidate['requires_cookie'])
+        self.assertFalse(candidate['download_context_required'])
+        record = resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])
+        self.assertIsNone(record['requires_cookie'])
+        self.assertEqual(record['headers'], {'Referer': 'https://site.example.org/'})
         headers = {f'x-test-{i}': 'x' for i in range(33)}
         self.assertTrue(self.candidate(http_headers=headers)['download_context_required'])
 
@@ -202,8 +240,11 @@ class YtdlpSelectionTests(SimpleTestCase):
             self.assertTrue(capability(candidate)['can_download'])
             record = resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])
             self.assertEqual(selected_descriptor(record)['candidate_id'], candidate['candidate_id'])
-        for name in ('Cookie', 'Authorization', 'Referer', 'Origin', 'Sec-Unknown'):
+        for name in ('Cookie', 'Authorization', 'Sec-Unknown'):
             self.assertTrue(context_required({name: 'private-fixture'}))
+        for name in ('Referer', 'Origin'):
+            self.assertFalse(context_required({name: 'https://site.example.org/'}))
+            self.assertTrue(context_required({name: 'https://site.example.org/'}, required_headers=[name]))
         self.assertTrue(context_required({'Sec-Fetch-Mode': 'navigate'}, requires_cookie=True))
         self.assertTrue(context_required({}, headers_present=True))
 
@@ -221,7 +262,7 @@ class YtdlpSelectionTests(SimpleTestCase):
     def test_selected_links_recheck_identity_without_granting_download_authority(self):
         self.gates()
         for changes in ({'protocol': 'm3u8_native'}, {'acodec': None, 'vcodec': None},
-                        {'http_headers': {'Referer': 'https://source.example.org'}}):
+                        {'http_headers': {'Referer': 'https://source.example.org'}, 'required_headers': ['Referer']}):
             candidate = self.candidate(**changes)
             response = self.post(candidate, 'link')
             self.assertEqual(response.status_code, 200, response.content)
@@ -235,6 +276,7 @@ class YtdlpSelectionTests(SimpleTestCase):
             self.assertEqual(self.post(candidate, 'link').status_code, 403)
         cache.clear()
         self.assertEqual(self.post(candidate, 'link').status_code, 403)
+        self.assertEqual(self.media_requests, [])
 
     def test_other_providers_and_collections_keep_existing_presentation(self):
         candidate = self.candidate()
@@ -305,6 +347,7 @@ class YtdlpSelectionTests(SimpleTestCase):
         self.assertEqual(item['type'], 'audio')
         self.assertTrue(item['filename'].endswith('.m4a'))
         self.assertEqual(item['video_tracks'], 'absent')
+        self.assertEqual(self.media_requests, [])
 
     def test_action_requires_current_admission_even_after_parse(self):
         self.gates(); candidate = self.candidate()
@@ -315,6 +358,7 @@ class YtdlpSelectionTests(SimpleTestCase):
                 self.assertEqual(self.post(candidate).status_code, 403)
         with patch('xhs_download.services.provider_access.upstream_match_is_blocked', return_value=True):
             self.assertEqual(self.post(candidate).status_code, 403)
+        self.assertEqual(self.media_requests, [])
 
     def test_tampering_extra_urls_and_expired_cache_are_rejected(self):
         self.gates(); candidate = self.candidate()
@@ -324,6 +368,7 @@ class YtdlpSelectionTests(SimpleTestCase):
         self.assertEqual(self.post(candidate, resource_token=candidate['resource_token'] + 'x').status_code, 403)
         cache.clear()
         self.assertEqual(self.post(candidate).status_code, 403)
+        self.assertEqual(self.media_requests, [])
 
     def test_cost_and_rate_limits_are_not_bypassed(self):
         self.gates(); candidate = self.candidate()
@@ -332,6 +377,7 @@ class YtdlpSelectionTests(SimpleTestCase):
         from django.http import JsonResponse
         with patch('xhs_download.views.check_download_request_limits', return_value=('client', JsonResponse({'status': 'error'}, status=429))):
             self.assertEqual(self.post(candidate).status_code, 429)
+        self.assertEqual(self.media_requests, [])
 
     def test_cover_is_bound_to_cached_work_and_does_not_create_download_authority(self):
         self.gates(); candidate = self.candidate()
@@ -422,7 +468,8 @@ class YtdlpSelectionTests(SimpleTestCase):
         videos = [self.video('split', 2160, acodec='none'),
                   self.video('stream', protocol='m3u8_native'),
                   self.video('drm', has_drm=True),
-                  self.video('context', http_headers={'Referer': 'https://site.example.org/'})]
+                  self.video('context', http_headers={'Referer': 'https://site.example.org/'},
+                             required_headers=['Referer'])]
         audio = self.video('audio-stream', None, ext='m4a', vcodec='none', protocol='m3u8_native')
         for formats in (videos, [audio], videos + [audio]):
             with self.subTest(formats=[f['format_id'] for f in formats]):

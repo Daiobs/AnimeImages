@@ -7135,7 +7135,7 @@ class XhsDownloadViewTests(TestCase):
         request = RequestFactory().post("/media/download-images/")
         route = decide_download_route(
             request,
-            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
+            [{"type": "video", "url": "http://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
             requested_mode="auto",
         )
 
@@ -7148,7 +7148,7 @@ class XhsDownloadViewTests(TestCase):
         request = RequestFactory().post("/media/download-images/")
         route = decide_download_route(
             request,
-            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
+            [{"type": "video", "url": "http://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
             requested_mode="browser",
         )
 
@@ -7161,7 +7161,7 @@ class XhsDownloadViewTests(TestCase):
         request = RequestFactory().post("/media/download-images/")
         route = decide_download_route(
             request,
-            [{"type": "video", "url": "https://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
+            [{"type": "video", "url": "http://sns-video-hw.xhscdn.com/a.mp4", "size_bytes": 456}],
             requested_mode="proxy",
         )
 
@@ -7307,6 +7307,11 @@ class XhsDownloadViewTests(TestCase):
             requires_merge=True,
             requires_cookie=True,
             browser_direct_fetch_safe=False,
+            requires_context=True,
+            ip_bound=True,
+            required_headers=["Referer"],
+            headers={"Cookie": "client-forged-secret"},
+            http_headers={"Authorization": "client-forged-auth"},
         )
 
         route = decide_download_route(request, [item], requested_mode="auto")
@@ -7316,7 +7321,69 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
         self.assertTrue(route["items"][0]["browser_direct_fetch_safe"])
         self.assertFalse(route["items"][0]["requires_merge"])
-        self.assertFalse(route["items"][0]["requires_cookie"])
+        self.assertIsNone(route["items"][0]["requires_cookie"])
+        self.assertEqual(route["items"][0]["request_context_status"], "no_known_requirement")
+        self.assertEqual(route["items"][0]["download_strategy"], "browser_streaming")
+        self.assertNotIn("client-forged", json.dumps(route))
+
+    def test_upstream_route_recovers_private_context_instead_of_client_flags(self):
+        from .services.upstream_delivery import _issue_assets
+
+        request = RequestFactory().post("/media/download-images/")
+        restrictions = (
+            ({"Cookie": "issuer-private-cookie"}, {}),
+            ({"Authorization": "issuer-private-auth"}, {}),
+            ({"X-Media-Token": "issuer-private-token"}, {}),
+            ({"Referer": "https://source.example/"}, {"required_headers": ["Referer"]}),
+            ({}, {"requires_cookie": True}),
+            ({}, {"requires_context": True}),
+            ({}, {"ip_bound": True}),
+            ({}, {"headers_present": True}),
+        )
+        for headers, context in restrictions:
+            with self.subTest(headers=tuple(headers), context=context):
+                asset = _issue_assets((MediaAsset(
+                    media_type="video", platform="upstream", url="https://cdn.example.org/private.mp4",
+                    headers=headers, request_context=context,
+                ),), match={"provider_id": "yt_dlp_generic"}, source_url="https://source.example/work")[0]
+                item = {**asset.to_download_item(), "headers": {}, "http_headers": {},
+                        "required_headers": [], "requires_cookie": False, "requires_context": False,
+                        "ip_bound": False, "headers_present": False, "browser_direct_fetch_safe": True}
+
+                route = decide_download_route(request, [item], requested_mode="auto")
+
+                self.assertEqual(route["route_type"], ROUTE_BLOCKED)
+                self.assertFalse(route["items"][0]["browser_direct_fetch_safe"])
+                self.assertEqual(route["server_egress_estimated_bytes"], 0)
+                self.assertNotIn("issuer-private", json.dumps(route))
+
+    def test_upstream_route_drops_forged_restrictions_but_requires_private_authority(self):
+        from .services.upstream_delivery import _issue_assets
+
+        request = RequestFactory().post("/media/download-images/")
+        asset = _issue_assets((MediaAsset(
+            media_type="video", platform="upstream", url="https://cdn.example.org/video.mp4",
+            headers={"User-Agent": "issuer-default", "Referer": "https://source.example/"},
+        ),), match={"provider_id": "yt_dlp_generic"}, source_url="https://source.example/work")[0]
+        item = {**asset.to_download_item(), "size_bytes": 2000, "requires_merge": True,
+                "requires_cookie": True, "browser_direct_fetch_safe": False, "ip_bound": True,
+                "http_headers": {"Authorization": "client-forged-auth"},
+                "required_headers": ["Referer"], "has_drm": True, "protocol": "m3u8_native"}
+
+        route = decide_download_route(request, [item], requested_mode="auto")
+
+        self.assertEqual(route["route_type"], ROUTE_DIRECT)
+        self.assertTrue(route["items"][0]["browser_direct_fetch_safe"])
+        self.assertEqual(route["items"][0]["download_strategy"], "browser_streaming")
+        self.assertIsNone(route["items"][0]["requires_cookie"])
+        self.assertEqual(route["items"][0]["request_context_status"], "no_known_requirement")
+        self.assertEqual(route["server_egress_estimated_bytes"], 0)
+        self.assertEqual(route["browser_egress_estimated_bytes"], 2000)
+        self.assertNotIn("client-forged", json.dumps(route))
+        cache.clear()
+        expired = decide_download_route(request, [item], requested_mode="auto")
+        self.assertEqual(expired["route_type"], ROUTE_BLOCKED)
+        self.assertFalse(expired["items"][0]["browser_direct_fetch_safe"])
 
     def test_download_route_mixed_items_use_zip(self):
         request = RequestFactory().post("/media/download-images/")
@@ -7370,7 +7437,7 @@ class XhsDownloadViewTests(TestCase):
         )
 
         self.assertEqual(image_route["route_type"], ROUTE_DIRECT)
-        self.assertEqual(video_route["route_type"], ROUTE_PROXY)
+        self.assertEqual(video_route["route_type"], ROUTE_DIRECT)
         self.assertEqual(mixed_route["route_type"], ROUTE_ZIP)
         self.assertEqual(image_route["strategy_version"], "v3")
         self.assertIn("estimated_cost", image_route)
@@ -7501,7 +7568,7 @@ class XhsDownloadViewTests(TestCase):
     def test_download_auto_video_returns_server_single_file(self, mock_fetch):
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/a.mp4",
+            url="http://sns-video-hw.xhscdn.com/a.mp4",
             content_type="video/mp4",
         )
         response = Client().post(
@@ -7510,7 +7577,7 @@ class XhsDownloadViewTests(TestCase):
                 "download_mode": "auto",
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/a.mp4",
                     "size_bytes": 654,
                 }],
             }),
@@ -7531,7 +7598,7 @@ class XhsDownloadViewTests(TestCase):
     def test_download_proxy_video_returns_single_file_response(self, mock_fetch):
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/a.mp4",
+            url="http://sns-video-hw.xhscdn.com/a.mp4",
             content_type="video/mp4",
         )
         response = Client().post(
@@ -7540,7 +7607,7 @@ class XhsDownloadViewTests(TestCase):
                 "download_mode": "proxy",
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/a.mp4",
                     "size_bytes": 654,
                 }],
             }),
@@ -7571,7 +7638,7 @@ class XhsDownloadViewTests(TestCase):
                 "download_mode": "proxy",
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/a.mp4",
                     "size_bytes": 654,
                 }],
             }),
@@ -7592,10 +7659,42 @@ class XhsDownloadViewTests(TestCase):
         self.assertNotIn("365yg.com", log.error_message_short)
         self.assertNotIn("token=secret", log.error_message_short)
 
+    def mock_inline_video_http(self, item):
+        from contracts.network import offline_requests
+
+        calls = []
+
+        def send(request, **kwargs):
+            self.assertEqual(request.url, item["url"])
+            self.assertIn(request.method, ("HEAD", "GET"))
+            response = requests.Response()
+            response.request = request
+            response.url = request.url
+            response.status_code = 200
+            response.headers.update({
+                "Content-Type": "video/mp4",
+                "Content-Disposition": "inline",
+                "Content-Length": str(item["size_bytes"]),
+            })
+            response._content = b""
+            if request.method == "GET":
+                self.assertEqual(request.headers.get("Range"), "bytes=0-0")
+                response.status_code = 206
+                response.headers["Content-Range"] = f'bytes 0-0/{item["size_bytes"]}'
+                response.headers["Content-Length"] = "1"
+                response._content = b"\x00"
+            response.raw = BytesIO(response._content)
+            calls.append(request.method)
+            return response
+
+        self.enterContext(offline_requests(send))
+        return calls
+
     @patch("xhs_download.views.fetch_media_response")
     def test_download_signed_kukutool_video_defaults_to_browser_data_plane(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
 
         response = Client().post(
             "/media/download-images/",
@@ -7613,6 +7712,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(payload["server_egress_estimated_bytes"], 0)
         self.assertEqual(payload["browser_egress_estimated_bytes"], 2000)
         self.assertTrue(payload["items"][0]["browser_direct_fetch_safe"])
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_fetch.assert_not_called()
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.download_type, ROUTE_DIRECT)
@@ -7635,6 +7735,7 @@ class XhsDownloadViewTests(TestCase):
         setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
 
         response = Client().post(
             "/media/download-images/",
@@ -7649,6 +7750,7 @@ class XhsDownloadViewTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["route_type"], ROUTE_DIRECT)
         self.assertEqual(payload["server_egress_estimated_bytes"], 0)
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_fetch.assert_not_called()
         mock_recovery_urls.assert_not_called()
         mock_invalidate_caches.assert_not_called()
@@ -7663,6 +7765,7 @@ class XhsDownloadViewTests(TestCase):
         setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -7676,6 +7779,7 @@ class XhsDownloadViewTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["route_type"], ROUTE_DIRECT)
         self.assertEqual(payload["server_egress_estimated_bytes"], 0)
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_fetch.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
@@ -7720,6 +7824,7 @@ class XhsDownloadViewTests(TestCase):
 
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -7731,6 +7836,7 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_fetch.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
@@ -7776,7 +7882,7 @@ class XhsDownloadViewTests(TestCase):
     def test_download_proxy_single_video_returns_single_file_response(self, mock_fetch):
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/a.mp4",
+            url="http://sns-video-hw.xhscdn.com/a.mp4",
             content_type="video/mp4",
         )
         response = Client().post(
@@ -7785,7 +7891,7 @@ class XhsDownloadViewTests(TestCase):
                 "download_mode": "proxy",
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/a.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/a.mp4",
                     "size_bytes": 654,
                 }],
             }),
@@ -7970,6 +8076,7 @@ class XhsDownloadViewTests(TestCase):
     ):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -7984,6 +8091,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(payload["route_type"], ROUTE_DIRECT)
         self.assertEqual(payload["server_egress_estimated_bytes"], 0)
         self.assertEqual(payload["browser_egress_estimated_bytes"], 2000)
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_archive.assert_not_called()
         mock_fetch.assert_not_called()
         log = DownloadRequestLog.objects.get()
@@ -8130,7 +8238,7 @@ class XhsDownloadViewTests(TestCase):
         }
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/demo.mp4",
+            url="http://sns-video-hw.xhscdn.com/demo.mp4",
             content_type="video/mp4",
         )
 
@@ -8139,7 +8247,7 @@ class XhsDownloadViewTests(TestCase):
             data=json.dumps({
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/demo.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/demo.mp4",
                     "size_bytes": 1024,
                 }],
             }),
@@ -8257,7 +8365,7 @@ class XhsDownloadViewTests(TestCase):
         }
         mock_fetch.return_value = FakeStreamingResponse(
             b"video-content",
-            url="https://sns-video-hw.xhscdn.com/demo.mp4",
+            url="http://sns-video-hw.xhscdn.com/demo.mp4",
             content_type="video/mp4",
         )
 
@@ -8266,7 +8374,7 @@ class XhsDownloadViewTests(TestCase):
             data=json.dumps({
                 "media_items": [{
                     "type": "video",
-                    "url": "https://sns-video-hw.xhscdn.com/demo.mp4",
+                    "url": "http://sns-video-hw.xhscdn.com/demo.mp4",
                     "size_bytes": 1000,
                 }],
             }),

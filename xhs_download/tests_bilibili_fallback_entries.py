@@ -93,6 +93,7 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
             "xhs_download.services.platforms.tiantian_serial.lock_root",
             return_value=Path(directory)))
         self.events = []
+        self.metadata_requests = []
         self.native_success = False
         self.native_incomplete = False
         self.native = self.stack.enter_context(patch(
@@ -123,6 +124,19 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
         return response
 
     def native_http(self, method, url, **kwargs):
+        if url in {MEDIA, MEDIA.replace("entry-video", "entry-large")}:
+            self.assertIn(method.upper(), {"HEAD", "GET"})
+            if method.upper() == "GET":
+                self.assertEqual(kwargs["headers"].get("Range"), "bytes=0-0")
+            self.metadata_requests.append((method.upper(), url))
+            response = self.media_http(url, **kwargs)
+            response.headers["Content-Disposition"] = "inline"
+            if method.upper() == "GET":
+                response.status_code = 206
+                response.headers["Content-Range"] = f"bytes 0-0/{len(MP4)}"
+                response.headers["Content-Length"] = "1"
+            response.raw = BytesIO(b"")
+            return response
         self.assertEqual(method.upper(), "GET")
         self.assertFalse(kwargs["allow_redirects"])
         if url == "https://www.bilibili.com/":
@@ -200,8 +214,9 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
         expected_urls = {MEDIA, MEDIA.replace("entry-video", "entry-large")}
         self.assertEqual({item["url"] for item in context["video_items"]},
                          {MEDIA.replace("entry-video", "entry-large")})
+        browser_file = MEDIA.startswith("https:")
         self.assertEqual({item["download_strategy"] for item in context["video_items"]},
-                         {"server_attachment"})
+                         {"browser_streaming" if browser_file else "server_attachment"})
         from .templatetags.ytdlp_picker import ytdlp_presentation
         presentation = ytdlp_presentation(
             context["upstream_candidates"], legacy_videos=context["video_items"])
@@ -225,10 +240,12 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
         soup = BeautifulSoup(html, "html.parser")
         self.assertEqual(len(soup.select("[data-picker-radio]")), 2)
         self.assertEqual(len(soup.select('[data-can-legacy="true"]')), 2)
-        self.assertEqual(len(soup.select('[data-picker-radio][data-can-download="false"]')), 2)
+        self.assertEqual(len(soup.select('[data-picker-radio][data-can-download="false"]')),
+                         0 if browser_file else 2)
         self.assertFalse(soup.select(
             '.asset-card[data-type="video"], [data-batch-download-item][data-type="video"]'))
         candidates = context["upstream_candidates"]
+        expected_metadata_requests = []
         for candidate in candidates:
             copied = self.action(candidate, "link")
             self.assertEqual(copied.status_code, 200, copied.content)
@@ -239,15 +256,23 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
             self.assertFalse(legacy.json()["item"].get("browser_upstream_bound"))
             self.assertEqual(legacy.json()["item"]["selection_delivery"], "legacy_manifest")
             browser_download = self.action(candidate, "download")
-            self.assertEqual(browser_download.status_code, 409, browser_download.content)
+            self.assertEqual(browser_download.status_code, 200 if browser_file else 409, browser_download.content)
+            if browser_file:
+                direct = browser_download.json()["item"]
+                for key in ("url", "filename", "asset_id", "provider_manifest_token"):
+                    self.assertEqual(direct[key], legacy.json()["item"][key])
+                self.assertEqual(direct["download_strategy"], "browser_streaming")
+                expected_metadata_requests.append(("HEAD", direct["url"]))
             cover = self.action(candidate, "cover")
             self.assertEqual(cover.status_code, 200, cover.content)
             self.assertEqual(cover.json()["url"], COVER)
-        self.assertEqual(self.events, expected_events, "Actions must not reparse or fetch media")
+        self.assertEqual(self.events, expected_events, "Actions must not reparse")
+        self.assertEqual(self.metadata_requests, expected_metadata_requests)
         self.config.third_party_allowed_public_platforms = ""
-        for action in ("link", "legacy", "cover"):
+        for action in ("link", "legacy", "cover", "download"):
             self.assertEqual(self.action(candidates[0], action).status_code, 403)
         self.post.assert_called_once()
+        self.assertEqual(self.metadata_requests, expected_metadata_requests)
 
     def assert_native_without_service(self, entry):
         self.native_success = True
@@ -281,7 +306,7 @@ class BilibiliFallbackEntryTests(TransactionTestCase):
     def test_home_native_412_reaches_service_picker_and_actions(self):
         self.assert_service_components_and_actions("home")
 
-    def test_home_https_service_also_uses_its_existing_attachment_action(self):
+    def test_home_https_service_uses_browser_with_the_same_manifest(self):
         with patch(__name__ + ".MEDIA", MEDIA.replace("http:", "https:")):
             self.assert_service_components_and_actions("home")
 

@@ -22,18 +22,18 @@ def public_service_work(work):
 
 
 def candidate_facts(metadata, url, kind):
+    from .provider_strategy import media_request_context
     legacy = metadata.get('_service_legacy_item') or {}
     return {
         'service_file_eligible': metadata.get('_service_picker_issued') is True,
-        'download_context_required': metadata.get('requires_context') is True or picker.context_required(
-            metadata.get('http_headers') or metadata.get('headers'),
-            headers_present=bool(metadata.get('headers_present')),
-            requires_cookie=metadata.get('requires_cookie') is True),
+        'download_context_required': picker.context_required(
+            metadata.get('http_headers') or metadata.get('headers'), **media_request_context(metadata)),
         'has_drm': metadata.get('has_drm') is True,
         'same_resource_labels': metadata.get('_same_resource_labels') is True,
         'legacy_asset_id': legacy.get('asset_id', ''),
         'legacy_delivery': 'existing_manifest' if legacy else '',
         'service_manifest_required': metadata.get('_service_manifest_required') is True,
+        'browser_direct_fetch_safe': legacy.get('browser_direct_fetch_safe') is True,
     }
 
 
@@ -58,7 +58,7 @@ def capability(candidate):
                      and candidate.get('legacy_delivery') == 'existing_manifest')):
         result = {'can_download': False, 'can_preview': False, 'can_check': False,
                   'limitation': '此格式缺少有效下载授权，可复制原始资源链接。'}
-    elif candidate.get('service_manifest_required'):
+    elif candidate.get('service_manifest_required') and not candidate.get('browser_direct_fetch_safe'):
         # The existing picker uses can_legacy_download for this attachment.
         # Advertising direct download would select an action the server rejects.
         result = {'can_download': False, 'can_preview': False, 'can_check': False,
@@ -79,10 +79,11 @@ def legacy_item_for_asset(asset, result, provider, source_url):
         return None
     item = {**asset.to_download_item(), 'source_platform': result.platform}
     strategy = build_download_strategy(asset, result_platform=result.platform, result_metadata=result.metadata)
-    if (strategy['download_strategy'] not in ({'browser_streaming'} if provider in DOUYIN_PROVIDERS else {'server_attachment'})
+    if (strategy['download_strategy'] not in {'browser_streaming', 'server_attachment'}
             or not provider_manifest_allows_public_download(item)):
         return None
     return {**item, 'size_bytes': asset.size_bytes, 'size_is_estimate': asset.size_is_estimate,
+            'browser_direct_fetch_safe': strategy['browser_direct_fetch_safe'],
             **({'filename': asset.filename} if asset.filename else {})}
 
 
@@ -358,46 +359,49 @@ def selected_legacy_descriptor(record):
                 or not provider_manifest_allows_public_download(item)):
             raise ValueError('service_legacy_binding_invalid')
         link = selected_link_descriptor(record)
-        return {**item, **link, 'selection_delivery': 'legacy_manifest'}
+        return {**item, **link, 'browser_direct_fetch_safe': False,
+                'selection_delivery': 'legacy_manifest'}
     raise ValueError('service_legacy_binding_missing')
 
 
 def selected_descriptor(record):
     from .upstream_delivery import safe_resource_url
-    from .provider_strategy import browser_transport_hint
+    from .provider_strategy import browser_transport_hint, browser_streaming_resource_url_is_allowed, media_request_context
     public = record.get('public', {})
-    if public.get('service_manifest_required'):
-        raise ValueError('service_legacy_delivery_required')
     if (public.get('service_file_eligible') is not True or not capability(public)['can_download'] or picker.context_required(
-            record.get('headers'), headers_present=record.get('headers_present'),
-            requires_cookie=record.get('requires_cookie'))):
+            record.get('headers'), **media_request_context(record))):
         raise ValueError('service_format_not_direct')
     link = selected_link_descriptor(record)
     if not safe_resource_url(link['url']):
         raise ValueError('service_url_invalid')
     selection_expires_at = picker.selection_expires_at(record)
-    if record['provider_id'] in DOUYIN_PROVIDERS:
+    if record['provider_id'] in DOUYIN_PROVIDERS or public.get('service_manifest_required'):
         from .provider_manifest import provider_manifest_expires_at
-        from .platforms.douyin_kukutool import parse_byte_cdn_url
         item = selected_legacy_descriptor(record)
+        if public.get('service_manifest_required') and not browser_streaming_resource_url_is_allowed(item['url']):
+            raise ValueError('service_format_not_direct')
         selection_expires_at = min(
             selection_expires_at, provider_manifest_expires_at(item['provider_manifest_token']) * 1000)
-        cdn_expires_at = parse_byte_cdn_url(item['url'])['expires_at']
-        if cdn_expires_at:
-            selection_expires_at = min(selection_expires_at, cdn_expires_at * 1000)
+        if record['provider_id'] in DOUYIN_PROVIDERS:
+            from .platforms.douyin_kukutool import parse_byte_cdn_url
+            cdn_expires_at = parse_byte_cdn_url(item['url'])['expires_at']
+            if cdn_expires_at:
+                selection_expires_at = min(selection_expires_at, cdn_expires_at * 1000)
         if selection_expires_at <= time() * 1000:
             raise ValueError('service_selection_expired')
         item.pop('selection_delivery', None)
         item = {**item, 'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
                 'selection_expires_at': selection_expires_at,
-                'requires_merge': False, 'requires_cookie': False,
+                'requires_merge': False, 'requires_cookie': record.get('requires_cookie'),
+                'request_context_status': 'no_known_requirement',
                 'size_bytes': picker.number(public.get('size_bytes')) or 0,
                 'size_is_estimate': bool(public.get('size_is_estimate'))}
         return {**item, **browser_transport_hint(item)}
     item = {**link, 'source_platform': 'upstream', 'asset_id': 'upstream:selection:' + record['candidate_id'],
             'selection_expires_at': selection_expires_at,
             'browser_upstream_bound': True, 'browser_direct_fetch_safe': True,
-            'requires_merge': False, 'requires_cookie': False,
+            'requires_merge': False, 'requires_cookie': record.get('requires_cookie'),
+            'request_context_status': 'no_known_requirement',
             'service_audio_file': public.get('media_type') == 'audio',
             'audio_tracks': public.get('audio_tracks'), 'video_tracks': public.get('video_tracks'),
             'size_bytes': picker.number(public.get('size_bytes')) or 0,

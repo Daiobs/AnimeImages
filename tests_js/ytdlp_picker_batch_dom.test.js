@@ -2078,7 +2078,27 @@ function oldBatchResource(type, id, allowed = true) {
 
 test("Batch same-card all/download includes old image and video through their existing handlers", async () => {
     const images = [];
+    const expectedVideo = {type: "video", url: "https://cdn.example/video.mp4", filename: "video.mp4",
+        provider: "", source_platform: "", size_bytes: "0", size_is_estimate: false,
+        browser_direct_fetch_safe: true, requires_merge: false, requires_cookie: false, asset_id: "old:video"};
+    const preparedVideo = {...expectedVideo, download_strategy: "browser_streaming",
+        requires_cookie: null, request_context_status: "no_known_requirement",
+        selection_expires_at: Date.now() + 60000, browser_response_hosts: ["cdn.example"]};
     const app = originalLayoutController({batchPage: true, batchHandlers: true,
+        fetchImpl: async (url, options, payload) => {
+            if (url === "https://product.example/media/service-selected-format/?fixture=kukutool_generic") {
+                assert.deepEqual(payload, {candidate_id: "high", resource_token: "signed-high", action: "download"});
+                return jsonResponse({status: "success", item: serviceGrant("kukutool_generic", "high")});
+            }
+            assert.equal(url, "https://product.example/download");
+            assert.equal(options.method, "POST");
+            assert.equal(options.headers["X-CSRFToken"], "fixture-csrf");
+            assert.deepEqual(payload, {media_items: [expectedVideo], route_only: true,
+                save_format: "original", base_filename: "media", intent: "download"});
+            assert.deepEqual(app.saved.map(item => item.candidate_id), ["high"]);
+            assert.equal(images.length, 1);
+            return jsonResponse({status: "routed", route_type: "direct", items: [preparedVideo]});
+        },
         browserPhoto: {downloadImage: async (item, options) => { images.push({item, options}); return {filename: "image.jpg"}; }}});
     const image = oldBatchResource("image", "image"), video = oldBatchResource("video", "video");
     const denied = oldBatchResource("video", "denied", false);
@@ -2097,15 +2117,78 @@ test("Batch same-card all/download includes old image and video through their ex
     assert.equal(app.win.DokiToolYtdlpPicker.selected(app.roots[0]).id, "high");
     await app.clickTarget(app.top);
     assert.equal(app.calls.length, 0);
+    assert.equal(app.saved.length, 0);
+    assert.equal(images.length, 0);
     await app.clickTarget(app.all);
     await app.clickTarget(app.top); await settle();
     assert.deepEqual(app.saved.map(item => item.candidate_id || item.url), ["high", video.node.dataset.url]);
+    assert.deepEqual(JSON.parse(JSON.stringify(app.saved)), [serviceGrant("kukutool_generic", "high"), preparedVideo]);
     assert.equal(images.length, 1);
+    assert.equal(images[0].item.url, image.node.dataset.url);
     assert.equal(images[0].item.filenameStem, "image");
     assert.ok(images[0].options.signal instanceof AbortSignal);
     assert.equal(typeof images[0].options.onProgress, "function");
-    assert.equal(app.calls.length, 1, "Old ordinary resources retain their existing browser-only paths");
+    assert.deepEqual(app.calls.map(call => call.url), [
+        "https://product.example/media/service-selected-format/?fixture=kukutool_generic",
+        "https://product.example/download",
+    ], "Picker and ordinary video each prepare once; the old image needs no HTTP preparation");
+    assert.equal(app.top.disabled, false);
+    assert.equal(video.button.disabled, false);
 });
+
+for (const change of ["redraw", "identity"]) {
+    test(`Batch old video ${change} during ordinary HTTP preparation prevents a stale save`, async () => {
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const app = originalLayoutController({batchPage: true, batchHandlers: true,
+            fetchImpl: async (url, _options, payload) => {
+                if (url.includes("service-selected-format")) return jsonResponse({status: "success",
+                    item: serviceGrant("kukutool_generic", payload.candidate_id)});
+                await gate;
+                return jsonResponse({route_type: "direct", items: payload.media_items});
+            }});
+        const video = oldBatchResource("video", "waiting");
+        app.region.append(video.outer); app.scan();
+        const pending = app.clickTarget(app.top);
+        await settle();
+        assert.equal(app.calls.length, 2);
+        assert.equal(app.calls[1].url, "https://product.example/download");
+        assert.equal(app.calls[1].payload.intent, "download");
+        assert.equal(app.calls[1].payload.media_items[0].asset_id, "old:waiting");
+        assert.equal(app.calls[1].payload.media_items[0].url, "https://cdn.example/waiting.mp4");
+        assert.deepEqual(app.saved.map(item => item.candidate_id), ["high"]);
+        if (change === "redraw") app.region.replaceChildren(el("p"));
+        else video.button.dataset.batchDirectUrl = "https://cdn.example/changed.mp4";
+        app.scan(); release(); await pending; await settle();
+        assert.deepEqual(app.saved.map(item => item.candidate_id), ["high"]);
+        assert.equal(app.calls.length, 2, "Stale preparation must not start another request or fallback");
+        assert.equal(app.top.isConnected, change !== "redraw");
+        assert.equal(app.top.disabled, change === "redraw", "Detached controls are not revived after a redraw");
+        assert.equal(video.button.disabled, false);
+    });
+}
+
+for (const mismatch of [{asset_id: "old:other"}, {url: "https://cdn.example/other.mp4"}, {type: "image"}]) {
+    test(`Batch old video rejects a preparation response with mismatched ${Object.keys(mismatch)[0]}`, async () => {
+        const app = originalLayoutController({batchPage: true, batchHandlers: true,
+            fetchImpl: async (url, _options, payload) => {
+                if (url.includes("service-selected-format")) return jsonResponse({status: "success",
+                    item: serviceGrant("kukutool_generic", payload.candidate_id)});
+                return jsonResponse({route_type: "direct", items: [{...payload.media_items[0], ...mismatch}]});
+            }});
+        const video = oldBatchResource("video", "exact");
+        app.region.append(video.outer); app.scan();
+        await app.clickTarget(app.top); await settle();
+        assert.deepEqual(app.saved.map(item => item.candidate_id), ["high"]);
+        assert.equal(app.calls.length, 2);
+        assert.equal(app.calls[1].url, "https://product.example/download");
+        assert.equal(app.calls[1].payload.intent, "download");
+        assert.equal(app.calls[1].payload.media_items[0].asset_id, "old:exact");
+        assert.match(app.roots[0].querySelector("[data-picker-status]").textContent, /授权已失效/);
+        assert.equal(app.top.disabled, false);
+        assert.equal(video.button.disabled, false);
+    });
+}
 
 test("Batch old image retains section cancellation and stops the remaining queue", async () => {
     let signal;

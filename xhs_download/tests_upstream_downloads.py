@@ -135,6 +135,36 @@ class UpstreamDownloadTests(SimpleTestCase):
         route = decide_download_route(self.request, [self.item, {"type": "image", "url": "https://example.org/a.jpg"}])
         self.assertEqual(route["route_type"], "blocked")
 
+    def test_normalized_private_access_facts_survive_issuer_and_cannot_be_erased_by_client(self):
+        from contracts.network import offline_requests
+        from .services.upstream_delivery import _normalize_downloadable_result
+
+        for fields, expected in (
+            ({'http_headers': {'User-Agent': 'default', 'Referer': 'https://source.example/'}}, True),
+            ({'http_headers': {'Referer': 'https://source.example/'}, 'required_headers': ['Referer']}, False),
+            ({'http_headers': {'Authorization': 'private-fixture'}}, False),
+            ({'ip_bound': True}, False),
+        ):
+            with self.subTest(fields=list(fields)), offline_requests(
+                    lambda *_args, **_kwargs: self.fail('Normalization/routing must not request media')):
+                result = _normalize_downloadable_result({
+                    'title': 'Public file', 'formats': [{
+                        'url': 'https://media.example.org/normal.mp4', 'format_id': 'one',
+                        'protocol': 'https', 'vcodec': 'h264', 'acodec': 'aac', 'ext': 'mp4',
+                        **fields,
+                    }],
+                }, match={'provider_id': 'yt_dlp_generic', 'label': 'yt-dlp',
+                          'extractor_id': 'fixture', 'version': 'fixture'},
+                    source_url='https://source.example/work/one')
+                item = result.assets[0].to_download_item()
+                public = decide_download_route(self.request, [{
+                    **item, 'requires_cookie': False, 'requires_context': False,
+                    'browser_direct_fetch_safe': True,
+                }])['items'][0]
+            self.assertIs(public['browser_direct_fetch_safe'], expected)
+            self.assertNotIn('headers', public)
+            self.assertNotIn('private-fixture', json.dumps(public))
+
     def test_policy_cannot_restore_server_egress(self):
         for route_type in ("proxy", "zip", "fallback"):
             route = route_payload(route_type=route_type, route_reason="policy",
@@ -268,4 +298,4 @@ class UpstreamDownloadTests(SimpleTestCase):
             self.assertEqual(strategy["strategy_label"], "下载")
             self.assertFalse(strategy["browser_direct_fetch_safe"])
         legacy = MediaAsset(media_type="video", url=self.item["url"], platform="third_party", provider="yt_dlp_generic")
-        self.assertEqual(build_download_strategy(legacy)["download_strategy"], "server_attachment")
+        self.assertEqual(build_download_strategy(legacy)["download_strategy"], "browser_streaming")

@@ -296,11 +296,17 @@ class DownloadSmokeExecutionTests(TransactionTestCase):
         self.assertEqual(descriptor["candidate_id"], selected["value"])
         self.assertEqual(descriptor["provider"], "tiantianjiexi_generic")
         self.assertTrue(descriptor["asset_id"].startswith("upstream:selection:"))
-        self.assertEqual(self.transport.media_requests, [])
+        if media_type == 'video':
+            self.assertEqual([request.method for request in self.transport.media_requests], ['HEAD'])
+            self.assertEqual(self.transport.media_requests[0].url, url)
+        else:
+            self.assertEqual(self.transport.media_requests, [])
 
         # Daily must obtain a fresh result rather than reuse the public parse cache.
         cache.clear()
         self.transport.parse_requests.clear()
+        self.transport.media_requests.clear()
+        self.transport.bodies.clear()
         run = self.execute("download_smoke_xhs_video")
         self.assertEqual(run.status, "skipped", run.download_smoke_details)
         self.assertEqual(run.error_code, "SMOKE_BROWSER_ONLY_RESOURCE")

@@ -35,16 +35,6 @@
     ]);
     const STREAMING_BLOB_FALLBACK_ERROR_CODES = Object.freeze([
         "STREAMING_CAPABILITY_UNAVAILABLE",
-        "STREAMING_REGISTRATION_FAILED",
-        "STREAMING_WORKER_NOT_AVAILABLE",
-        "STREAMING_WORKER_ACTIVATION_FAILED",
-        "STREAMING_WORKER_ACTIVATION_TIMEOUT",
-        "STREAMING_PAGE_NOT_CONTROLLED",
-        "STREAMING_PAGE_CONTROL_TIMEOUT",
-        "STREAMING_WORKER_NOT_ACTIVE",
-        "STREAMING_MESSAGE_TIMEOUT",
-        "STREAMING_NAVIGATION_UNAVAILABLE",
-        "STREAMING_START_TIMEOUT",
     ]);
     const STAGE_MESSAGES = Object.freeze({
         preparing: "正在准备下载...",
@@ -408,24 +398,13 @@
     }
 
     function isBoundUpstreamItem(item) {
-        const serviceSelection = item && item.selection_schema === "service_selected_format_v1"
-            && ["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider)
-            && typeof item.candidate_id === "string" && item.candidate_id.length > 0;
-        if (!isUpstreamItem(item) || item.browser_upstream_bound !== true
-            || item.source_platform !== "upstream"
-            || (!serviceSelection && !["yt_dlp_generic", "gallery_dl_generic", "parsehub_generic"].includes(item.provider))) {
-            return false;
-        }
-        try {
-            const url = new URL(String(item.url || item.video_url || ""));
-            return url.protocol === "https:" && !url.username && !url.password
-                && !url.hash && (!url.port || url.port === "443");
-        } catch (error) {
-            return false;
-        }
+        return Boolean(isUpstreamItem(item) && item.browser_upstream_bound === true
+            && typeof item.source_platform === "string" && item.source_platform.trim()
+            && streamingProtocol.isPublicMediaUrl(item.url || item.video_url));
     }
 
     function isSelectedYtdlpAudio(item) {
+        if (!item || item.source_platform !== "upstream") return false;
         if (item && item.type === "audio" && item.selection_schema === "service_selected_format_v1"
                 && ["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider)
                 && item.service_audio_file === true && isBoundUpstreamItem(item)) return true;
@@ -435,27 +414,11 @@
             && item.audio_tracks === "present" && item.video_tracks === "absent");
     }
 
-    function isBoundDedicatedServiceItem(item) {
-        if (!item || item.selection_schema !== "service_selected_format_v1"
-                || !["tiantianjiexi", "kukutool"].includes(item.provider)
-                || item.type !== "video" || item.source_platform !== "douyin"
-                || (item.selection_delivery || "direct") !== "direct"
-                || item.browser_upstream_bound !== true || item.browser_direct_fetch_safe !== true
-                || item.requires_merge !== false || item.requires_cookie !== false
-                || typeof item.selected_format_id !== "string"
-                || ["candidate_id", "provider_resource_id", "provider_manifest_token", "url"]
-                    .some(key => typeof item[key] !== "string" || !item[key] || /[\s\\\u0000-\u001f\u007f]/.test(item[key]))
-                || !/^\d{8,24}$/.test(item.provider_resource_id)) return false;
-        const assetPrefix = `douyin:${item.provider_resource_id}:video:${item.provider}`;
-        if (item.provider_cache_key !== `douyin:${item.provider}:validated:${item.provider_resource_id}`
-                || typeof item.asset_id !== "string"
-                || !(item.asset_id === assetPrefix || item.asset_id.startsWith(`${assetPrefix}:format:`)
-                    && /^[a-f0-9]{24}$/.test(item.asset_id.slice(`${assetPrefix}:format:`.length)))) return false;
-        // The selected endpoint verifies the signature and exact URL; these checks retain its identity.
+    function isBoundServiceItem(item) {
+        if (!item || item.type !== "video" || item.selection_schema !== "service_selected_format_v1") return false;
         try {
-            const url = new URL(item.url);
-            return url.protocol === "https:" && !url.username && !url.password
-                && !url.hash && (!url.port || url.port === "443");
+            return Boolean(streamingProtocol.createSelectionBinding(item))
+                && streamingProtocol.isPublicMediaUrl(item.url || item.video_url);
         } catch (_) { return false; }
     }
 
@@ -477,13 +440,16 @@
             && typeof item === "object"
             && (String(item.type || item.media_type || "").toLowerCase() === "video" || isSelectedYtdlpAudio(item))
             && isHttpUrl(item.url || item.video_url)
-            && booleanValue(item.browser_direct_fetch_safe)
+            && item.browser_direct_fetch_safe === true
             && (item.selection_schema !== "service_selected_format_v1"
-                || ["tiantianjiexi_generic", "kukutool_generic"].includes(item.provider) && isBoundUpstreamItem(item)
-                || isBoundDedicatedServiceItem(item))
+                || isSelectedYtdlpAudio(item)
+                || isBoundServiceItem(item))
             && (!isUpstreamItem(item) || isBoundUpstreamItem(item))
+            && (!item.browser_upstream_bound || isBoundUpstreamItem(item) || isBoundServiceItem(item))
             && !booleanValue(item.requires_merge)
             && !booleanValue(item.requires_cookie)
+            && !streamingProtocol.hasUnsupportedRequestContext(item)
+            && (item.video_tracks !== "absent" || isSelectedYtdlpAudio(item))
         );
     }
 
@@ -563,7 +529,7 @@
         if (
             !isOrdinaryMediaItem(item)
             || !streamingProtocol
-            || !streamingProtocol.isAllowedStreamingUrl(sourceUrl, {
+            || !streamingProtocol.isPublicMediaUrl(sourceUrl, {
                 allowLoopbackHttp: Boolean(settings.allowLoopback),
             })
         ) {
@@ -614,8 +580,14 @@
                 contentLength,
             };
             const responseGate = response
-                ? streamingProtocol.classifyResponseRejection(response, {
-                    initialUrl: sourceUrl,
+                ? streamingProtocol.classifyTransportResponse(response, {
+                    url: sourceUrl,
+                    responsePolicy: streamingProtocol.createResponsePolicy(sourceUrl, {
+                        allowLoopbackHttp: Boolean(settings.allowLoopback),
+                        browser_response_hosts: item.browser_response_hosts,
+                        browser_response_hosts_expires_at: item.browser_response_hosts_expires_at,
+                    }),
+                }, {
                     allowLoopbackHttp: Boolean(settings.allowLoopback),
                 })
                 : {rejected: true};
@@ -744,6 +716,15 @@
             return "当前下载服务未能接受此任务，尚未开始下载。请重新打开页面后再试。";
         }
         const errorCode = String(error && error.errorCode || "");
+        if (errorCode === "BROWSER_REQUEST_CONTEXT_UNSUPPORTED") {
+            return "当前资源需要浏览器无法提供的请求条件，未开始下载；不会自动换用其他下载路径。";
+        }
+        if (errorCode === "STREAMING_URL_UNSUPPORTED") {
+            return "当前媒体地址不支持安全的浏览器下载，未开始下载。";
+        }
+        if (errorCode === "UPSTREAM_FETCH_FAILED") {
+            return "浏览器未能读取源文件，可能是来源限制或网络连接失败；未自动改用其他下载路径。";
+        }
         if (errorCode === "UPSTREAM_BROWSER_FETCH_FAILED") {
             return "浏览器无法读取资源：可能是来源未允许跨域（CORS）、重定向被拒绝或网络连接失败。不会转为服务器下载。";
         }
@@ -1061,10 +1042,10 @@
             );
         }
         if (item.selection_schema && item.type === "video"
-                && (isBoundDedicatedServiceItem(item) || isBoundUpstreamItem(item))) {
+                && (isBoundServiceItem(item) || isBoundUpstreamItem(item))) {
             streamingProtocol.createSelectionBinding(item);
         }
-        if ((isBoundDedicatedServiceItem(item) || isBoundUpstreamItem(item))
+        if ((isBoundServiceItem(item) || isBoundUpstreamItem(item))
             && item.selection_expires_at !== undefined
             && (!Number.isSafeInteger(item.selection_expires_at) || item.selection_expires_at <= Date.now())) {
             throw downloadError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
@@ -1075,7 +1056,7 @@
         let filename = sanitizeFilename(settings.filename || item.filename);
         const downloadId = createDownloadId(settings);
         const sourceUrl = String(item.url || item.video_url || "");
-        const upstreamBound = isBoundUpstreamItem(item) || isBoundDedicatedServiceItem(item);
+        const upstreamBound = isBoundUpstreamItem(item) || isBoundServiceItem(item);
         if (
             !upstreamBound && (!streamingProtocol
             || typeof streamingProtocol.isAllowedInitialMediaUrl !== "function"
@@ -1342,29 +1323,60 @@
         };
     }
 
+    function handoffNative(item, settings) {
+        if (settings.signal && settings.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        const expiresAt = Number(item.native_download_expires_at);
+        if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) {
+            throw downloadError('DESCRIPTOR_EXPIRED', '当前下载信息已过期，请重新获取资源。');
+        }
+        const doc = settings.documentObject || (typeof document !== 'undefined' ? document : null);
+        if (!doc || !doc.body) throw downloadError('NATIVE_HANDOFF_UNAVAILABLE', '浏览器无法发起下载。');
+        const link = doc.createElement('a');
+        link.href = item.url || item.video_url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.referrerPolicy = 'no-referrer';
+        link.download = sanitizeFilename(settings.filename || item.filename);
+        link.hidden = true;
+        doc.body.appendChild(link);
+        try { link.click(); } finally { link.remove(); }
+        const message = '已发起下载请求，请在浏览器下载列表中查看。';
+        if (settings.onStage) settings.onStage('handed_off', message);
+        // Navigation has no web API for browser-manager completion or final name.
+        return {transport: 'browser_native', state: 'handed_off', filename: '', message};
+    }
+
     async function download(item, options) {
         const settings = options && typeof options === "object" ? options : {};
+        if (item && streamingProtocol.hasUnsupportedRequestContext(item)) {
+            throw downloadError("BROWSER_REQUEST_CONTEXT_UNSUPPORTED", "当前资源需要浏览器无法提供的请求条件，未开始下载。");
+        }
         if (!isOrdinaryMediaItem(item)) {
             throw downloadError(
                 "BROWSER_DOWNLOAD_NOT_ORDINARY_MEDIA",
                 "当前资源不支持浏览器直接保存。",
             );
         }
-        const boundSelection = isBoundUpstreamItem(item) || isBoundDedicatedServiceItem(item);
         // Resource access and supported media determine transport, not the card,
         // Provider, selection schema, or an obsolete caller forceBlob hint.
-        const streamEligible = String(item.type || item.media_type || "").toLowerCase() === "video"
-            && streamingProtocol && streamingProtocol.isAllowedInitialMediaUrl(item.url || item.video_url, {
+        const video = String(item.type || item.media_type || "").toLowerCase() === "video";
+        const streamEligible = video
+            && streamingProtocol && streamingProtocol.isPublicMediaUrl(item.url || item.video_url, {
                 allowLoopbackHttp: Boolean(settings.allowLoopback),
             });
-        if (boundSelection && (streamEligible || item.selection_schema && item.type === "video")) {
+        if (video && !streamEligible) {
+            throw downloadError("STREAMING_URL_UNSUPPORTED", "当前媒体地址不支持安全的浏览器下载。");
+        }
+        if ((item.selection_schema || item.selectionBinding) && video) {
             const binding = streamingProtocol.createSelectionBinding(item);
             if (!binding || binding.selection_expires_at <= Date.now()) {
                 throw downloadError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
             }
         }
-        // Existing direct-bound resources outside the reviewed SW URL scope and
-        // audio retain bounded compatibility delivery; they do not widen SW access.
+        if (item.download_strategy === 'browser_native' && streamEligible) {
+            return handoffNative(item, settings);
+        }
+        // Audio retains its existing bounded compatibility delivery.
         if (!streamEligible) {
             return downloadViaBlob(item, settings);
         }
@@ -1373,6 +1385,10 @@
         } catch (error) {
             if (!canFallbackToBlob(error)) {
                 throw error;
+            }
+            if (positiveInteger(item.size_bytes || item.sizeBytes)
+                > (positiveInteger(settings.maxBytes) || MAX_BROWSER_BLOB_BYTES)) {
+                throw downloadError("BROWSER_BLOB_TOO_LARGE", "当前资源超过浏览器保存上限。");
             }
             if (typeof settings.onTransportFallback === "function") {
                 settings.onTransportFallback({

@@ -194,7 +194,7 @@ def service_context(raw, parent=None):
     result = {}
     headers = {}
     for item in (parent or {}, raw):
-        for key in ("headers_present", "requires_cookie", "requires_context", "has_drm", "requires_merge"):
+        for key in ("headers_present", "requires_cookie", "requires_context", "has_drm", "requires_merge", "ip_bound"):
             if item.get(key) is True:
                 result[key] = True
         supplied = False
@@ -207,6 +207,15 @@ def service_context(raw, parent=None):
                 result["requires_context"] = True
         if item.get("headers_present") is True and not supplied:
             result["requires_context"] = True
+        if item.get('required_headers'):
+            required = item['required_headers']
+            if isinstance(required, str):
+                required = [required]
+            if isinstance(required, (list, tuple)) and all(isinstance(name, str) for name in required):
+                result['required_headers'] = list(dict.fromkeys(
+                    [*result.get('required_headers', ()), *required]))
+            else:
+                result['requires_context'] = True
     if headers:
         # Existing consumers prefer http_headers; make either spelling complete.
         result.update(headers=headers, http_headers=headers)
@@ -222,6 +231,7 @@ def collect_service_video_resources(payload, *, nested_keys, infer_quality=None)
     facts = ("width", "height", "fps", "duration", "vcodec", "acodec", "protocol", "ext",
              "extension", "language", "bitrate", "tbr", "audio_tracks", "video_tracks",
              "requires_merge", "requires_cookie", "requires_context", "headers", "http_headers", "headers_present",
+             "required_headers", "ip_bound",
              "has_drm", "role", "upstream_role", "relationships", "audio_asset_present", "format_id")
     inherited_fact_keys = ("vcodec", "acodec", "protocol", "ext", "extension",
                            "audio_tracks", "video_tracks")
@@ -784,6 +794,7 @@ class KukutoolResultNormalizer:
 
     def normalize(self, *, rule, platform_name, source_url, payload):
         from ..service_format_selection import attach_service_picker
+        from ..provider_strategy import media_request_context
         if not isinstance(payload, dict):
             raise ValueError("KuKuTool result format is invalid")
         payload = filter_service_format_rows(self.normalize_payload(payload), rule)
@@ -815,6 +826,8 @@ class KukutoolResultNormalizer:
                     cover_preview_url=cover_url,
                     quality_label=resource["quality_label"],
                     size_bytes=resource["size_bytes"],
+                    headers=resource.get('http_headers') or resource.get('headers') or {},
+                    request_context=media_request_context(resource),
                     **self.build_provider_asset_fields(
                         rule,
                         source_url,

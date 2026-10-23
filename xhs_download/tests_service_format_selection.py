@@ -141,7 +141,7 @@ class ServiceFormatSelectionTests(SimpleTestCase):
         self.rule.media_host_suffixes = ('media.example', '365yg.com')
         for provider in ('tiantianjiexi_generic', 'kukutool_generic'):
             for url, strategy in (('https://v26-default.365yg.com/video.mp4', 'browser_streaming'),
-                                  ('https://media.example/video.mp4', 'browser_blob')):
+                                  ('https://media.example/video.mp4', 'browser_streaming')):
                 row = self.result(provider, {'title': 'Work', 'videos': [
                     {'url': url, 'quality': '720P'},
                 ]}).metadata['upstream_candidates'][0]
@@ -180,7 +180,8 @@ class ServiceFormatSelectionTests(SimpleTestCase):
     def test_sensitive_context_streams_and_missing_tracks_stay_distinct(self):
         for extra, permitted in (({}, True), ({'http_headers': {'User-Agent': 'x'}}, True),
                 ({'http_headers': {'Cookie': 'not-a-real-secret'}}, False),
-                ({'http_headers': {'Referer': 'https://source.example/'}}, False),
+                ({'http_headers': {'Referer': 'https://source.example/'}}, True),
+                ({'http_headers': {'Referer': 'https://source.example/'}, 'required_headers': ['Referer']}, False),
                 ({'requires_merge': True}, False), ({'has_drm': True}, False),
                 ({'protocol': 'm3u8_native'}, False), ({'acodec': 'none'}, False)):
             with self.subTest(extra=extra):

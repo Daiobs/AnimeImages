@@ -155,13 +155,15 @@ class SelectedTrackCheckTests(SimpleTestCase):
     def test_complete_and_restricted_candidates_never_start_probe(self):
         self.gates()
         for changes,status in [({},200),({'protocol':'m3u8_native'},409),({'has_drm':True},409),
-                               ({'acodec':'none'},409),({'http_headers':{'Referer':'https://site.example.org/'}},409),
+                               ({'acodec':'none'},409),
+                               ({'http_headers':{'Referer':'https://site.example.org/'}, 'required_headers':['Referer']},409),
                                ({'ext':'webm','acodec':None,'vcodec':None},409)]:
             with self.subTest(changes=changes):
                 candidate=self.candidate(**changes)
                 response,calls=self.check(candidate)
                 self.assertEqual(response.status_code,status,response.content)
                 self.assertEqual(calls,[])
+                self.assertEqual(self.media_requests, [])
 
     def test_reversed_second_range_real_worker_never_reads_oversized_body(self):
         self.gates()
