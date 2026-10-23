@@ -3792,6 +3792,11 @@ def build_result_display_context(
         display_topics = presentation["topics"]
         if presentation["title_derived"] or display_topics:
             base_filename = clean_filename(display_title) if display_title else "douyin"
+    elif "caption" in result_metadata:
+        # Shared normalizers already separated work text before naming assets.
+        display_title = str(result_metadata.get("title") or display_title)[:200]
+        display_description = str(result_metadata.get("description") or "")[:2000]
+        display_topics = list(result_metadata.get("topics") or [])[:16]
     display_author = (
         " ".join(str(result_metadata.get("author_name") or "").split())[:80]
         if is_xhs_result
