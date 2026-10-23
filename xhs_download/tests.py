@@ -7659,10 +7659,42 @@ class XhsDownloadViewTests(TestCase):
         self.assertNotIn("365yg.com", log.error_message_short)
         self.assertNotIn("token=secret", log.error_message_short)
 
+    def mock_inline_video_http(self, item):
+        from contracts.network import offline_requests
+
+        calls = []
+
+        def send(request, **kwargs):
+            self.assertEqual(request.url, item["url"])
+            self.assertIn(request.method, ("HEAD", "GET"))
+            response = requests.Response()
+            response.request = request
+            response.url = request.url
+            response.status_code = 200
+            response.headers.update({
+                "Content-Type": "video/mp4",
+                "Content-Disposition": "inline",
+                "Content-Length": str(item["size_bytes"]),
+            })
+            response._content = b""
+            if request.method == "GET":
+                self.assertEqual(request.headers.get("Range"), "bytes=0-0")
+                response.status_code = 206
+                response.headers["Content-Range"] = f'bytes 0-0/{item["size_bytes"]}'
+                response.headers["Content-Length"] = "1"
+                response._content = b"\x00"
+            response.raw = BytesIO(response._content)
+            calls.append(request.method)
+            return response
+
+        self.enterContext(offline_requests(send))
+        return calls
+
     @patch("xhs_download.views.fetch_media_response")
     def test_download_signed_kukutool_video_defaults_to_browser_data_plane(self, mock_fetch):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
 
         response = Client().post(
             "/media/download-images/",
@@ -7680,6 +7712,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(payload["server_egress_estimated_bytes"], 0)
         self.assertEqual(payload["browser_egress_estimated_bytes"], 2000)
         self.assertTrue(payload["items"][0]["browser_direct_fetch_safe"])
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_fetch.assert_not_called()
         log = DownloadRequestLog.objects.get()
         self.assertEqual(log.download_type, ROUTE_DIRECT)
@@ -7702,6 +7735,7 @@ class XhsDownloadViewTests(TestCase):
         setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
 
         response = Client().post(
             "/media/download-images/",
@@ -7716,6 +7750,7 @@ class XhsDownloadViewTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["route_type"], ROUTE_DIRECT)
         self.assertEqual(payload["server_egress_estimated_bytes"], 0)
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_fetch.assert_not_called()
         mock_recovery_urls.assert_not_called()
         mock_invalidate_caches.assert_not_called()
@@ -7730,6 +7765,7 @@ class XhsDownloadViewTests(TestCase):
         setting.save(update_fields=["kukutool_download_delivery_mode", "updated_at"])
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -7743,6 +7779,7 @@ class XhsDownloadViewTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["route_type"], ROUTE_DIRECT)
         self.assertEqual(payload["server_egress_estimated_bytes"], 0)
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_fetch.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
@@ -7787,6 +7824,7 @@ class XhsDownloadViewTests(TestCase):
 
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -7798,6 +7836,7 @@ class XhsDownloadViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["route_type"], ROUTE_DIRECT)
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_fetch.assert_not_called()
 
     @patch("xhs_download.views.fetch_media_response")
@@ -8037,6 +8076,7 @@ class XhsDownloadViewTests(TestCase):
     ):
         item = make_kukutool_download_item("https://v11-default.365yg.com/video/demo.mp4")
         item["size_bytes"] = 2000
+        probe_calls = self.mock_inline_video_http(item)
         response = Client().post(
             "/media/download-images/",
             data=json.dumps({
@@ -8051,6 +8091,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(payload["route_type"], ROUTE_DIRECT)
         self.assertEqual(payload["server_egress_estimated_bytes"], 0)
         self.assertEqual(payload["browser_egress_estimated_bytes"], 2000)
+        self.assertEqual(probe_calls, ["HEAD"])
         mock_archive.assert_not_called()
         mock_fetch.assert_not_called()
         log = DownloadRequestLog.objects.get()

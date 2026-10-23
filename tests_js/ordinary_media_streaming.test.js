@@ -2297,7 +2297,7 @@ test("Single and Batch use one shared ordinary download primitive", () => {
     assert.match(batchSource, /await downloadBatchVideoWithUi\(button, \{isCurrent: applicable\}\)/);
     assert.match(
         sharedVideoHandler,
-        /const authorizedItems = await authorizeBatchUpstreamItems\(page, \[item\]\);\s*if \(options\.isCurrent && !options\.isCurrent\(\)\) return;\s*await ordinaryMediaDownloadApi\.download\(authorizedItems\[0\],/,
+        /const authorizedItems = await authorizeBatchUpstreamItems\(page, \[item\], \{\.\.\.options, intent: "download"\}\);\s*if \(options\.isCurrent && !options\.isCurrent\(\)\) return;\s*await ordinaryMediaDownloadApi\.download\(authorizedItems\[0\],/,
     );
     assert.doesNotMatch(ordinaryVideoHandler, /response\.blob\s*\(|new Blob\(chunks/);
     assert.doesNotMatch(sharedVideoHandler, /response\.blob\s*\(|new Blob\(chunks/);

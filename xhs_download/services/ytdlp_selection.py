@@ -325,9 +325,9 @@ def selected_open_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
     from .platforms.douyin_kukutool import parse_byte_cdn_url
     from .platforms.douyin_media_policy import is_allowed_douyin_media_hostname
     from .upstream_delivery import safe_resource_url
+    from .provider_strategy import media_request_context
     if (not can_open_video(record.get('public', {}))
-            or context_required(record.get('headers'), headers_present=record.get('headers_present'),
-                                requires_cookie=record.get('requires_cookie'))):
+            or context_required(record.get('headers'), **media_request_context(record))):
         raise ValueError('selected_video_navigation_restricted')
     item = selected_link_descriptor(record, provider=provider, schema=schema)
     if not safe_resource_url(item['url']):

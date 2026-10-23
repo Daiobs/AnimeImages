@@ -59,15 +59,26 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
   Unknown registration, cancellation and media-response failures never trigger a
   second media request.
   Native attachment navigation now precedes Worker setup when the existing bounded
-  metadata request's final adopted result observed a same-URL video attachment
+  metadata request's final adopted result observed a video attachment
   with a valid source filename and matching extension, under navigation-compatible
   request conditions; native attachment navigation does not require CORS.
+  A final response reached through the existing per-hop public-HTTPS checks may
+  qualify a different host without CORS or a CDN-family condition. Evidence stays
+  bound to the original authorized URL, context and expiry, not a new final-URL grant.
   Ordinary metadata probes naturally populate short-lived positive and negative
   evidence keyed by URL and necessary context. If no valid evidence exists, the
-  download action may use the same bounded probe for the selected video only,
+  download action uses the same bounded probe for the selected video only,
   after admission, cost and rate limits. It does not probe the candidate list,
   extend authorization, or bypass per-hop server DNS/address safety. An existing
-  parse-time fact is reused without another HEAD. SW response scope uses the initial
+  parse-time fact is reused without another HEAD. Ordinary homepage and Batch
+  clicks send `intent=download`, consume the freshly prepared items, and recheck
+  authority after probing; route previews and link copies do not probe. Known size
+  does not suppress preparation. Legacy manifest expiry reaches the existing
+  transport deadline even when probing yields no response evidence.
+  Work and format headers merge case-insensitively, with child values winning only
+  for the same header. Required-header sets and known true constraints are inherited
+  through normalization, private issuance and actions; defaults stay non-required.
+  SW response scope uses the initial
   host plus the adopted probe's observed final host, bounded by evidence and candidate
   expiry, in the existing wire policy. No platform family or empty-policy exception
   authorizes redirects; absent evidence still allows a same-host transfer.

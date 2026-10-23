@@ -1,3 +1,4 @@
+from time import time
 from urllib.parse import urlparse
 
 from download_console.models import DownloadRuntimeSetting
@@ -339,6 +340,54 @@ def public_route_item(item):
                     public_item["browser_upstream_bound"] = False
                     public_item["browser_direct_fetch_safe"] = False
     return public_item
+
+
+def prepare_browser_route_items(request, media_items):
+    """Prepare only an explicit download, using the original resource authority."""
+    from .common import XhsParseError
+    from .provider_manifest import provider_manifest_expires_at
+    from .provider_strategy import prepare_browser_transport
+
+    def authorized_video(item):
+        facts = _authorized_browser_video_facts(item)
+        if facts is None or not browser_video_access_is_compatible(facts):
+            raise XhsParseError('下载授权不可用或已失效，请重新解析。')
+        if item_is_upstream(item):
+            from .upstream_delivery import upstream_resource_record
+            from ..ytdlp_selection_views import _admitted
+            record = upstream_resource_record(item)
+            if not record or not _admitted(request, {
+                    'provider_id': record['provider'], 'source_url': record.get('source_url', ''),
+                    'match': record.get('match', {}),
+            }, provider=record['provider'], service=record['provider'] in {
+                    'tiantianjiexi_generic', 'kukutool_generic'}):
+                raise XhsParseError('当前无权使用此资源，请重新解析。')
+        public = public_route_item(item)
+        if public.get('browser_direct_fetch_safe') is not True:
+            raise XhsParseError('下载授权不可用或已失效，请重新解析。')
+        # A route projection must not extend an issuer's original manifest TTL.
+        if item.get('provider_manifest_token'):
+            expires_at = provider_manifest_expires_at(item['provider_manifest_token']) * 1000
+            public['selection_expires_at'] = min(public.get('selection_expires_at', expires_at), expires_at)
+        if public.get('selection_expires_at', float('inf')) <= time() * 1000:
+            raise XhsParseError('下载授权已失效，请重新解析。')
+        if 'selection_expires_at' in public:
+            # Legacy cards lack a selection binding; the existing transport
+            # still enforces this trusted absolute deadline via expiresAt.
+            public['expiresAt'] = public['selection_expires_at']
+        return public, facts
+
+    # Validate the whole selected set before any metadata request.
+    authorized = [authorized_video(item) if item_is_video(item) else (public_route_item(item), None)
+                  for item in media_items]
+    prepared = [prepare_browser_transport(public, request_context=facts) if facts is not None else public
+                for public, facts in authorized]
+    for original, descriptor in zip(media_items, prepared):
+        if item_is_video(original):
+            authorized_video(original)
+            if descriptor.get('selection_expires_at', float('inf')) <= time() * 1000:
+                raise XhsParseError('下载授权已失效，请重新解析。')
+    return prepared
 
 
 def route_payload(

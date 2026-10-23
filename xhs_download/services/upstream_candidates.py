@@ -13,6 +13,7 @@ from django.core.cache import cache
 
 from .common import XhsDNSResolutionError, XhsParseError, validate_public_download_url
 from .provider_lab.contracts import ASSET_ROLES, MAX_RETAINED_CANDIDATES, exact_public_identity, safe_public_text
+from .request_context import inherit_request_context
 
 MAX_CANDIDATES = MAX_RETAINED_CANDIDATES
 MAX_CANDIDATE_BUNDLE_BYTES = 2 * 1024 * 1024
@@ -52,7 +53,8 @@ def _number(value):
 
 def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_type, state, match=None):
     key = uuid4().hex
-    supplied_headers = metadata.get('http_headers') or metadata.get('headers') or {}
+    context = inherit_request_context(metadata)
+    supplied_headers = context['headers']
     headers = {}
     budget = 8192
     if isinstance(supplied_headers, dict):
@@ -65,13 +67,13 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
             if budget < 0:
                 break
             headers[name] = value
-    headers_present = bool(supplied_headers) or metadata.get('headers_present') is True
-    requires_cookie = metadata.get('requires_cookie')
+    headers_present = bool(supplied_headers) or context.get('headers_present') is True
+    requires_cookie = context.get('requires_cookie')
     if any(name.lower() == 'cookie' and value for name, value in headers.items()):
         requires_cookie = True
     from .provider_strategy import media_request_context
     from .ytdlp_selection import context_required
-    request_context = {**media_request_context(metadata),
+    request_context = {**media_request_context(context),
                        'headers_present': headers_present, 'requires_cookie': requires_cookie}
     needs_context = context_required(supplied_headers, **request_context)
     protocol = metadata.get('protocol')

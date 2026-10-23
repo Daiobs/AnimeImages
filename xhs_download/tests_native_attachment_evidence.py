@@ -374,6 +374,146 @@ class NativeAttachmentEvidenceTests(BoundaryNetworkCase):
         self.assertNotIn('browser_response_hosts', browser_transport_hint(self.item))
         self.assert_native(False)
 
+    def test_safe_cross_host_attachment_belongs_to_original_url_only(self):
+        for final, authorized in (
+            ('https://ci.xiaohongshu.com/redirected-video', False),
+            ('https://independent-media.example/redirected-video', True),
+        ):
+            with self.subTest(final=final):
+                self.routes[self.url] = 302, {'Location': final}, b''
+                self.routes[final] = self.media()
+                result = QualityProbe(authorized_resource=authorized).probe(
+                    self.url, expected_type='video')
+                self.assertEqual((result.url, result.final_url), (self.url, final))
+                self.assertTrue(result.reachable)
+                self.assert_native(True)
+                self.assertEqual(native_attachment_expiry(final), 0)
+                self.assertEqual(native_attachment_expiry(self.url + '?other=1'), 0)
+                self.assertNotIn('Access-Control-Allow-Origin', self.responses[-1].headers)
+        self.assertEqual([request.method for request, _ in self.sent], ['HEAD'] * 4)
+
+    def test_redirected_range_attachment_is_published_only_when_adopted(self):
+        head_url = 'https://head-media.example/video'
+        range_url = 'https://range-media.example/video'
+
+        def redirect(request):
+            final = head_url if request.method == 'HEAD' else range_url
+            return 302, {'Location': final}, b''
+
+        def range_attachment(request):
+            self.assertEqual(request.headers['Range'], 'bytes=0-0')
+            self.assert_native(False)
+            return 206, {'Content-Type': 'video/mp4', 'Content-Range': 'bytes 0-0/12345',
+                         'Content-Disposition': 'attachment; filename="12345.mp4"'}, b'unread'
+
+        self.routes[self.url] = redirect
+        self.routes[head_url] = self.media(disposition='inline', size=None)
+        self.routes[range_url] = range_attachment
+        result = QualityProbe(authorized_resource=True).probe(self.url, expected_type='video')
+        self.assertEqual((result.method, result.final_url, result.size_bytes), ('RANGE', range_url, 12345))
+        self.assert_native(True)
+        self.assertEqual(self.urls(), [self.url, head_url, self.url, range_url])
+        self.assertEqual(native_attachment_expiry(range_url), 0)
+
+    def test_redirected_range_negative_or_unsafe_final_revokes_attachment_head(self):
+        final = 'https://independent-media.example/video'
+        self.routes[self.url] = 302, {'Location': final}, b''
+        for negative in (
+            self.media(disposition='inline'),
+            self.media(disposition='attachment; filename=12345.bin'),
+            self.media(disposition='attachment; filename=12345.webm'),
+            self.media(disposition='attachment; filename="../12345.mp4"'),
+            self.media(mime='text/html'),
+            (403, {}, b''),
+            (302, {'Location': 'https://127.0.0.1/private'}, b''),
+        ):
+            with self.subTest(negative=negative):
+                self.routes[final] = self.media()
+                probe = QualityProbe(authorized_resource=True)
+                probe.probe(self.url, expected_type='video')
+                self.assert_native(True)
+                self.routes[final] = [self.media(size=None), negative]
+                result = probe.probe(self.url, expected_type='video')
+                self.assertEqual(result.method, 'RANGE')
+                self.assert_native(False)
+                self.assertEqual(native_attachment_expiry(final), 0)
+                if negative[0] == 302:
+                    self.assertTrue(result.security_rejected)
+        self.assertNotIn('https://127.0.0.1/private', self.urls())
+
+    def test_redirected_head_survives_transport_failure_without_renewing_ttl(self):
+        final = 'https://independent-media.example/video'
+        observed = 2000000000
+        clock = [observed]
+
+        def redirect_or_fail(request):
+            if request.method == 'HEAD':
+                return 302, {'Location': final}, b''
+            clock[0] += 2
+            raise requests.ConnectionError('ordinary transport failure')
+
+        self.routes[self.url] = redirect_or_fail
+        self.routes[final] = self.media(size=None)
+        with patch('xhs_download.services.quality.time.time', side_effect=lambda: clock[0]):
+            result = QualityProbe(authorized_resource=True).probe(self.url, expected_type='video')
+            self.assertEqual((result.method, result.final_url), ('HEAD', final))
+            self.assertEqual(native_attachment_expiry(self.url), (observed + 60) * 1000)
+            calls = len(self.sent)
+            self.assertEqual(ensure_native_attachment_evidence(self.url, authorized_resource=True),
+                             (observed + 60) * 1000)
+            self.assertEqual(len(self.sent), calls)
+            clock[0] = observed + 60
+            self.assert_native(False)
+
+    def test_redirect_does_not_erase_original_required_context(self):
+        final = 'https://independent-media.example/video'
+        self.routes[self.url] = 302, {'Location': final}, b''
+        self.routes[final] = self.media()
+        probe = QualityProbe(authorized_resource=True)
+        probe.probe(self.url, expected_type='video')
+        self.assert_native(True)
+        for headers, context in (
+            ({'Authorization': 'Bearer private'}, {}),
+            ({'Cookie': 'private=1'}, {}),
+            ({'X-Private-Token': 'secret'}, {}),
+            ({'Referer': 'https://source.example/'}, {'required_headers': ('Referer',)}),
+            ({}, {'ip_bound': True}),
+        ):
+            with self.subTest(context=context, headers=headers):
+                result = probe.probe(self.url, headers=headers, expected_type='video', **context)
+                self.assertTrue(result.reachable)
+                self.assertEqual(result.native_attachment_expires_at, 0)
+                self.assertEqual(native_attachment_expiry(self.url, headers, **context), 0)
+                for name in headers:
+                    self.assertNotIn(name, self.sent[-1][0].headers)
+                self.assert_native(True)
+
+    def test_redirect_final_must_meet_browser_delivery_url_requirements(self):
+        for final in ('http://public-media.example/video', 'https://8.8.8.8/video',
+                      'https://public-media.example/', 'https://public-media.example/video.m3u8'):
+            with self.subTest(final=final):
+                self.routes[self.url] = 302, {'Location': final}, b''
+                self.routes[final] = self.media()
+                result = QualityProbe(authorized_resource=True).probe(self.url, expected_type='video')
+                self.assertTrue(result.reachable)
+                self.assert_native(False)
+
+    def test_redirect_still_enforces_default_scope_and_public_dns_for_authorized_resources(self):
+        final = 'https://independent-media.example/video'
+        self.routes[self.url] = 302, {'Location': final}, b''
+        self.routes[final] = self.media()
+        self.assertTrue(self.probe().security_rejected)
+        self.assertEqual(self.urls(), [self.url])
+        self.assert_native(False)
+        probe = QualityProbe(authorized_resource=True)
+        probe.probe(self.url, expected_type='video')
+        self.assert_native(True)
+        self.dns['independent-media.example'] = ['8.8.8.8', '10.0.0.1']
+        calls = len(self.sent)
+        self.assertTrue(probe.probe(self.url, expected_type='video').security_rejected)
+        self.assertEqual(self.urls()[calls:], [self.url])
+        self.assert_native(False)
+
     def test_expired_evidence_and_expired_selection_are_not_native(self):
         self.routes[self.url] = self.media()
         self.probe()

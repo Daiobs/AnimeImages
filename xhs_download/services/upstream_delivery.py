@@ -16,6 +16,7 @@ from .common import XhsParseError, clean_filename, validate_public_download_url
 from .provider_manifest import build_provider_manifest_token, provider_manifest_is_valid, provider_manifest_expires_at
 from .provider_access import UPSTREAM_PROVIDER_IDS
 from .provider_strategy import media_request_context
+from .request_context import inherit_request_context
 from .platforms.gallerydl_generic import media_type_from_metadata, extension_from_url, VIDEO_EXTENSIONS
 from .platforms.ytdlp_generic import (
     YtDlpResultNormalizer, format_url_is_direct_http,
@@ -78,6 +79,11 @@ def upstream_manifest_item_is_allowed(item):
     return _authorized_resource_record(item) is not None
 
 
+def upstream_resource_record(item):
+    """Read original private issuance facts without renewing their authority."""
+    return _authorized_resource_record(item)
+
+
 def upstream_resource_context(item):
     record = _authorized_resource_record(item)
     if record is None:
@@ -118,7 +124,8 @@ def _issue_assets(assets, *, match, source_url):
         token = build_provider_manifest_token(**fields, url=asset.url, media_type=asset.media_type)
         bound = replace(asset, **fields, provider_manifest_token=token)
         record = bound.to_download_item()
-        record.update(headers=dict(asset.headers), request_context=dict(asset.request_context))
+        record.update(headers=dict(asset.headers), request_context=dict(asset.request_context),
+                      source_url=source_url, match=dict(match))
         if asset.media_type == 'video':
             record['expires_at'] = min(time() + RESOURCE_TTL, provider_manifest_expires_at(token))
         # Only issuer-produced exact URLs enter this cache. No client-supplied host grant.
@@ -173,12 +180,12 @@ class _UnboundVideoNormalizer(YtDlpResultNormalizer):
             url = safe_resource_url(item.get('url'))
             if not url:
                 continue
+            context = inherit_request_context(payload, item)
             candidates.append(dict(
                 url=url, quality_label=str(item.get('format_note') or item.get('format_id') or 'video'),
                 size_bytes=integer_value(item.get('filesize') or item.get('filesize_approx')),
                 size_is_estimate=ytdlp_size_is_estimate(item), score=ytdlp_format_score(item),
-                headers=dict(item.get('http_headers') or payload.get('http_headers') or {}),
-                request_context=media_request_context({**payload, **item})))
+                headers=context['headers'], request_context=media_request_context(context)))
         if not candidates:
             for code in ('unknown_media_tracks', 'streaming_media', 'separate_media_tracks'):
                 if code in states:
@@ -257,10 +264,10 @@ def _normalize_downloadable_result(payload, *, match, source_url):
             if media_type == 'video' and f'.{ext}' not in VIDEO_EXTENSIONS:
                 url_ext = extension_from_url(url)
                 ext = url_ext if f'.{url_ext}' in VIDEO_EXTENSIONS else 'mp4'
+            context = inherit_request_context(metadata)
             assets.append(MediaAsset(media_type=media_type, url=url, platform='third_party',
                                      preview_url=url if media_type == 'image' else '', ext=ext,
-                                     headers=dict(metadata.get('http_headers') or metadata.get('headers') or {}),
-                                     request_context=media_request_context(metadata)))
+                                     headers=context['headers'], request_context=media_request_context(context)))
             if len(assets) > MAX_ASSETS:
                 raise XhsParseError('上游图片结果超出单条内容限制。')
     checked = []
@@ -350,8 +357,10 @@ def normalize_upstream_result(payload, *, match, source_url):
             input_count += max(len(formats), total if type(total) is int and 0 <= total <= 1000000 else 0)
             for item in formats[:max(0, MAX_CANDIDATES - len(rows))]:
                 if isinstance(item, dict):
+                    context = inherit_request_context(node, item)
                     rows.append((item.get('url'), {
-                        'duration': node.get('duration'), 'work_label': node.get('title'), **item}))
+                        'duration': node.get('duration'), 'work_label': node.get('title'), **item,
+                        **context, 'http_headers': context['headers']}))
 
         visit(payload)
     else:

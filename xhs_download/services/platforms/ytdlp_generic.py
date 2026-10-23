@@ -10,6 +10,7 @@ from ..assets import MediaAsset, ParseResult
 from ..common import XhsProviderTimeoutError, clean_filename
 from ..provider_manifest import build_provider_manifest_token
 from ..provider_strategy import media_request_context
+from ..request_context import inherit_request_context
 from .douyin_kukutool import submit_provider_task
 from .external_tools import (
     cache_external_failure,
@@ -356,6 +357,7 @@ class YtDlpResultNormalizer:
                 )
                 if not url:
                     continue
+                context = inherit_request_context(payload, item)
                 candidates.append({
                     "url": url,
                     "quality_label": str(
@@ -368,8 +370,8 @@ class YtDlpResultNormalizer:
                         item.get("filesize") or item.get("filesize_approx")
                     ),
                     "size_is_estimate": ytdlp_size_is_estimate(item),
-                    "headers": dict(item.get("http_headers") or payload.get("http_headers") or {}),
-                    "request_context": media_request_context({**payload, **item}),
+                    "headers": context['headers'],
+                    "request_context": media_request_context(context),
                     "score": ytdlp_format_score(item),
                 })
 
@@ -384,6 +386,7 @@ class YtDlpResultNormalizer:
             and format_url_is_direct_http(payload)
             and ytdlp_format_has_explicit_complete_video(payload)
         ):
+            context = inherit_request_context(payload)
             candidates.append({
                 "url": fallback_url,
                 "quality_label": str(payload.get("format") or "yt-dlp resource"),
@@ -391,8 +394,8 @@ class YtDlpResultNormalizer:
                     payload.get("filesize") or payload.get("filesize_approx")
                 ),
                 "size_is_estimate": ytdlp_size_is_estimate(payload),
-                "headers": dict(payload.get("http_headers") or {}),
-                "request_context": media_request_context(payload),
+                "headers": context['headers'],
+                "request_context": media_request_context(context),
                 "score": (
                     integer_value(payload.get("height")),
                     integer_value(payload.get("width")),

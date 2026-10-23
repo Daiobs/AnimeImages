@@ -136,6 +136,57 @@ function mountPicker(app) {
     }};
 }
 
+for (const batch of [false, true]) {
+    test(`INV03 ${batch ? 'Batch' : 'homepage'} ordinary click uses newly prepared native descriptor`, async () => {
+        const requests = [], links = [];
+        const mediaUrl = 'https://media.bilivideo.com/known-size.mp4';
+        const app = browser(async (url, options) => {
+            const payload = JSON.parse(options.body);
+            requests.push(payload);
+            assert.equal(payload.intent, 'download');
+            assert.equal(payload.route_only, true);
+            assert.equal(payload.media_items.length, 1);
+            assert.equal(payload.media_items[0].url, mediaUrl);
+            return json({status: 'routed', route_type: 'direct', items: [{...payload.media_items[0],
+                browser_direct_fetch_safe: true, requires_merge: false,
+                download_strategy: 'browser_native', native_download_expires_at: Date.now() + 60000}]});
+        });
+        app.win.navigator.serviceWorker = {register() { assert.fail('fresh native evidence must bypass SW'); }};
+        const create = app.doc.createElement;
+        app.doc.createElement = tag => {
+            const node = create(tag);
+            if (tag === 'a') node.click = () => links.push(node.href);
+            return node;
+        };
+        for (const name of ['ordinary_media_streaming_protocol.js', 'ordinary_media_streaming.js',
+            'ordinary_media_download.js', 'download_reliability.js']) app.load(name);
+        let scope, button;
+        if (batch) {
+            scope = new DomNode('main', {class: 'batch-parse-page', 'data-batch-download-url': '/download'});
+            const csrf = new DomNode('input', {name: 'csrfmiddlewaretoken', value: 'csrf'});
+            const card = new DomNode('article', {class: 'batch-direct-item', 'data-batch-download-item': '', 'data-type': 'video'});
+            button = new DomNode('button', {'data-batch-direct-download': '', 'data-batch-direct-url': mediaUrl,
+                'data-batch-direct-size-bytes': '12345', 'data-batch-browser-fetch-safe': 'true'});
+            card.append(button); scope.append(csrf, card); app.doc.body.append(scope);
+            app.load('batch_parse.js');
+        } else {
+            const page = new DomNode('main', {class: 'xhs-download-page', 'data-download-url': '/download'});
+            scope = new DomNode('section', {id: 'parse-results-region'});
+            const card = new DomNode('article', {class: 'asset-card', 'data-type': 'video',
+                'data-url': mediaUrl, 'data-size-bytes': '12345'});
+            button = new DomNode('button', {id: 'download-btn'});
+            scope.append(card, button, new DomNode('p', {id: 'status'}));
+            page.append(scope); app.doc.body.append(page);
+            app.load('xhs_download.js'); app.doc.listeners.DOMContentLoaded();
+            await scope.listeners.click({target: card, preventDefault() {}});
+        }
+        await scope.listeners.click({target: button, preventDefault() {}});
+        for (let i = 0; i < 10 && links.length === 0; i++) await tick();
+        assert.equal(requests.length, 1);
+        assert.deepEqual(links, [mediaUrl]);
+    });
+}
+
 test('INV03 native attachment handoff preserves selection without Worker, Blob or completion claims', async () => {
     const requests = [], links = [];
     const app = browser(async (url, options) => {

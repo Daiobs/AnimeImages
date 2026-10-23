@@ -13,6 +13,7 @@ from .common import (
     MEDIA_HOST_SUFFIXES, XhsDownloadError, XhsSecurityError,
     _RedirectBudget, _request_with_retry,
 )
+from .provider_strategy import browser_streaming_resource_url_is_allowed
 from .request_context import request_context_compatible, request_context_fingerprint
 
 
@@ -283,7 +284,11 @@ class QualityProbe:
                     else parse_content_length(response)
                 )
                 native_expiry = 0
-                if (response.url == url and request_context_compatible(headers, **context)
+                # The request layer validated every redirect hop. Qualify its
+                # final response, but keep evidence bound to the original URL
+                # and context, including requirements stripped across origins.
+                if (browser_streaming_resource_url_is_allowed(response.url)
+                        and request_context_compatible(headers, **context)
                         and native_attachment_name_is_eligible(
                             response.headers.get('Content-Disposition', ''), content_type)):
                     native_expiry = int(time.time() * 1000) + 60000

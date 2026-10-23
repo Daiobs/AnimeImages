@@ -2126,6 +2126,7 @@
                 );
                 const payload = {
                     media_items: chosenItems,
+                    intent: "download",
                     base_filename: filenameBase,
                     download_mode: forceAutoMode ? "auto" : "browser",
                     save_dir: String(savedSettings.save_dir || "xhs").trim(),
