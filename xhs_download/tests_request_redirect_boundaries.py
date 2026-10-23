@@ -570,7 +570,13 @@ class RedirectConsumerTests(BoundaryNetworkCase):
         final = "https://www.xiaohongshu.com/explore/0123456789abcdef01234567"
         self.routes[initial] = (302, {"Location": "/next"}, b"")
         self.routes[intermediate] = (302, {"Location": final}, b"")
-        self.routes[final] = (200, {"Content-Type": "text/html"}, b"<html><head><meta property='og:title' content='Fixture note'></head><body></body></html>")
+        html = (
+            f'<html><head><link rel="canonical" href="{final}">'
+            '<meta property="og:title" content="Fixture note">'
+            '<meta property="og:image" content="https://sns-img.xhscdn.com/spectrum/fixture-note!webp">'
+            '</head><body></body></html>'
+        )
+        self.routes[final] = (200, {"Content-Type": "text/html"}, html.encode())
         result = XiaohongshuAdapter().parse(initial)
         self.assertEqual(result.platform, "xiaohongshu")
         self.assertEqual(self.urls(), [initial, intermediate, final])

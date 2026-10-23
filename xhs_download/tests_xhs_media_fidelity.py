@@ -1,9 +1,13 @@
 import json
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import requests
 from bs4 import BeautifulSoup
 from django.test import SimpleTestCase
+
+from contracts.network import offline_requests
 
 from .services.assets import ParseResult
 from .services.batch_parse.results import (
@@ -23,6 +27,7 @@ from .services.platforms.xhs_page_state import (
     extract_xhs_note_id,
     extract_xhs_page_state,
 )
+from .services.upstream_public_errors import public_upstream_error_message
 from .views import build_result_display_context
 
 
@@ -340,6 +345,7 @@ class XhsMediaFidelityAdapterTests(SimpleTestCase):
 
     def test_meta_then_dom_fallback_priority(self):
         meta_html = f"""
+        {CANONICAL_NOTE_HTML}
         <meta property="og:title" content="Meta 标题 - 小红书">
         <meta name="author" content="Meta 作者">
         <meta property="og:image" content="{IMAGE_ONE}">
@@ -351,6 +357,7 @@ class XhsMediaFidelityAdapterTests(SimpleTestCase):
         self.assertEqual(meta_result.metadata["title_source"], "meta")
 
         dom_html = f"""
+        {CANONICAL_NOTE_HTML}
         <div id="detail-title">DOM 标题</div><span class="username">DOM 作者</span>
         <div id="noteContainer"><img src="{IMAGE_ONE}"></div>
         """
@@ -413,7 +420,9 @@ class XhsMediaFidelityAdapterTests(SimpleTestCase):
         </script>
         """
 
-        result = self.adapter.parse_html(html)
+        result = self.adapter.parse_html(
+            hydration_html(note_payload(image_note(imageList=[])), extra_html=html)
+        )
 
         self.assertEqual([asset.url for asset in result.image_assets], [normalize_xhs_image_url(IMAGE_ONE)])
         self.assertEqual(result.metadata["image_source"], "fallback")
@@ -587,6 +596,276 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
             note_id=OTHER_NOTE_ID,
         )
 
+    def test_no_url_id_shell_rejects_every_unbound_media_surface(self):
+        uuid_image = "https://ci.xiaohongshu.com/7e7b7932-92e7-4c41-9a53-ce76a06f8ecf"
+        surfaces = (
+            GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8"),
+            f'<meta property="og:image" content="{uuid_image}">',
+            f'<div id="noteContainer"><img src="{uuid_image}"></div>',
+            f'<div class="swiper-slide"><img src="{uuid_image}"></div>',
+            f'<script>const images = ["{uuid_image}"];</script>',
+            '<script>{"originVideoKey":"unbound-video-key-1234567890"}</script>',
+        )
+        for source in (None, "https://xhslink.cn/o/opaque", "https://www.xiaohongshu.com/explore"):
+            for html in surfaces:
+                with self.subTest(source=source, html=html):
+                    result = self.adapter.parse_html(html, source_url=source)
+                    self.assertEqual(result.assets, ())
+                    self.assertEqual(result.metadata["page_state"], "unknown")
+                    self.assertFalse(result.metadata["source_identity_verified"])
+
+    def test_no_url_id_shell_is_empty_for_single_display_and_failed_for_batch(self):
+        source = "https://xhslink.cn/o/opaque"
+        html = GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
+        result = self.adapter.parse_html(html, source_url=source)
+        context = build_result_display_context(result, platform_key="home")
+        row = build_batch_result_row(
+            Mock(), source, prefer_ultra_hd=False, prefer_youtube_merge=False,
+            per_link_timeout_seconds=2,
+            parser=lambda url, **kwargs: self.adapter.parse_html(html, source_url=url),
+            display_context_builder=build_result_display_context,
+            request_country_code_builder=lambda request: "",
+            query_uses_third_party_provider_func=lambda url: False,
+            third_party_provider_is_available_func=lambda request: True,
+        )
+        self.assertEqual(context["image_items"], [])
+        self.assertEqual(context["video_items"], [])
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["error_message"], BATCH_NO_MEDIA_MESSAGE)
+
+    def test_no_url_id_unique_current_structure_preserves_images_and_video(self):
+        for note in (image_note(), video_note()):
+            with self.subTest(kind=note["type"]):
+                result = self.adapter.parse_html(
+                    hydration_html(note_payload(note)), source_url="https://xhslink.cn/o/opaque")
+                self.assertTrue(result.assets)
+                self.assertEqual(result.metadata["note_id"], NOTE_ID)
+                self.assertTrue(result.metadata["current_note_found"])
+                self.assertTrue(result.metadata["source_identity_verified"])
+
+    def test_no_url_id_unique_current_structure_preserves_fallbacks(self):
+        for media, expected_source, post_type in (
+            (f'<meta property="og:image" content="{META_IMAGE}">', "meta", "image"),
+            (f'<div id="noteContainer"><img src="{DOM_IMAGE}"></div>', "dom", "image"),
+            (f'<script>const image = "{BROAD_IMAGE}";</script>', "fallback", "image"),
+            ('<script>{"originVideoKey":"current-video-key-1234567890"}</script>', "fallback", "video"),
+        ):
+            with self.subTest(source=expected_source, post_type=post_type):
+                note = self.note_without_media(type=post_type)
+                result = self.adapter.parse_html(
+                    hydration_html(note_payload(note), extra_html=media)
+                )
+                self.assertEqual(len(result.assets), 1)
+                self.assertEqual(result.post_type, post_type)
+                self.assertEqual(result.metadata[f"{post_type}_source"], expected_source)
+                self.assertTrue(result.metadata["source_identity_verified"])
+
+    def test_no_url_id_current_note_without_media_cannot_scan_recommendation(self):
+        for recommendation in (
+            image_note(noteId=OTHER_NOTE_ID),
+            video_note(noteId=OTHER_NOTE_ID),
+        ):
+            with self.subTest(kind=recommendation["type"]):
+                payload = note_payload(self.note_without_media(type=recommendation["type"]))
+                payload["recommendations"] = [recommendation]
+                result = self.adapter.parse_html(hydration_html(payload))
+                self.assertEqual(result.assets, ())
+                self.assertTrue(result.metadata["current_note_found"])
+                self.assertTrue(result.metadata["other_note_candidate_found"])
+
+    def test_no_url_id_consistent_page_identity_allows_scoped_fallback(self):
+        for identity in (
+            CANONICAL_NOTE_HTML,
+            f'<meta property="og:url" content="{NOTE_URL}">',
+            f'<div id="noteContainer" data-note-id="{NOTE_ID}"></div>',
+            CANONICAL_NOTE_HTML + f'<meta property="og:url" content="{NOTE_URL}">',
+        ):
+            for media, expected_source in (
+                (f'<meta property="og:image" content="{META_IMAGE}">', "meta"),
+                (f'<div class="note-content"><img src="{DOM_IMAGE}"></div>', "dom"),
+            ):
+                with self.subTest(identity=identity, source=expected_source):
+                    html = identity + media + GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
+                    result = self.adapter.parse_html(html, source_url="https://xhslink.cn/o/opaque")
+                    self.assertEqual(len(result.image_assets), 1)
+                    self.assertEqual(result.metadata["note_id"], NOTE_ID)
+                    self.assertTrue(result.metadata["source_identity_verified"])
+                    self.assertEqual(result.metadata["image_source"], expected_source)
+                    self.assertEqual(result.metadata["fallback_policy"], "verified_page_fallback")
+
+    def test_no_url_id_page_identity_does_not_admit_page_level_or_script_media(self):
+        for media in (
+            GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8"),
+            f'<script>const image = "{BROAD_IMAGE}";</script>',
+            '<script>{"originVideoKey":"unbound-video-key-1234567890"}</script>',
+        ):
+            with self.subTest(media=media):
+                result = self.adapter.parse_html(CANONICAL_NOTE_HTML + media)
+                self.assertEqual(result.assets, ())
+                self.assertEqual(result.metadata["fallback_policy"], "verified_page_fallback")
+
+    def test_page_identity_conflicts_reject_structured_and_fallback_media(self):
+        other_url = f"https://www.xiaohongshu.com/explore/{OTHER_NOTE_ID}"
+        conflicts = (
+            CANONICAL_NOTE_HTML + f'<meta property="og:url" content="{other_url}">',
+            CANONICAL_NOTE_HTML + f'<div id="noteContainer" data-note-id="{OTHER_NOTE_ID}"></div>',
+            f'<link rel="canonical" href="{other_url}">',
+        )
+        for source in (None, "https://xhslink.cn/o/opaque", NOTE_URL):
+            for identity in conflicts:
+                with self.subTest(source=source, identity=identity):
+                    html = hydration_html(note_payload(image_note()), extra_html=identity)
+                    result = self.adapter.parse_html(html, source_url=source)
+                    self.assertEqual(result.assets, ())
+                    self.assertFalse(result.metadata["source_identity_verified"])
+                    self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
+        html = conflicts[0] + f'<meta property="og:image" content="{META_IMAGE}">'
+        self.assertEqual(self.adapter.parse_html(html).assets, ())
+
+    def test_foreign_page_identity_cannot_authorize_xhs_meta_images(self):
+        for value in (f"https://example.com/explore/{NOTE_ID}", f"https://www.xiaohongshu.com.evil/explore/{NOTE_ID}"):
+            with self.subTest(value=value):
+                html = f'<link rel="canonical" href="{value}"><meta property="og:image" content="{META_IMAGE}">'
+                self.assertEqual(self.adapter.parse_html(html).assets, ())
+
+    def test_no_page_identity_recommendations_or_multiple_current_notes_are_not_selected(self):
+        for payload in (
+            {"recommend": [image_note()]},
+            {"note": {"noteDetailMap": {
+                NOTE_ID: {"note": image_note()},
+                OTHER_NOTE_ID: {"note": image_note(noteId=OTHER_NOTE_ID)},
+            }}},
+        ):
+            with self.subTest(payload=payload):
+                html = hydration_html(payload, extra_html=f'<meta property="og:image" content="{META_IMAGE}">')
+                result = self.adapter.parse_html(html)
+                self.assertEqual(result.assets, ())
+                self.assertEqual(result.metadata["fallback_policy"], "source_identity_unverified")
+
+    def test_page_identity_does_not_turn_recommendations_into_current_work(self):
+        for payload in (
+            {"recommend": [image_note()]},
+            {"feeds": [image_note()]},
+            {"currentNote": image_note(noteId=OTHER_NOTE_ID), "recommend": [image_note()]},
+        ):
+            with self.subTest(payload=payload):
+                html = hydration_html(payload, extra_html=CANONICAL_NOTE_HTML
+                    + f'<meta property="og:image" content="{META_IMAGE}">')
+                result = self.adapter.parse_html(html, source_url="https://xhslink.cn/o/opaque")
+                self.assertEqual(result.assets, ())
+                self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
+
+    def test_verified_page_identity_selects_only_matching_note_from_multiple_records(self):
+        for note in (image_note(), video_note()):
+            with self.subTest(kind=note["type"]):
+                payload = {"note": {"noteDetailMap": {
+                    OTHER_NOTE_ID: {"note": image_note(noteId=OTHER_NOTE_ID,
+                        title="Other work", imageList=[{"urlDefault": BROAD_IMAGE}])},
+                    NOTE_ID: {"note": note},
+                }}}
+                html = hydration_html(payload, extra_html=CANONICAL_NOTE_HTML
+                    + f'<meta property="og:image" content="{META_IMAGE}">')
+                state = extract_xhs_page_state(BeautifulSoup(html, "html.parser"),
+                                              source_url="https://xhslink.cn/o/opaque")
+                self.assertEqual(state.note_id, NOTE_ID)
+                self.assertEqual(state.page_note_id, NOTE_ID)
+                self.assertEqual(state.source_note_id, "")
+                self.assertTrue(state.current_note_found)
+                self.assertFalse(state.page_identity_conflict)
+                self.assertIsNone(state.private_selected_note_snapshot)
+                result = self.adapter.parse_html(html, source_url="https://xhslink.cn/o/opaque")
+                expected = ([normalize_video_url(VIDEO_URL)] if note["type"] == "video" else
+                            [normalize_xhs_image_url(IMAGE_ONE), normalize_xhs_image_url(IMAGE_TWO)])
+                self.assertEqual([asset.url for asset in result.assets], expected)
+                self.assertEqual(result.metadata["fallback_policy"], "current_note_authoritative")
+                self.assertTrue(result.metadata["source_identity_verified"])
+
+    def test_page_target_mismatch_is_distinct_from_missing_or_conflicting_identity(self):
+        html = hydration_html(self.other_note_payload(), extra_html=CANONICAL_NOTE_HTML
+                              + f'<meta property="og:image" content="{META_IMAGE}">')
+        state = extract_xhs_page_state(BeautifulSoup(html, "html.parser"))
+        self.assertFalse(state.current_note_found)
+        self.assertFalse(state.page_identity_conflict)
+        self.assertEqual(state.page_note_id, NOTE_ID)
+        result = self.adapter.parse_html(html)
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
+
+        other_url = f"https://www.xiaohongshu.com/explore/{OTHER_NOTE_ID}"
+        conflict = extract_xhs_page_state(BeautifulSoup(
+            f'<link rel="canonical" href="{other_url}">' + hydration_html(note_payload(image_note())),
+            "html.parser"), source_url=NOTE_URL)
+        self.assertTrue(conflict.page_identity_conflict)
+        self.assertFalse(conflict.current_note_found)
+
+    def test_short_link_redirect_to_matching_work_uses_actual_http_boundary(self):
+        short = "https://xhslink.cn/o/opaque"
+        calls = []
+
+        def send(request, **kwargs):
+            calls.append(request.url)
+            response = requests.Response()
+            response.url = request.url
+            response.status_code = 302 if request.url == short else 200
+            if request.url == short:
+                response.headers["Location"] = NOTE_URL
+                response._content = b""
+            else:
+                self.assertEqual(request.url, NOTE_URL)
+                response._content = hydration_html(note_payload(image_note())).encode()
+            response.raw = BytesIO(response._content)
+            return response
+
+        with offline_requests(send):
+            result = self.adapter.parse_url(short)
+        self.assertEqual(calls, [short, NOTE_URL])
+        self.assertEqual(len(result.image_assets), 2)
+        self.assertEqual(result.metadata["note_id"], NOTE_ID)
+        self.assertTrue(result.metadata["source_identity_verified"])
+
+    def test_short_link_shell_reports_unknown_content_not_deleted_or_login(self):
+        def send(request, **kwargs):
+            response = requests.Response()
+            response.url = request.url
+            response.status_code = 200
+            response._content = GENERIC_SHELL_FIXTURE.read_bytes()
+            response.raw = BytesIO(response._content)
+            return response
+
+        with offline_requests(send), self.assertRaisesMessage(
+            XhsParseError, "未读取到该链接的有效作品内容"
+        ) as raised:
+            self.adapter.parse_url("https://xhslink.cn/o/opaque")
+        self.assertEqual(
+            public_upstream_error_message(
+                raised.exception, is_upstream=False, fallback="解析失败，请检查链接后重试。"
+            ),
+            "未读取到该链接的有效作品内容。",
+        )
+
+    def test_short_link_shell_batch_preserves_fixed_unknown_content_message(self):
+        def send(request, **kwargs):
+            response = requests.Response()
+            response.url = request.url
+            response.status_code = 200
+            response._content = GENERIC_SHELL_FIXTURE.read_bytes()
+            response.raw = BytesIO(response._content)
+            return response
+
+        with offline_requests(send):
+            row = build_batch_result_row(
+                Mock(), "https://xhslink.cn/o/opaque",
+                prefer_ultra_hd=False, prefer_youtube_merge=False,
+                per_link_timeout_seconds=2,
+                parser=lambda url, **kwargs: self.adapter.parse_url(url),
+                display_context_builder=build_result_display_context,
+                request_country_code_builder=lambda request: "",
+                query_uses_third_party_provider_func=lambda url: False,
+                third_party_provider_is_available_func=lambda request: True,
+            )
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["public_error_message"], "未读取到该链接的有效作品内容。")
+
     def test_explicit_note_id_rejects_generic_shell_media(self):
         source_url = (
             "https://www.xiaohongshu.com/explore/"
@@ -705,13 +984,8 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         response.text = GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
         mock_get.return_value = response
 
-        result = self.adapter.parse_url(NOTE_URL)
-
-        self.assertEqual(result.assets, ())
-        self.assertEqual(
-            result.metadata["fallback_policy"],
-            "source_identity_unverified",
-        )
+        with self.assertRaisesMessage(XhsParseError, "未读取到该链接的有效作品内容"):
+            self.adapter.parse_url(NOTE_URL)
         response.close.assert_called_once()
 
     @patch("xhs_download.services.platforms.xiaohongshu.request_get_with_retry")
@@ -719,7 +993,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         original_headers = HEADERS.copy()
         response = Mock()
         response.url = NOTE_URL
-        response.text = GENERIC_SHELL_FIXTURE.read_text(encoding="utf-8")
+        response.text = hydration_html(note_payload(image_note()))
         mock_get.return_value = response
 
         self.adapter.parse_url(NOTE_URL)
@@ -760,7 +1034,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
                         parse_html.assert_not_called()
                     response.close.assert_called_once()
 
-    def test_unrelated_json_ld_without_note_id_keeps_legacy_image_fallback(self):
+    def test_unrelated_json_ld_without_note_id_rejects_unbound_images(self):
         html = f'''
         <script type="application/ld+json">
           {{"@context":"https://schema.org","@type":"WebSite"}}
@@ -770,13 +1044,10 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
 
         result = self.adapter.parse_html(html)
 
-        self.assertEqual(
-            [asset.url for asset in result.image_assets],
-            [normalize_xhs_image_url(BROAD_IMAGE)],
-        )
-        self.assertEqual(result.metadata["fallback_policy"], "allow")
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_unverified")
 
-    def test_unrelated_application_json_without_note_id_keeps_legacy_fallback(self):
+    def test_unrelated_application_json_without_note_id_rejects_unbound_images(self):
         config = {
             "siteConfig": {
                 "title": "站点配置",
@@ -794,11 +1065,11 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
 
         result = self.adapter.parse_html(html)
 
-        self.assertEqual(len(result.image_assets), 1)
-        self.assertEqual(result.metadata["image_source"], "fallback")
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["image_source"], "")
         self.assertFalse(result.metadata["note_candidate_found"])
 
-    def test_unrelated_hydration_without_note_id_keeps_legacy_image_fallback(self):
+    def test_unrelated_hydration_without_note_id_rejects_unbound_images(self):
         payload = {
             "siteConfig": {
                 "title": "配置标题",
@@ -815,10 +1086,10 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
             ),
         )
 
-        self.assertEqual(result.metadata["image_source"], "fallback")
-        self.assertEqual(result.metadata["fallback_policy"], "allow")
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_unverified")
 
-    def test_unrelated_json_without_note_id_keeps_legacy_video_fallback(self):
+    def test_unrelated_json_without_note_id_rejects_unbound_video(self):
         html = '''
         <script type="application/json">{"siteConfig":{"theme":"light"}}</script>
         <script>{"originVideoKey":"legacy-video-key-1234567890"}</script>
@@ -826,8 +1097,8 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
 
         result = self.adapter.parse_html(html)
 
-        self.assertEqual(len(result.video_assets), 1)
-        self.assertEqual(result.metadata["video_source"], "fallback")
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["video_source"], "")
 
     def test_current_note_without_media_uses_meta_image(self):
         result = self.parse_payload(
@@ -1006,7 +1277,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
         self.assertEqual(result.metadata["image_source"], "")
         self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
 
-    def test_unrelated_json_keeps_legacy_page_level_swiper_fallback(self):
+    def test_unrelated_json_rejects_unbound_page_level_swiper(self):
         html = f'''
         <script type="application/json">{{"siteConfig":{{"theme":"light"}}}}</script>
         <div class="swiper-slide"><img src="{DOM_IMAGE}"></div>
@@ -1014,9 +1285,9 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
 
         result = self.adapter.parse_html(html)
 
-        self.assertEqual(result.metadata["fallback_policy"], "allow")
-        self.assertEqual(result.metadata["image_source"], "dom")
-        self.assertEqual(result.image_assets[0].url, normalize_xhs_image_url(DOM_IMAGE))
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_unverified")
+        self.assertEqual(result.metadata["image_source"], "")
+        self.assertEqual(result.assets, ())
 
     def test_mismatched_note_suppresses_broad_recommendation_image(self):
         result = self.parse_payload(self.other_note_payload())

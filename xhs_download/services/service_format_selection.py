@@ -215,12 +215,19 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
     from .upstream_candidates import candidate_url, issue_candidates, MAX_CANDIDATES
     from .upstream_delivery import safe_resource_url
     from .quality_execution import SERVICE_VERSIONS
+    from .provider_lab.contracts import safe_public_text
     from .platforms.kukutool_generic import ServiceFormatPayload
+    from .work_caption import work_caption_metadata, work_caption_presentation
     if provider not in PROVIDERS or not isinstance(payload, ServiceFormatPayload):
         return result
     rows = payload.get('_service_format_rows')
     if not isinstance(rows, (list, tuple)) or not rows:
         return result
+    raw_title = payload.get('_caption_title', payload.get('title')) or ''
+    raw_description = payload.get('desc') or payload.get('description') or ''
+    presentation = work_caption_presentation(raw_title, raw_description)
+    source_labels = {str(value) for value in (raw_title, raw_description) if value}
+    source_labels.update(safe_public_text(value, 160) for value in (raw_title, raw_description) if value)
     match = match or {'provider_id': provider, 'extractor_id': provider,
                       'version': SERVICE_VERSIONS[provider], 'label': provider}
     projection_validator = None
@@ -275,7 +282,13 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
                 and not row.get('requires_merge')):
             metadata['_service_legacy_item'] = old_items[0]
         metadata['extension'] = row.get('extension') or row.get('ext') or extension_from_url(url)
-        metadata.setdefault('work_label', payload.get('title') or result.base_filename)
+        metadata.setdefault('work_label', presentation['title'] or result.base_filename)
+        # Normalized payload caches may still hold an old raw/truncated caption
+        # label. Reuse the original fields only when they match this work label.
+        if metadata.get('work_label') in source_labels:
+            metadata['work_label'] = presentation['title']
+        metadata['_filename_title'] = work_caption_presentation(
+            metadata.get('work_label'), raw_description)['title']
         groups.setdefault(row.get('work_id') or '', []).append((url, metadata))
     cover = (candidate_url(payload.get('cover'), validator=projection_validator)
              if projection_validator else safe_resource_url(payload.get('cover')))
@@ -298,9 +311,22 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
         candidates.extend(issue_candidates(specs, work=work))
     if not candidates:
         return result
-    metadata = {**result.metadata, 'upstream_candidates': candidates,
+    text_metadata = work_caption_metadata(raw_title, raw_description)
+    if provider in DOUYIN_PROVIDERS:
+        # Dedicated consumers project the original pair. A derived description
+        # beside a raw caption title would falsely look like independent fields.
+        text_metadata['title'] = result.metadata.get('title', raw_title)
+        text_metadata['description'] = result.metadata.get('description', raw_description)
+    metadata = {**result.metadata, **text_metadata,
+                'upstream_candidates': candidates,
                 'candidate_retained_count': len(candidates), 'retained_count': len(candidates)}
-    return replace(result, metadata=metadata)
+    if isinstance(metadata.get('description'), str):
+        metadata['description'] = metadata['description'][:2000]
+    base_filename = result.base_filename
+    if result.platform == 'third_party' and base_filename == provider and presentation['title']:
+        # Candidate-only service execution starts with the provider as a placeholder.
+        base_filename = picker.clean_filename(presentation['title'])[:180] or base_filename
+    return replace(result, base_filename=base_filename, metadata=metadata)
 
 
 def selected_link_descriptor(record):
@@ -313,7 +339,7 @@ def selected_link_descriptor(record):
         title = douyin_caption_presentation(public.get('work_label'))['title']
         # Naming-only projection also handles still-valid cached candidates.
         # Keep their resource identity, authorization and expiry untouched.
-        record = {**record, 'public': {**public, 'work_label': title}}
+        record = {**record, 'filename_title': title, 'public': {**public, 'work_label': title}}
     link = picker.selected_link_descriptor(record, provider=provider, schema=SCHEMA)
     public = record['public']
     legacy = record.get('service_legacy_item') or {}
@@ -330,7 +356,10 @@ def selected_link_descriptor(record):
     if stem and suffix.lower() in picker.VIDEO_EXTENSIONS and (not extension or extension == suffix.lower()):
         if provider in DOUYIN_PROVIDERS:
             title = douyin_caption_presentation(stem)['title']
-            stem = picker.clean_filename(title) if title else 'media'
+        else:
+            from .work_caption import work_caption_presentation
+            title = work_caption_presentation(stem)['title']
+        stem = picker.clean_filename(title) if title else 'media'
         link['filename'] = f'{stem[:160]}.{suffix}'
     elif provider in DOUYIN_PROVIDERS and not extension and link['filename'].endswith('.bin'):
         # Preserve the existing dedicated-video filename default, not a new

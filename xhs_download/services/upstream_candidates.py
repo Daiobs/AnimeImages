@@ -142,6 +142,8 @@ def _candidate_record(url, metadata, *, ordinal, provider, source_url, media_typ
         **request_context,
         'expires_at': time.time() + TTL,
     }
+    if isinstance(metadata.get('_filename_title'), str):
+        record['filename_title'] = safe_public_text(metadata['_filename_title'], 160)
     if provider in {'tiantianjiexi_generic', 'kukutool_generic', 'tiantianjiexi', 'kukutool'}:
         from .service_format_selection import candidate_facts
         public.update(candidate_facts(metadata, url, media_type))

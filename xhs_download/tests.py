@@ -1549,6 +1549,7 @@ class XhsParserTests(SimpleTestCase):
     def test_xiaohongshu_adapter_preserves_candidate_order_and_deduplication(self):
         html = """
         <html>
+          <link rel="canonical" href="https://www.xiaohongshu.com/explore/0123456789abcdef01234567">
           <meta name="og:image" content="https://sns-webpic-qc.xhscdn.com/">
           <meta name="og:image" content="https://sns-img.xhscdn.com/spectrum/first-key!webp">
           <meta name="og:image" content="https://sns-img.xhscdn.com/spectrum/first-key!webp">
@@ -1600,6 +1601,7 @@ class XhsParserTests(SimpleTestCase):
     def test_parse_html_returns_image_post(self):
         html = """
         <html>
+          <link rel="canonical" href="https://www.xiaohongshu.com/explore/0123456789abcdef01234567">
           <span class="username">user</span>
           <div id="detail-title">title</div>
           <meta name="og:image" content="https://sns-img.xhscdn.com/spectrum/abc123!webp">
@@ -1615,6 +1617,7 @@ class XhsParserTests(SimpleTestCase):
     def test_xiaohongshu_adapter_returns_media_assets(self):
         html = """
         <html>
+          <link rel="canonical" href="https://www.xiaohongshu.com/explore/0123456789abcdef01234567">
           <meta name="og:image" content="https://sns-img.xhscdn.com/spectrum/abc123!webp">
         </html>
         """
@@ -1632,6 +1635,7 @@ class XhsParserTests(SimpleTestCase):
     def test_xiaohongshu_adapter_ignores_static_og_image_assets(self):
         html = """
         <html>
+          <link rel="canonical" href="https://www.xiaohongshu.com/explore/0123456789abcdef01234567">
           <meta name="og:image" content="//picasso-static.xiaohongshu.com/fe-platform/e6214e4fbfae2cf14d634d4296916e8a5eaefdf4.png">
           <meta name="og:image" content="https://sns-img.xhscdn.com/notes_pre_post/1040g3k0321rmapod7u0g5nbcsha0baamosu1deo!webp">
         </html>
@@ -1648,6 +1652,9 @@ class XhsParserTests(SimpleTestCase):
     def test_parse_html_returns_video_post(self):
         html = """
         <html>
+          <script type="application/json">
+            {"currentNote":{"noteId":"0123456789abcdef01234567","type":"video"}}
+          </script>
           <meta name="og:image" content="https://sns-img.xhscdn.com/spectrum/cover123!webp">
           <script>{"originVideoKey":"video-key-123456789"}</script>
         </html>

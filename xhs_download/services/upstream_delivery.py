@@ -300,7 +300,9 @@ def normalize_upstream_result(payload, *, match, source_url):
     provider = match.get('provider_id')
     if provider not in PROVIDERS:
         raise XhsParseError('扩展解析器不可用。')
+    from .work_caption import work_caption_metadata, work_caption_presentation
     title = match.get('label') or 'media'
+    text_metadata = {}
     author = ''
     rows = []
     scope = {}
@@ -318,7 +320,8 @@ def normalize_upstream_result(payload, *, match, source_url):
                 raise XhsParseError('集合结果未提供有界范围。')
         elif payload.get('_type', 'video') not in {'video', None}:
             raise XhsParseError('扩展解析只接受有界媒体结果。')
-        title = payload.get('title') or title
+        text_metadata = work_caption_metadata(payload.get('title'), payload.get('description'))
+        title = text_metadata['title'] or title
         author = payload.get('uploader') or payload.get('creator') or ''
         input_count = 0
         nodes = 0
@@ -355,11 +358,13 @@ def normalize_upstream_result(payload, *, match, source_url):
                 raise XhsParseError('上游格式结构无效。')
             total = node_scope.get('format_total')
             input_count += max(len(formats), total if type(total) is int and 0 <= total <= 1000000 else 0)
+            work_title = work_caption_presentation(node.get('title'), node.get('description'))['title']
             for item in formats[:max(0, MAX_CANDIDATES - len(rows))]:
                 if isinstance(item, dict):
                     context = inherit_request_context(node, item)
                     rows.append((item.get('url'), {
-                        'duration': node.get('duration'), 'work_label': node.get('title'), **item,
+                        'duration': node.get('duration'), 'work_label': work_title, **item,
+                        '_filename_title': work_title,
                         **context, 'http_headers': context['headers']}))
 
         visit(payload)
@@ -450,7 +455,7 @@ def normalize_upstream_result(payload, *, match, source_url):
         base_filename=clean_filename(str(title))[:180] or 'media', assets=assets,
         metadata=dict(
             source_platform='upstream', source_platform_name=match.get('label', provider),
-            title=safe_public_text(title, 300), author_name=safe_public_text(author, 200),
+            **{**text_metadata, 'title': safe_public_text(title, 300)}, author_name=safe_public_text(author, 200),
             selected_provider=provider, source_provider=provider, provider_label=match.get('label', provider),
             upstream_extractor=match.get('extractor_id', ''), upstream_version=match.get('version', ''),
             canonical_source_url=source_url, coverage_status='matched_attemptable',

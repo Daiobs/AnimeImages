@@ -297,6 +297,7 @@ def build_picker(candidates, preferences=None, *, provider=PROVIDER, schema=SCHE
 def selected_link_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
     """Authorized link metadata, not a media fetch or download grant."""
     from .upstream_candidates import candidate_url
+    from .work_caption import work_caption_presentation
     public = record.get('public', {})
     if (record.get('provider_id') != provider or not isinstance(public, dict)
             or public.get('provider_id') != provider
@@ -313,7 +314,11 @@ def selected_link_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
         extension = 'mpd'
     if not re.fullmatch(r'[a-z0-9]{1,12}', extension):
         extension = 'bin'
-    name = clean_filename(public.get('work_label') or 'media').strip(' .')[:160] or 'media'
+    # New normalization already distinguished title from body. Old cached labels
+    # still need the naming-only caption projection; neither path reissues them.
+    title = (record['filename_title'] if 'filename_title' in record else
+             work_caption_presentation(public.get('work_label'))['title'])
+    name = clean_filename(title or 'media').strip(' .')[:160] or 'media'
     format_id = re.sub(r'[^A-Za-z0-9_-]', '_', str(public.get('format_id') or record['candidate_id']))[:80]
     return {'selection_schema': schema, 'candidate_id': record['candidate_id'],
             'selected_format_id': public.get('format_id') or '', 'url': url,

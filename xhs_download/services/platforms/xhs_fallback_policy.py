@@ -81,15 +81,19 @@ def resolve_xhs_fallback_policy(
         and state.post_type != "image"
         and structured_video_urls
     )
-    page_identity_verified = bool(page_identity_source)
+    page_identity_verified = bool(
+        page_identity_source and not state.page_identity_conflict
+    )
     source_identity_mismatch = bool(
-        state.source_note_id
-        and state.note_candidate_found
-        and not state.current_note_found
+        state.page_identity_conflict
+        or (
+            (state.source_note_id or state.page_note_id)
+            and state.note_candidate_found
+            and not state.current_note_found
+        )
     )
     source_identity_unverified = bool(
-        state.source_note_id
-        and not state.current_note_found
+        not state.current_note_found
         and not page_identity_verified
         and not source_identity_mismatch
     )
@@ -112,7 +116,7 @@ def resolve_xhs_fallback_policy(
     else:
         policy_name = "allow"
 
-    if state.current_note_found or page_identity_verified:
+    if state.current_note_found or (page_identity_verified and not source_identity_mismatch):
         page_state = "available"
     elif state.page_state != "unknown":
         page_state = state.page_state
