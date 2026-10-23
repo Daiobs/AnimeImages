@@ -10,6 +10,7 @@ const protocol = self.AnimeImagesOrdinaryMediaStreamingProtocol;
 const downloads = new Map();
 const PROGRESS_INTERVAL_MS = 350;
 const TERMINAL_RETENTION_MS = 60000;
+const PREPARATION_TIMEOUT_MS = 8000;
 const ALLOW_LOOPBACK_HTTP = protocol.isLoopbackHostname(self.location.hostname);
 
 function deferred() {
@@ -69,9 +70,21 @@ async function replyWithTelemetryOwner(port, payload, state, sourceClientId) {
 }
 
 function settle(state) {
+    finishPreparation(state);
     if (state.settled) {
         state.settled.resolve();
         state.settled = null;
+    }
+}
+
+function finishPreparation(state) {
+    if (state.preparation) {
+        state.preparation.resolve();
+        state.preparation = null;
+    }
+    if (state.expiryTimer !== null) {
+        clearTimeout(state.expiryTimer);
+        state.expiryTimer = null;
     }
 }
 
@@ -233,16 +246,18 @@ function createDownloadState(descriptor, ownerClientId) {
         downstreamController: null,
         expiryTimer: null,
         settled: deferred(),
+        preparation: deferred(),
         progressEstimator: protocol.createProgressEstimator(),
         lastProgressAt: 0,
     };
     state.expiryTimer = setTimeout(() => {
         if (state.state === "prepared") {
-            markTerminal(state, "failed", "DESCRIPTOR_EXPIRED", {
+            markTerminal(state, "failed", Date.now() >= descriptor.expiresAt
+                ? "DESCRIPTOR_EXPIRED" : "STREAMING_START_TIMEOUT", {
                 failureStage: "DESCRIPTOR_FAILURE",
             });
         }
-    }, Math.max(0, descriptor.expiresAt - Date.now()));
+    }, Math.max(0, Math.min(PREPARATION_TIMEOUT_MS, descriptor.expiresAt - Date.now())));
     return state;
 }
 
@@ -297,6 +312,9 @@ self.addEventListener("message", (event) => {
                 event.source && event.source.id,
             );
             downloads.set(descriptor.downloadId, state);
+            // Keep this registration's owner alive only until navigation takes
+            // over, cancellation or the bounded preparation deadline.
+            event.waitUntil(state.preparation.promise);
             reply(port, {ok: true, status: safeStatus(state)});
         } catch (error) {
             reply(port, {ok: false, code: String(error && error.message || "INVALID_DESCRIPTOR")});
@@ -569,6 +587,7 @@ self.addEventListener("fetch", (event) => {
         return;
     }
     const lifecyclePromise = state.settled.promise;
-    event.respondWith(streamDownload(state));
     event.waitUntil(lifecyclePromise);
+    event.respondWith(streamDownload(state));
+    finishPreparation(state);
 });

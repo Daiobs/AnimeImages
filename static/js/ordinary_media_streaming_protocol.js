@@ -745,6 +745,9 @@
             filename: value.filename,
             expectedBytes: value.expectedBytes,
             size_is_estimate: value.size_is_estimate,
+            createdAt: value.createdAt,
+            expiresAt: Math.min(positiveInteger(value.expiresAt) || Infinity,
+                binding ? binding.selection_expires_at : Infinity),
         }, settings);
         return Object.freeze({
             downloadId: descriptor.downloadId, url: descriptor.url,

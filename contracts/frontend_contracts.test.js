@@ -172,7 +172,7 @@ function attachWorker(app, {legacy = false, unavailable = false, rejectedUrl = f
     let protocol;
     const emit = status => {
         statuses.set(status.downloadId, status);
-        statusListeners.forEach(listener => listener({data: {
+        statusListeners.forEach(listener => listener({source: worker, data: {
             type: `DOWNLOAD_${status.state.toUpperCase()}`, status, telemetryOwner: false,
         }}));
     };
@@ -205,10 +205,11 @@ function attachWorker(app, {legacy = false, unavailable = false, rejectedUrl = f
             }
         },
     };
-    const waiting = {state: "installed", postMessage() { assert.fail("Must not force waiting Worker takeover"); }};
+    const registration = {active: worker, waiting: null, installing: null,
+        async update() { return this; }};
     const serviceWorker = {
         controller: worker,
-        async register() { return {active: worker, waiting}; },
+        async register() { return registration; },
         addEventListener(name, listener) { if (name === "message") statusListeners.add(listener); },
         removeEventListener(name, listener) { if (name === "message") statusListeners.delete(listener); },
     };

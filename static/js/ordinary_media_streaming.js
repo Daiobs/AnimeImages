@@ -369,6 +369,7 @@
         const latestStatuses = new Map();
         const navigationFrames = new Map();
         const cancelConfirmations = new Map();
+        const taskWorkers = new Map();
         let registrationPromise = null;
         let currentRegistration = null;
         let messageListenerAttached = false;
@@ -470,12 +471,14 @@
         }
 
         function handleWorkerMessage(event) {
-            if (event && event.source && currentRegistration
-                && event.source !== currentRegistration.active) return;
             const message = event && event.data && typeof event.data === "object"
                 ? event.data
                 : {};
             if (message.status) {
+                const owner = taskWorkers.get(message.status.downloadId)
+                    || currentRegistration && currentRegistration.active;
+                if (!owner || event.source !== owner) return;
+                taskWorkers.set(message.status.downloadId, owner);
                 emit(message.status, {
                     reportTelemetry: message.telemetryOwner !== false,
                 });
@@ -495,50 +498,128 @@
             navigatorObject.serviceWorker.addEventListener("message", handleWorkerMessage);
         }
 
-        async function registration() {
+        function initializeRegistration() {
+            return new Promise((resolve, reject) => {
+                let finished = false;
+                let registered = null;
+                let updateComplete = false;
+                let candidate = null;
+                const observed = new Set();
+                const finish = (callback, value) => {
+                    if (finished) return;
+                    finished = true;
+                    clearSchedule(timer);
+                    if (registered && typeof registered.removeEventListener === 'function') {
+                        registered.removeEventListener('updatefound', inspect);
+                    }
+                    observed.forEach(worker => {
+                        if (typeof worker.removeEventListener === 'function') {
+                            worker.removeEventListener('statechange', inspect);
+                        }
+                    });
+                    callback(value);
+                };
+                const inspect = () => {
+                    if (finished || !registered) return;
+                    const pending = registered.installing || registered.waiting;
+                    if (pending) candidate = pending;
+                    for (const worker of [pending, registered.active]) {
+                        if (worker && !observed.has(worker)) {
+                            observed.add(worker);
+                            if (typeof worker.addEventListener === 'function') {
+                                worker.addEventListener('statechange', inspect);
+                            }
+                        }
+                    }
+                    if (candidate && candidate.state === 'redundant') {
+                        finish(reject, streamingError('STREAMING_WORKER_ACTIVATION_FAILED',
+                            '浏览器流式下载服务更新未能启动，尚未开始下载。'));
+                    } else if (updateComplete && !pending && registered.active
+                        && registered.active.state === 'activated'
+                        && (!candidate || candidate === registered.active)) {
+                        attachMessageListener();
+                        finish(resolve, {registration: registered, active: registered.active,
+                            controller: registered.active});
+                    }
+                };
+                const timer = schedule(() => finish(reject, streamingError(
+                    'STREAMING_WORKER_ACTIVATION_TIMEOUT',
+                    '浏览器流式下载服务尚未就绪，现有下载不受影响。',
+                )), startTimeoutMs);
+                (async () => {
+                    let result;
+                    try {
+                        result = await navigatorObject.serviceWorker.register(workerUrl, {
+                            scope: workerScope, updateViaCache: 'none',
+                        });
+                    } catch (error) {
+                        finish(reject, streamingError('STREAMING_REGISTRATION_FAILED',
+                            '浏览器流式下载服务注册失败。'));
+                        return;
+                    }
+                    if (finished) return;
+                    registered = result;
+                    currentRegistration = registered;
+                    if (typeof registered.addEventListener === 'function') {
+                        registered.addEventListener('updatefound', inspect);
+                    }
+                    inspect();
+                    if (finished) return;
+                    try {
+                        // register() may reuse old code; update() can resolve before install/activate.
+                        await registered.update();
+                    } catch (error) {
+                        finish(reject, streamingError('STREAMING_WORKER_UPDATE_FAILED',
+                            '无法确认下载服务更新，尚未开始下载；现有下载不受影响。'));
+                        return;
+                    }
+                    updateComplete = true;
+                    inspect();
+                })().catch(error => finish(reject, error));
+            });
+        }
+
+        async function registration(signal) {
             if (!capabilityAvailable()) {
                 throw streamingError(
                     "STREAMING_CAPABILITY_UNAVAILABLE",
                     "当前浏览器不支持流式下载。",
                 );
             }
+            if (signal && signal.aborted) {
+                throw streamingError('USER_CANCELLED', '下载已取消。');
+            }
             if (!registrationPromise) {
-                registrationPromise = (async () => {
-                    let registered;
-                    try {
-                        registered = await navigatorObject.serviceWorker.register(workerUrl, {
-                            scope: workerScope,
-                            updateViaCache: "none",
-                        });
-                    } catch (error) {
-                        throw streamingError(
-                            "STREAMING_REGISTRATION_FAILED",
-                            "浏览器流式下载服务注册失败。",
-                        );
-                    }
-                    currentRegistration = registered;
-                    const active = await waitForWorkerActivation(registered, {
-                        timeoutMs: startTimeoutMs,
-                        schedule,
-                        clearSchedule,
-                    });
-                    attachMessageListener();
-                    return {registration: registered, active, controller: active};
-                })().catch((error) => {
-                    registrationPromise = null;
-                    throw error;
+                const pending = initializeRegistration();
+                registrationPromise = pending;
+                pending.catch(() => {
+                    if (registrationPromise === pending) registrationPromise = null;
                 });
             }
-            const registered = await registrationPromise;
+            const pending = registrationPromise;
+            const registered = await (signal ? new Promise((resolve, reject) => {
+                const finish = (callback, value) => {
+                    signal.removeEventListener('abort', abort);
+                    callback(value);
+                };
+                const abort = () => finish(reject, streamingError('USER_CANCELLED', '下载已取消。'));
+                signal.addEventListener('abort', abort, {once: true});
+                pending.then(value => finish(resolve, value), error => finish(reject, error));
+                if (signal.aborted) abort();
+            }) : pending);
             return {...registered, active: registered.registration.active,
                 controller: registered.registration.active};
         }
 
         async function postMessage(message, onDispatch) {
-            const ready = await registration();
+            // Cancellation installs its shared confirmation before any reply or
+            // legacy synchronous broadcast can be observed.
+            await Promise.resolve();
+            const taskId = message.downloadId || message.descriptor && message.descriptor.downloadId;
+            const ready = taskWorkers.has(taskId) ? null : await registration();
             // The fallback owns only the download URL scope. A root-scoped old
             // page controller can finish its tasks without blocking new ones.
-            const worker = ready.registration.active;
+            const worker = taskWorkers.get(taskId) || ready.registration.active;
             if (!worker || typeof worker.postMessage !== "function") {
                 throw streamingError(
                     "STREAMING_WORKER_NOT_ACTIVE",
@@ -563,6 +644,11 @@
                     const response = event && event.data && typeof event.data === "object"
                         ? event.data
                         : {};
+                    if (message.type === 'LIST_ACTIVE_DOWNLOADS' && response.ok && Array.isArray(response.statuses)) {
+                        response.statuses.forEach(status => {
+                            if (!taskWorkers.has(status.downloadId)) taskWorkers.set(status.downloadId, worker);
+                        });
+                    }
                     const expectedId = message.downloadId || message.descriptor && message.descriptor.downloadId;
                     if (response.status && expectedId && response.status.downloadId !== expectedId) {
                         finish(reject, streamingError("STREAMING_STATUS_MISMATCH", "下载任务状态不匹配。"));
@@ -576,6 +662,7 @@
                     finish(resolve, response);
                 };
                 try {
+                    if (message.type === 'REGISTER_DOWNLOAD') taskWorkers.set(taskId, worker);
                     if (onDispatch) onDispatch();
                     worker.postMessage(message, [channel.port2]);
                 } catch (error) {
@@ -617,6 +704,11 @@
         }
 
         function launchNavigation(downloadId) {
+            const owner = taskWorkers.get(downloadId);
+            if (!owner || owner.state === 'redundant' || !currentRegistration
+                || currentRegistration.active !== owner) {
+                throw streamingError('STREAMING_WORKER_CHANGED', '下载准备期间服务已更新，尚未开始下载。');
+            }
             if (!documentObject || !documentObject.body) {
                 throw streamingError(
                     "STREAMING_NAVIGATION_UNAVAILABLE",
@@ -928,7 +1020,7 @@
 
             try {
                 if (cancelRequested) throw cancelledError();
-                await registration();
+                await registration(signal);
                 if (cancelRequested) throw cancelledError();
                 // Recheck after browser setup, before registering any transfer.
                 descriptor = protocol.createTransportDescriptor(source, descriptorOptions);
@@ -972,6 +1064,12 @@
             } catch (error) {
                 stopStartWaiter();
                 detachAbort();
+                const terminal = latestStatuses.get(downloadId);
+                if (terminal && TERMINAL_STATES.has(terminal.state) && !terminal.streamingStarted) {
+                    // The owning Worker already confirmed preparation ended;
+                    // it may now retire normally, so no second cleanup ACK is needed.
+                    preparedDescriptorDeleted = true;
+                }
                 if (error && error.message === "DESCRIPTOR_EXPIRED" && !error.errorCode) {
                     error = streamingError("DESCRIPTOR_EXPIRED", "当前资源授权已过期，请重新解析。");
                 }
@@ -1005,7 +1103,9 @@
                         {streamingStarted});
                 }
                 if (error) error.safeToFallback = !cancelRequested && !error.streamingStarted
-                    && !["STREAMING_UPDATE_REQUIRED", "STREAMING_PROTOCOL_UNSUPPORTED", "DESCRIPTOR_EXPIRED"].includes(error.errorCode)
+                    && !["STREAMING_UPDATE_REQUIRED", "STREAMING_PROTOCOL_UNSUPPORTED", "DESCRIPTOR_EXPIRED",
+                        "STREAMING_REGISTRATION_FAILED", "STREAMING_WORKER_UPDATE_FAILED",
+                        "STREAMING_WORKER_ACTIVATION_FAILED", "STREAMING_WORKER_ACTIVATION_TIMEOUT"].includes(error.errorCode)
                     && (!registrationDispatched || registrationRejected || preparedDescriptorDeleted);
                 throw error;
             }
@@ -1053,10 +1153,7 @@
     async function prepare(options) {
         const client = getSharedClient(options);
         if (!client.capabilityAvailable()) return;
-        const ready = await client.registration();
-        // Explicit preparation checks the complete script, not a media retry or
-        // version gate. Activation remains the browser's normal lifecycle.
-        if (typeof ready.registration.update === "function") await ready.registration.update();
+        await client.registration();
     }
 
     return Object.freeze({

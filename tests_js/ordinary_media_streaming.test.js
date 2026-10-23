@@ -94,10 +94,10 @@ function createClientHarness(options) {
             }
             return registration;
         },
-        emit(status, messageOptions) {
-            statuses.set(status.downloadId, status);
+        emit(status, messageOptions, source = worker) {
+            source.statuses.set(status.downloadId, status);
             for (const callback of listeners.get("message") || []) {
-                callback({data: {
+                callback({source, data: {
                     type: `DOWNLOAD_${status.state.toUpperCase()}`,
                     status,
                     ...(messageOptions || {}),
@@ -109,8 +109,21 @@ function createClientHarness(options) {
         name: "initial",
         state: "activated",
         settings,
+        statuses,
+        stateListeners: new Set(),
+        addEventListener(name, callback) {
+            if (name === 'statechange') this.stateListeners.add(callback);
+        },
+        removeEventListener(name, callback) {
+            if (name === 'statechange') this.stateListeners.delete(callback);
+        },
+        changeState(state) {
+            this.state = state;
+            [...this.stateListeners].forEach(callback => callback());
+        },
         postMessage(message, ports) {
             const settings = this.settings;
+            const statuses = this.statuses;
             calls.push({type: "message", worker: this.name, message});
             const reply = ports && ports[0];
             if (!reply) return;
@@ -170,7 +183,7 @@ function createClientHarness(options) {
                 const status = {...current, state: "cancelled", streamingStarted: true};
                 statuses.set(status.downloadId, status);
                 reply.postMessage({ok: true, status});
-                serviceWorker.emit(status);
+                serviceWorker.emit(status, {}, this);
                 return;
             }
             if (message.type === "DELETE_DOWNLOAD") {
@@ -207,11 +220,25 @@ function createClientHarness(options) {
         },
     };
     function createWorker(name, overrides) {
-        return {...worker, name, settings: {...settings, ...overrides}};
+        return {...worker, name, statuses: new Map(), stateListeners: new Set(), settings: {...settings, ...overrides}};
     }
+    const updateListeners = new Set();
     const registration = {
         active: worker,
+        installing: null,
         waiting: settings.waitingWorker ? createWorker("waiting", settings.waitingWorker) : null,
+        addEventListener(name, callback) {
+            if (name === 'updatefound') updateListeners.add(callback);
+        },
+        removeEventListener(name, callback) {
+            if (name === 'updatefound') updateListeners.delete(callback);
+        },
+        updateFound() { [...updateListeners].forEach(callback => callback()); },
+        async update() {
+            calls.push({type: 'update'});
+            if (settings.onUpdate) await settings.onUpdate(registration);
+            return registration;
+        },
     };
     if (registration.waiting) registration.waiting.state = "installed";
     function changeController(nextWorker) {
@@ -220,6 +247,8 @@ function createClientHarness(options) {
             nextWorker.state = "activated";
             registration.active = nextWorker;
             if (registration.waiting === nextWorker) registration.waiting = null;
+            if (registration.installing === nextWorker) registration.installing = null;
+            nextWorker.changeState('activated');
         }
         for (const callback of [...(listeners.get("controllerchange") || [])]) callback();
     }
@@ -255,7 +284,8 @@ function createClientHarness(options) {
                     if (typeof settings.onNavigate === "function") {
                         settings.onNavigate({
                             serviceWorker,
-                            statuses,
+                            worker: registration.active,
+                            statuses: registration.active.statuses,
                             href: this.href,
                             target: this.target,
                         });
@@ -406,6 +436,7 @@ function createWorkerRuntime(fetchImpl, options) {
     const clientMessages = [];
     const clientDeliveries = [];
     const clientIds = settings.clientIds || ["client-a"];
+    const messageLifetimes = [];
     const context = {
         Date: settings.DateConstructor || Date,
         AbortController,
@@ -441,7 +472,7 @@ function createWorkerRuntime(fetchImpl, options) {
             addEventListener(name, callback) { listeners.set(name, callback); },
         },
     };
-    vm.runInNewContext(workerSource, context, {filename: workerPath});
+    vm.runInNewContext(settings.source || workerSource, context, {filename: workerPath});
 
     async function send(message, sourceId) {
         return new Promise((resolve) => {
@@ -450,7 +481,7 @@ function createWorkerRuntime(fetchImpl, options) {
                 data: message,
                 source: {id: sourceId || clientIds[0]},
                 ports: [{postMessage: resolve}],
-                waitUntil(promise) { waitUntil.push(promise); },
+                waitUntil(promise) { waitUntil.push(promise); messageLifetimes.push(promise); },
             });
         });
     }
@@ -469,7 +500,7 @@ function createWorkerRuntime(fetchImpl, options) {
         return {response: responsePromise, waitUntil};
     }
 
-    return {clientDeliveries, clientMessages, send, startFetch,
+    return {clientDeliveries, clientMessages, messageLifetimes, send, startFetch,
         inspectState: vm.runInNewContext("downloadId => downloads.get(downloadId)", context)};
 }
 
@@ -2005,13 +2036,13 @@ test("legacy bound messages retain their original validation for already-open pa
     assert.equal(protocol.createDescriptor({...ordinaryItem(), downloadId: "1".repeat(32)}).maxBytes, 2 * 1024 ** 3);
 });
 
-test("new transfer projection separates candidate authorization from the ordinary preparation window", () => {
+test("new transfer projection removes business fields but retains the earlier authorization deadline", () => {
     const now = Date.now();
     const input = {...selectedItem("tiantianjiexi", {selection_expires_at: now + 1000}),
         downloadId: "1".repeat(32), expectedBytes: 1024 ** 3 + 1};
     const transfer = protocol.createTransportDescriptor(input, {nowEpochMs: now});
     assert.equal(transfer.expectedBytes, input.expectedBytes);
-    assert.equal(transfer.expiresAt, now + protocol.DEFAULT_STREAM_DESCRIPTOR_TTL_MS);
+    assert.equal(transfer.expiresAt, input.selection_expires_at);
     assert.equal(input.selection_expires_at, now + 1000);
     for (const key of ["provider", "candidate_id", "provider_manifest_token", "selectionBinding", "protocolVersion"])
         assert.equal(transfer[key], undefined);
@@ -2364,21 +2395,21 @@ function assertNoUpdateSideEffects(app) {
     assert.equal(app.frames.length, 0);
 }
 
-function emitNavigationStarted({serviceWorker, statuses, href}) {
+function emitNavigationStarted({serviceWorker, statuses, href, worker}) {
     const status = statuses.get(protocol.descriptorIdFromPath(href));
-    serviceWorker.emit({...status, state: "fetching", streamingStarted: true});
+    serviceWorker.emit({...status, state: "fetching", streamingStarted: true}, {}, worker);
 }
 
 function completeDownload(app, active) {
-    app.serviceWorker.emit({...app.statuses.get(active.downloadId), state: "completed",
-        receivedBytes: 10, streamingStarted: true});
+    const owner = [app.worker, app.registration.active].find(w => w.statuses.has(active.downloadId));
+    app.serviceWorker.emit({...owner.statuses.get(active.downloadId), state: "completed",
+        receivedBytes: 10, streamingStarted: true}, {}, owner);
     return active.completion;
 }
 
-test("old active worker serves selected transfers while a newer worker waits, without handshake or takeover", async (t) => {
+test("unchanged active code keeps legacy wire support without a handshake or repeated update", async (t) => {
     for (const capabilitiesResponse of [{ok: true, protocolVersion: 2}, {ok: false, code: "UNKNOWN_MESSAGE"}]) {
-        const app = createClientHarness({capabilitiesResponse, waitingWorker: {protocolVersion: 4},
-            onNavigate: emitNavigationStarted});
+        const app = createClientHarness({capabilitiesResponse, onNavigate: emitNavigationStarted});
         t.after(() => app.client.close());
         const existing = await app.client.start(ordinaryItem());
         const oldFrame = app.frames[0];
@@ -2398,6 +2429,7 @@ test("old active worker serves selected transfers while a newer worker waits, wi
         assert.equal(workerMessages(app, "GET_STREAMING_CAPABILITIES").length, 0);
         assert.equal(workerMessages(app, "LIST_ACTIVE_DOWNLOADS").length, 0);
         assert.equal(workerMessages(app).some(call => call.worker === "waiting"), false);
+        assert.equal(app.calls.filter(call => call.type === 'update').length, 1);
         assert.equal(oldFrame.removed, false);
         assert.deepEqual(app.statuses.get(existing.downloadId), oldStatus);
         assert.equal(app.frames.length, 2);
@@ -2406,6 +2438,186 @@ test("old active worker serves selected transfers while a newer worker waits, wi
         assert.equal(oldFrame.removed, false);
         await completeDownload(app, existing);
     }
+});
+
+test('first registration waits for normal old-code to new-code activation before registering media', async (t) => {
+    let app;
+    let replacement;
+    let mediaRequests = 0;
+    let navigation;
+    const updateReturned = deferred();
+    // Replay the pre-fix registration lifetime, with its own actual Worker Map.
+    assert.ok(workerSource.includes('event.waitUntil(state.preparation.promise);'));
+    const oldRuntime = createWorkerRuntime(() => assert.fail('Old Worker must not fetch media'), {
+        source: workerSource.replace('event.waitUntil(state.preparation.promise);', ''),
+    });
+    const newRuntime = createWorkerRuntime(() => {
+        mediaRequests++;
+        return responseFor('first-last');
+    }, {
+        onMessage(message) { app.serviceWorker.emit(message.status, {}, replacement); },
+    });
+    app = createClientHarness({workerRuntime: oldRuntime,
+        onUpdate(registration) {
+            replacement = app.createWorker('updated', {workerRuntime: newRuntime});
+            replacement.state = 'installing';
+            registration.installing = replacement;
+            registration.updateFound();
+            updateReturned.resolve();
+        },
+        onNavigate({href, worker}) {
+            assert.equal(worker, replacement);
+            navigation = newRuntime.startFetch(protocol.descriptorIdFromPath(href));
+        },
+    });
+    t.after(() => app.client.close());
+    const root = {state: 'activated', postMessage() { assert.fail('Root Worker is unrelated'); }};
+    app.serviceWorker.controller = root;
+    const starting = app.client.start(ordinaryItem());
+    await updateReturned.promise;
+    await new Promise(resolve => setImmediate(resolve));
+    assertNoUpdateSideEffects(app);
+    app.registration.installing = null;
+    app.registration.waiting = replacement;
+    replacement.changeState('installed');
+    await new Promise(resolve => setImmediate(resolve));
+    assertNoUpdateSideEffects(app);
+    app.registration.waiting = null;
+    app.registration.active = replacement;
+    replacement.changeState('activating');
+    await new Promise(resolve => setImmediate(resolve));
+    assertNoUpdateSideEffects(app);
+    replacement.changeState('activated');
+    const active = await starting;
+    assert.equal(await (await navigation.response).text(), 'first-last');
+    await active.completion;
+    assert.equal(oldRuntime.inspectState(active.downloadId), undefined);
+    assert.equal(oldRuntime.messageLifetimes.length, 0);
+    assert.equal(newRuntime.inspectState(active.downloadId).state, 'completed');
+    assert.deepEqual(workerMessages(app, 'REGISTER_DOWNLOAD').map(call => call.worker), ['updated']);
+    assert.equal(workerMessages(app, 'GET_STREAMING_CAPABILITIES').length, 0);
+    assert.equal(app.clicked.length, 1);
+    assert.equal(mediaRequests, 1);
+    assert.equal(app.serviceWorker.controller, root);
+});
+
+test('unsafe update paths end with no registration, navigation, media or Blob fallback', async (t) => {
+    for (const failure of ['network', 'stalled-register', 'stalled-update', 'waiting', 'install-failed']) {
+        const delayed = deferred();
+        let app;
+        app = createClientHarness({startTimeoutMs: 25,
+            waitingWorker: failure === 'waiting' ? {} : null,
+            onUpdate(registration) {
+                if (failure === 'network') throw new TypeError('Update fetch failed');
+                if (failure === 'stalled-update') return delayed.promise;
+                if (failure === 'install-failed') {
+                    const candidate = app.createWorker('failed');
+                    candidate.state = 'installing';
+                    registration.installing = candidate;
+                    registration.updateFound();
+                    queueMicrotask(() => {
+                        registration.installing = null;
+                        candidate.changeState('redundant');
+                    });
+                }
+            },
+        });
+        t.after(() => app.client.close());
+        if (failure === 'stalled-register') {
+            app.serviceWorker.register = () => delayed.promise.then(() => app.registration);
+        }
+        const oldTask = safeStatus({state: 'fetching', streamingStarted: true});
+        app.worker.statuses.set(oldTask.downloadId, oldTask);
+        await assert.rejects(ordinary.download(ordinaryItem(), {
+            streamingClient: app.client,
+            fetchImpl() { assert.fail('No media fallback'); },
+            handoffBlob() { assert.fail('No Blob fallback'); },
+        }), error => {
+            assert.equal(error.errorCode, failure === 'network' ? 'STREAMING_WORKER_UPDATE_FAILED'
+                : failure === 'install-failed' ? 'STREAMING_WORKER_ACTIVATION_FAILED'
+                    : 'STREAMING_WORKER_ACTIVATION_TIMEOUT');
+            assert.equal(error.safeToFallback, false);
+            assert.equal(ordinary.canFallbackToBlob(error), false);
+            return true;
+        });
+        delayed.resolve();
+        if (app.registration.waiting) app.changeController(app.registration.waiting);
+        await new Promise(resolve => setImmediate(resolve));
+        assertNoUpdateSideEffects(app);
+        assert.equal(app.calls.filter(call => call.type === 'update').length,
+            failure === 'stalled-register' ? 0 : 1);
+        assert.deepEqual(app.worker.statuses.get(oldTask.downloadId), oldTask);
+        assert.equal(app.worker.stateListeners.size, 0);
+    }
+});
+
+test('a failed update is not retried automatically and does not poison a later user request', async (t) => {
+    let failUpdate = true;
+    const app = createClientHarness({onNavigate: emitNavigationStarted,
+        onUpdate() { if (failUpdate) throw new TypeError('Offline update'); }});
+    t.after(() => app.client.close());
+    await assert.rejects(app.client.start(ordinaryItem()), error =>
+        error.errorCode === 'STREAMING_WORKER_UPDATE_FAILED' && error.safeToFallback === false);
+    await new Promise(resolve => setImmediate(resolve));
+    assertNoUpdateSideEffects(app);
+    assert.equal(app.calls.filter(call => call.type === 'update').length, 1);
+    failUpdate = false;
+    const active = await app.client.start(ordinaryItem());
+    assert.equal(app.calls.filter(call => call.type === 'update').length, 2);
+    assert.equal(workerMessages(app, 'REGISTER_DOWNLOAD').length, 1);
+    await completeDownload(app, active);
+});
+
+test('cancellation interrupts registration/update/activation waits without late registration', async (t) => {
+    for (const phase of ['register', 'update', 'activation']) {
+        const entered = deferred();
+        const release = deferred();
+        const app = createClientHarness({
+            waitingWorker: phase === 'activation' ? {} : null,
+            onUpdate() {
+                if (phase !== 'register') entered.resolve();
+                if (phase === 'update') return release.promise;
+            },
+        });
+        t.after(() => app.client.close());
+        if (phase === 'register') {
+            const original = app.serviceWorker.register;
+            app.serviceWorker.register = async (...args) => {
+                entered.resolve();
+                await release.promise;
+                return original(...args);
+            };
+        }
+        const controller = new AbortController();
+        const starting = app.client.start(selectedItem(), {signal: controller.signal});
+        await entered.promise;
+        controller.abort();
+        await assert.rejects(starting, error => error.errorCode === 'USER_CANCELLED'
+            && error.safeToFallback === false);
+        release.resolve();
+        if (app.registration.waiting) app.changeController(app.registration.waiting);
+        await new Promise(resolve => setImmediate(resolve));
+        assertNoUpdateSideEffects(app);
+    }
+});
+
+test('one cancelled caller does not cancel another caller sharing the normal update', async (t) => {
+    const entered = deferred();
+    const release = deferred();
+    const app = createClientHarness({onNavigate: emitNavigationStarted,
+        onUpdate() { entered.resolve(); return release.promise; }});
+    t.after(() => app.client.close());
+    const controller = new AbortController();
+    const cancelled = app.client.start(ordinaryItem(), {signal: controller.signal});
+    const retained = app.client.start(ordinaryItem());
+    await entered.promise;
+    controller.abort();
+    await assert.rejects(cancelled, error => error.errorCode === 'USER_CANCELLED');
+    release.resolve();
+    const active = await retained;
+    assert.equal(app.calls.filter(call => call.type === 'update').length, 1);
+    assert.equal(workerMessages(app, 'REGISTER_DOWNLOAD').length, 1);
+    await completeDownload(app, active);
 });
 
 test("cancellation before transfer registration never starts later after a controller change", async (t) => {
@@ -2465,9 +2677,89 @@ test('root controller with an active old download is untouched by the scoped fal
     assert.equal(app.serviceWorker.controller, rootWorker);
 });
 
+test('task status and cancellation stay with the owner across active replacement', async (t) => {
+    const app = createClientHarness({onNavigate: emitNavigationStarted});
+    t.after(() => app.client.close());
+    const active = await app.client.start(ordinaryItem());
+    const completion = active.completion.catch(error => error);
+    const replacement = app.createWorker('replacement');
+    app.changeController(replacement);
+    assert.equal(replacement.statuses.size, 0);
+    app.serviceWorker.emit({...app.worker.statuses.get(active.downloadId), state: 'completed', receivedBytes: 10}, {}, replacement);
+    assert.equal((await app.client.getStatus(active.downloadId)).state, 'fetching');
+    assert.equal((await active.cancel()).state, 'cancelled');
+    assert.equal((await completion).errorCode, 'STREAMING_CANCELLED');
+    assert.equal(workerMessages(app, 'CANCEL_DOWNLOAD').at(-1).worker, 'initial');
+    assert.equal(app.clicked.length, 1);
+});
+
+test('replacement between registration ACK and navigation ends before any navigation', async (t) => {
+    const app = createClientHarness();
+    t.after(() => app.client.close());
+    const original = app.worker.postMessage;
+    app.worker.postMessage = function(message, ports) {
+        original.call(this, message, ports);
+        if (message.type === 'REGISTER_DOWNLOAD') app.changeController(app.createWorker('replacement'));
+    };
+    await assert.rejects(app.client.start(ordinaryItem()), error => error.errorCode === 'STREAMING_WORKER_CHANGED');
+    assert.equal(app.clicked.length, 0);
+    assert.equal(workerMessages(app, 'REGISTER_DOWNLOAD').length, 1);
+    assert.equal(workerMessages(app, 'DELETE_DOWNLOAD').at(-1).worker, 'initial');
+    assert.equal([...app.worker.statuses.values()][0].state, 'cancelled');
+    assert.equal(app.registration.active.statuses.size, 0);
+});
+
+test('registration lifetime hands off to fetch without retaining the long stream on message', async () => {
+    const body = new ReadableStream({start(controller) { controller.enqueue(new Uint8Array([1])); }});
+    const descriptor = selectedDescriptor({size_bytes: 0});
+    // Use an actual streaming response: EOF remains pending until cancellation.
+    const streamRuntime = createWorkerRuntime(() => {
+        const response = new Response(body, {headers: {'Content-Type': 'video/mp4'}});
+        Object.defineProperty(response, 'url', {value: descriptor.url});
+        return response;
+    });
+    await registerSelected(streamRuntime, descriptor);
+    let preparationDone = false;
+    streamRuntime.messageLifetimes[0].then(() => { preparationDone = true; });
+    await Promise.resolve();
+    assert.equal(preparationDone, false);
+    const transfer = streamRuntime.startFetch(descriptor.downloadId);
+    const response = await transfer.response;
+    await streamRuntime.messageLifetimes[0];
+    assert.equal(preparationDone, true);
+    assert.equal(streamRuntime.inspectState(descriptor.downloadId).state, 'fetching');
+    await response.body.cancel();
+    await Promise.all(transfer.waitUntil);
+    assert.equal(streamRuntime.inspectState(descriptor.downloadId).state, 'cancelled');
+});
+
+test('preparation cancellation and expiry release message lifetime and never fetch media', async () => {
+    for (const operation of ['cancel', 'expire']) {
+        const runtime = createWorkerRuntime(() => { assert.fail('No media before navigation'); });
+        const descriptor = selectedDescriptor({selection_expires_at: Date.now() + 40});
+        await registerSelected(runtime, descriptor);
+        if (operation === 'cancel') await runtime.send({type: 'CANCEL_DOWNLOAD', downloadId: descriptor.downloadId});
+        await runtime.messageLifetimes[0];
+        const state = runtime.inspectState(descriptor.downloadId);
+        assert.equal(state.state, operation === 'cancel' ? 'cancelled' : 'failed');
+        assert.equal(state.preparation, null);
+        assert.equal(state.url, '');
+        assert.equal((await runtime.startFetch(descriptor.downloadId).response).status, 404);
+    }
+});
+
+test('generic transfer preserves the original candidate deadline without business fields', () => {
+    const expiry = Date.now() + 1000;
+    const descriptor = protocol.createTransportDescriptor({...selectedItem('tiantianjiexi', {
+        selection_expires_at: expiry,
+    }), downloadId: 'f'.repeat(32)});
+    assert.equal(descriptor.expiresAt, expiry);
+    assert.equal(descriptor.selectionBinding, undefined);
+});
+
 test("ordinary download uses the compatible active download Worker without a Blob fallback", async (t) => {
     const app = createClientHarness({capabilitiesResponse: {ok: false, code: "UNKNOWN_MESSAGE"},
-        waitingWorker: {protocolVersion: 4}, onNavigate: emitNavigationStarted});
+        onNavigate: emitNavigationStarted});
     t.after(() => app.client.close());
     const pending = ordinary.download(selectedItem(), {
         streamingClient: app.client,

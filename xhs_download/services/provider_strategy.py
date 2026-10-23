@@ -1,4 +1,5 @@
 from urllib.parse import urlsplit
+from time import time
 
 
 DOWNLOAD_STRATEGY_BROWSER_BLOB = "browser_blob"
@@ -66,14 +67,19 @@ def browser_transport_hint(item):
             or any(item.get(key) for key in ("has_drm", "requires_context", "download_context_required"))
             or item.get("video_tracks") == "absent"):
         return {}
-    from .quality import native_attachment_expiry
-    expires_at = native_attachment_expiry(item.get('url'))
+    from .quality import native_attachment_expiry, native_request_context_is_compatible
+    compatible = all(native_request_context_is_compatible(item.get(key)) for key in ('headers', 'http_headers'))
+    expires_at = native_attachment_expiry(item.get('url')) if compatible else 0
     if expires_at and browser_streaming_resource_url_is_allowed(item.get('url')):
         selection_expiry = item.get('selection_expires_at')
-        if selection_expiry:
-            expires_at = min(expires_at, int(selection_expiry))
-        return {'download_strategy': DOWNLOAD_STRATEGY_BROWSER_NATIVE,
-                'fallback_strategy': FALLBACK_NONE, 'native_download_expires_at': expires_at}
+        if selection_expiry is not None:
+            try:
+                expires_at = min(expires_at, int(selection_expiry))
+            except (TypeError, ValueError, OverflowError):
+                expires_at = 0
+        if expires_at > time() * 1000:
+            return {'download_strategy': DOWNLOAD_STRATEGY_BROWSER_NATIVE,
+                    'fallback_strategy': FALLBACK_NONE, 'native_download_expires_at': expires_at}
     streaming = browser_streaming_resource_url_is_allowed(item.get("url"))
     return {
         "download_strategy": DOWNLOAD_STRATEGY_BROWSER_STREAMING if streaming else DOWNLOAD_STRATEGY_BROWSER_BLOB,

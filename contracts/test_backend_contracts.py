@@ -245,7 +245,7 @@ class BackendHTTPContracts(TestCase):
                 self.assertEqual(item["download_strategy"], "browser_streaming")
                 self.assertNotIn("server_single_attachment", str(item))
 
-    def test_inv03_existing_metadata_probe_enables_native_without_another_media_request(self):
+    def test_inv03_contextual_metadata_probe_does_not_enable_native_or_probe_again(self):
         self.transport.native_outcome = 'success'
         self.transport.native_size = 0
         self.transport.media_headers = {'Content-Disposition': 'attachment; filename="source.mp4"'}
@@ -261,10 +261,52 @@ class BackendHTTPContracts(TestCase):
         }, content_type='application/json')
         self.assertEqual(response.status_code, 200, response.content)
         item = response.json()['items'][0]
-        self.assertEqual(item['download_strategy'], 'browser_native')
-        self.assertGreater(item['native_download_expires_at'], 0)
+        self.assertEqual(item['download_strategy'], 'browser_streaming')
+        self.assertNotIn('native_download_expires_at', item)
         self.assertEqual(self.transport.media_calls, ['HEAD'])
         self.assertEqual(item['url'], MEDIA)
+
+    def test_inv06_public_action_uses_valid_source_filename_evidence_without_reprobe(self):
+        from xhs_download.services.quality import QualityProbe
+
+        self.transport.native_outcome = 'success'
+        page = self.parse()
+        self.assertEqual(page.status_code, 200)
+        card = BeautifulSoup(page.content, 'html.parser').select_one('[data-type="video"][data-url]')
+        self.assertIsNotNone(card)
+        self.assertEqual(self.transport.media_calls, [])
+        for disposition, expected in (
+            ('attachment; filename="12345.mp4"', 'browser_native'),
+            ("attachment; filename=wrong.bin; filename*=UTF-8''12345%2Emp4", 'browser_native'),
+            ('attachment; filename="12345.bin"', 'browser_streaming'),
+            ('attachment; filename="12345.webm"', 'browser_streaming'),
+            ("attachment; filename=12345.mp4; filename*=UTF-8''wrong.bin", 'browser_streaming'),
+            ('attachment', 'browser_streaming'),
+            ("attachment; filename*=UTF-8''broken%GG.mp4", 'browser_streaming'),
+        ):
+            with self.subTest(disposition=disposition):
+                self.transport.media_calls.clear()
+                self.transport.media_headers = {'Content-Disposition': disposition}
+                # Establish an existing context-free response fact through the
+                # real probe, not a hand-written cache entry or patched helper.
+                # The Bilibili page's own Referer probe is covered separately.
+                result = QualityProbe().probe(card['data-url'], expected_type='video')
+                self.assertTrue(result.reachable)
+                self.assertEqual(self.transport.media_calls, ['HEAD'])
+                response = self.client.post(reverse('download_images_api'), {
+                    'media_items': [{'type': 'video', 'url': card['data-url'], 'source_platform': 'bilibili'}],
+                    'download_mode': 'auto', 'route_only': True,
+                }, content_type='application/json')
+                self.assertEqual(response.status_code, 200, response.content)
+                item = response.json()['items'][0]
+                self.assertEqual(item['download_strategy'], expected)
+                self.assertEqual(item['url'], MEDIA)
+                if expected == 'browser_native':
+                    self.assertGreater(item['native_download_expires_at'], time.time() * 1000)
+                    self.assertEqual(item['fallback_strategy'], 'none')
+                else:
+                    self.assertNotIn('native_download_expires_at', item)
+                self.assertEqual(self.transport.media_calls, ['HEAD'])
 
     def test_inv05_eligible_native_failures_use_admitted_tiantian(self):
         for outcome in (412, 429, 500, 503, 599, "timeout", "incomplete"):

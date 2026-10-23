@@ -53,12 +53,17 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
   Unknown registration, cancellation and media-response failures never trigger a
   second media request.
   Native attachment navigation now precedes Worker setup when the existing bounded
-  metadata request observed a same-URL video attachment. That fact is short-lived,
+  metadata request's final adopted result observed a same-URL video attachment
+  with a valid source filename and matching extension, under navigation-compatible
+  request conditions. That fact is short-lived,
   is not authorization, and causes no additional probe. The public parse/action
   contract retains one HEAD and the frontend contract retains the selected URL,
   with no fetch/Blob/Worker call and no completion claim. The fallback uses the
   existing Worker under its download-only scope, independent of an old root page
-  controller; the wire shape and old in-flight tasks are retained.
+  controller; the wire shape and old in-flight tasks are retained. Prepared tasks
+  retain their owning Worker through a bounded message lifetime, handed to fetch
+  on navigation; task messages remain with that owner. Cancellation, the original
+  earlier authorization expiry and preparation failure release it without retry.
 - INV-04 uses both Safari and Chrome UA fixtures and the real attachment controller.
   This is not a new real-browser save, disk-persistence proof, or historical Worker
   binary run. YouTube merge and every platform/CDN are not exhaustively covered.
@@ -67,6 +72,9 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
   one-use/expired, and downstream closure is distinct from an upstream failure.
 - INV-06 includes raw Douyin captions through the public result and nondefault
   selection endpoint: short title, description and hashtags remain separate.
+  Native attachment filenames may use a reasonable source basename; controlled
+  filename paths retain the short-title rule. A synthetic .bin counterexample is
+  not evidence that a live Douyin CDN returned that filename.
 - INV-07 checks anonymous, ordinary authenticated and Staff presentation. Public
   authorization attributes remain available for legitimate selection actions.
 - INV-09 checks actual feedback quotas and public Bilibili gray admission, including
