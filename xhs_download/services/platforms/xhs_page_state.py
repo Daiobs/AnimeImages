@@ -384,7 +384,8 @@ def _candidate_score(mapping, path, *, source_note_id):
     return score
 
 
-def _select_current_note(payloads, source_note_id):
+def _select_current_note(payloads, source_note_id, *, page_note_id=""):
+    target_note_id = source_note_id or page_note_id
     candidates = []
     candidate_note_ids = set()
     note_candidate_found = False
@@ -400,7 +401,7 @@ def _select_current_note(payloads, source_note_id):
                 candidate_note_ids.add(candidate_note_id)
             elif path_tokens & {"feed", "feeds", "recommend", "recommendations"}:
                 other_note_candidate_found = True
-            if source_note_id and candidate_note_id != source_note_id:
+            if target_note_id and candidate_note_id != target_note_id:
                 if candidate_note_id or path_tokens & {
                     "feed",
                     "feeds",
@@ -408,6 +409,8 @@ def _select_current_note(payloads, source_note_id):
                     "recommendations",
                 }:
                     other_note_candidate_found = True
+                continue
+            # Page identity disambiguates current structures, not recommendation paths.
             score = _candidate_score(mapping, path, source_note_id=source_note_id)
             if score >= 0:
                 candidates.append((score, candidate_note_id, path, mapping))
@@ -746,7 +749,10 @@ def extract_xhs_page_state(soup, source_url=None):
         selected_note_id,
         note_candidate_found,
         other_note_candidate_found,
-    ) = _select_current_note(payloads, source_note_id)
+    ) = _select_current_note(
+        payloads, source_note_id,
+        page_note_id=page_note_id if not page_identity_conflict else "",
+    )
     if page_note_id and selected_note_id and page_note_id != selected_note_id:
         page_identity_conflict = True
     if page_identity_conflict:

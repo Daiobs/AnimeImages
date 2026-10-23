@@ -728,7 +728,7 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
                 html = f'<link rel="canonical" href="{value}"><meta property="og:image" content="{META_IMAGE}">'
                 self.assertEqual(self.adapter.parse_html(html).assets, ())
 
-    def test_no_url_id_recommendations_or_conflicting_current_notes_are_not_selected(self):
+    def test_no_page_identity_recommendations_or_multiple_current_notes_are_not_selected(self):
         for payload in (
             {"recommend": [image_note()]},
             {"note": {"noteDetailMap": {
@@ -736,10 +736,67 @@ class XhsFallbackAuthorityAndTerminalTests(SimpleTestCase):
                 OTHER_NOTE_ID: {"note": image_note(noteId=OTHER_NOTE_ID)},
             }}},
         ):
-            for identity in ("", CANONICAL_NOTE_HTML):
-                with self.subTest(payload=payload, identity=identity):
-                    html = hydration_html(payload, extra_html=identity + f'<meta property="og:image" content="{META_IMAGE}">')
-                    self.assertEqual(self.adapter.parse_html(html).assets, ())
+            with self.subTest(payload=payload):
+                html = hydration_html(payload, extra_html=f'<meta property="og:image" content="{META_IMAGE}">')
+                result = self.adapter.parse_html(html)
+                self.assertEqual(result.assets, ())
+                self.assertEqual(result.metadata["fallback_policy"], "source_identity_unverified")
+
+    def test_page_identity_does_not_turn_recommendations_into_current_work(self):
+        for payload in (
+            {"recommend": [image_note()]},
+            {"feeds": [image_note()]},
+            {"currentNote": image_note(noteId=OTHER_NOTE_ID), "recommend": [image_note()]},
+        ):
+            with self.subTest(payload=payload):
+                html = hydration_html(payload, extra_html=CANONICAL_NOTE_HTML
+                    + f'<meta property="og:image" content="{META_IMAGE}">')
+                result = self.adapter.parse_html(html, source_url="https://xhslink.cn/o/opaque")
+                self.assertEqual(result.assets, ())
+                self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
+
+    def test_verified_page_identity_selects_only_matching_note_from_multiple_records(self):
+        for note in (image_note(), video_note()):
+            with self.subTest(kind=note["type"]):
+                payload = {"note": {"noteDetailMap": {
+                    OTHER_NOTE_ID: {"note": image_note(noteId=OTHER_NOTE_ID,
+                        title="Other work", imageList=[{"urlDefault": BROAD_IMAGE}])},
+                    NOTE_ID: {"note": note},
+                }}}
+                html = hydration_html(payload, extra_html=CANONICAL_NOTE_HTML
+                    + f'<meta property="og:image" content="{META_IMAGE}">')
+                state = extract_xhs_page_state(BeautifulSoup(html, "html.parser"),
+                                              source_url="https://xhslink.cn/o/opaque")
+                self.assertEqual(state.note_id, NOTE_ID)
+                self.assertEqual(state.page_note_id, NOTE_ID)
+                self.assertEqual(state.source_note_id, "")
+                self.assertTrue(state.current_note_found)
+                self.assertFalse(state.page_identity_conflict)
+                self.assertIsNone(state.private_selected_note_snapshot)
+                result = self.adapter.parse_html(html, source_url="https://xhslink.cn/o/opaque")
+                expected = ([normalize_video_url(VIDEO_URL)] if note["type"] == "video" else
+                            [normalize_xhs_image_url(IMAGE_ONE), normalize_xhs_image_url(IMAGE_TWO)])
+                self.assertEqual([asset.url for asset in result.assets], expected)
+                self.assertEqual(result.metadata["fallback_policy"], "current_note_authoritative")
+                self.assertTrue(result.metadata["source_identity_verified"])
+
+    def test_page_target_mismatch_is_distinct_from_missing_or_conflicting_identity(self):
+        html = hydration_html(self.other_note_payload(), extra_html=CANONICAL_NOTE_HTML
+                              + f'<meta property="og:image" content="{META_IMAGE}">')
+        state = extract_xhs_page_state(BeautifulSoup(html, "html.parser"))
+        self.assertFalse(state.current_note_found)
+        self.assertFalse(state.page_identity_conflict)
+        self.assertEqual(state.page_note_id, NOTE_ID)
+        result = self.adapter.parse_html(html)
+        self.assertEqual(result.assets, ())
+        self.assertEqual(result.metadata["fallback_policy"], "source_identity_mismatch")
+
+        other_url = f"https://www.xiaohongshu.com/explore/{OTHER_NOTE_ID}"
+        conflict = extract_xhs_page_state(BeautifulSoup(
+            f'<link rel="canonical" href="{other_url}">' + hydration_html(note_payload(image_note())),
+            "html.parser"), source_url=NOTE_URL)
+        self.assertTrue(conflict.page_identity_conflict)
+        self.assertFalse(conflict.current_note_found)
 
     def test_short_link_redirect_to_matching_work_uses_actual_http_boundary(self):
         short = "https://xhslink.cn/o/opaque"

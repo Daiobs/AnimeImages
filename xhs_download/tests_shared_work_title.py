@@ -131,6 +131,64 @@ class SharedWorkTitleTests(SimpleTestCase):
                     _, row = self.normalize(provider, title)
                     self.assert_name_and_authority(row, title, 'mp4')
 
+    def test_numeric_topics_in_captions_reach_normalized_metadata_and_actions(self):
+        body = BODY[:90]
+        caption = f'{TITLE} {body} #00后 #3分钟学会拍照'
+        for provider in PROVIDERS:
+            for extension in ('mp4', 'webm'):
+                for title, description in ((caption, ''), ('', caption)):
+                    with self.subTest(provider=provider, extension=extension, description_only=not title):
+                        result, row = self.normalize(provider, title, description, extension)
+                        self.assert_name_and_authority(row, TITLE, extension)
+                        self.assertEqual(result.base_filename, TITLE)
+                        self.assertEqual(result.metadata['title'], TITLE)
+                        self.assertEqual(result.metadata['topics'], ['00后', '3分钟学会拍照'])
+                        self.assertEqual(result.metadata['caption'], caption)
+                        self.assertEqual(result.metadata['description'], description or body)
+
+    def test_numbered_ordinary_title_survives_with_and_without_independent_body(self):
+        title = '#1 Release (2026) + C#'
+        for provider in PROVIDERS:
+            for extension in ('mp4', 'webm'):
+                for description in ('', 'Independent description #00后 #3分钟学会拍照'):
+                    with self.subTest(provider=provider, extension=extension, description=description):
+                        result, row = self.normalize(provider, title, description, extension)
+                        self.assert_name_and_authority(row, title, extension)
+                        self.assertEqual(result.base_filename, title)
+                        self.assertEqual(result.metadata['title'], title)
+                        self.assertEqual(result.metadata['description'], description)
+                        self.assertEqual(result.metadata['caption'], '\n'.join(
+                            part for part in (title, description) if part))
+
+    def test_numeric_topic_caption_storage_keeps_existing_bounds(self):
+        topics = ['00后', '3分钟学会拍照', '2026' + '拍' * 130] + [f'{index}分钟' for index in range(20)]
+        description = f'{TITLE}\n{BODY * 20}\n' + ' '.join('#' + topic for topic in topics)
+        for provider in PROVIDERS:
+            with self.subTest(provider=provider):
+                result, row = self.normalize(provider, '', description)
+                self.assert_name_and_authority(row, TITLE, 'mp4')
+                self.assertEqual(result.metadata['description'], description[:2000])
+                self.assertEqual(result.metadata['caption'], description[:2000])
+                self.assertEqual(result.metadata['topics'], [topic[:120] for topic in topics[:16]])
+                self.assertLessEqual(len(row['work_label']), 160)
+
+    def test_old_numeric_caption_and_numbered_title_actions_preserve_authority(self):
+        caption = f'{TITLE} {BODY[:90]} #00后 #3分钟学会拍照'
+        ordinary_title = '#1 Release (2026) + C#'
+        for provider in PROVIDERS:
+            for extension in ('mp4', 'webm'):
+                for label, expected in ((caption, TITLE), (ordinary_title, ordinary_title)):
+                    with self.subTest(provider=provider, extension=extension, label=label):
+                        row = issue_candidates([dict(url=MEDIA + '.' + extension, metadata={
+                            'work_label': label, 'ext': extension, '_service_picker_issued': True,
+                        }, ordinal=1, provider=provider, source_url=SOURCE, media_type='video',
+                            state='candidate_only', match={'provider_id': provider})], work={
+                                'title': label, 'source_host': 'source.example', 'collection': False})[0]
+                        record = resolve_candidate_record(row['resource_token'], row['candidate_id'])
+                        self.assertNotIn('filename_title', record)
+                        with patch('django.core.signing.TimestampSigner.sign', side_effect=AssertionError('No renewal')):
+                            self.assert_name_and_authority(row, expected, extension)
+
     def test_independent_title_is_not_reinterpreted_as_body_by_the_action(self):
         title = CAPTION
         for provider in PROVIDERS:
@@ -281,3 +339,19 @@ class NativeSharedWorkTitleTests(SimpleTestCase):
         self.assertEqual(result.metadata['description'], '#摄影 #日常')
         self.assertEqual(result.metadata['caption'], '#摄影 #日常')
         self.assertEqual(result.metadata['topics'], ['摄影', '日常'])
+
+    def test_native_numeric_topics_keep_body_and_ordinary_numbered_title(self):
+        description = f'{TITLE}\n{BODY}\n#00后 #3分钟学会拍照'
+        result = self.parse_note('', description)
+        self.assert_native_title(result, TITLE)
+        self.assertEqual(result.metadata['description'], description)
+        self.assertEqual(result.metadata['caption'], description)
+        self.assertEqual(result.metadata['topics'], ['00后', '3分钟学会拍照'])
+        title = '#1 Release (2026) + C#'
+        for body in ('', description):
+            with self.subTest(body=body):
+                result = self.parse_note(title, body)
+                self.assert_native_title(result, title)
+                self.assertEqual(result.metadata.get('description', ''), body)
+                self.assertEqual(result.metadata['caption'], '\n'.join(
+                    part for part in (title, body) if part))

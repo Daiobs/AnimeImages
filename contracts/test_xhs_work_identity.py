@@ -309,6 +309,36 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                 response, context = self.parse(entry, NOTE_URL)
                 self.assert_failed(response, context, entry)
 
+    def test_canonical_selects_the_target_from_a_multi_note_page_through_public_entries(self):
+        self.forbid_service()
+        notes = {key: {"note": {"noteId": key, "type": "normal", "title": title,
+                               "imageList": [{"urlDefault": image}]}}
+                 for key, title, image in ((OTHER_ID, SHELL_TITLE, PROMO_IMAGE),
+                                          (NOTE_ID, WORK_TITLE, NATIVE_IMAGE))}
+        structured = ("<script>window.__INITIAL_STATE__="
+                      + json.dumps({"note": {"noteDetailMap": notes}}) + ";</script>")
+        for entry in ("results", "batch"):
+            for identity, source, success in (
+                (f'<link rel="canonical" href="{NOTE_URL}">', SHORT_URL, True),
+                ("", SHORT_URL, False),
+                (f'<link rel="canonical" href="https://www.xiaohongshu.com/explore/{OTHER_ID}">',
+                 NOTE_URL, False),
+            ):
+                with self.subTest(entry=entry, identity=identity, source=source):
+                    self.html = identity + f'<meta property="og:image" content="{PROMO_IMAGE}">' + structured
+                    response, context = self.parse(entry, source)
+                    if not success:
+                        self.assert_failed(response, context, entry)
+                        continue
+                    self.assertEqual(len(context.get("image_items", [])), 1)
+                    self.assertContains(response, "current-work")
+                    self.assertContains(response, WORK_TITLE)
+                    self.assertNotContains(response, PROMO_IMAGE)
+                    self.assertNotContains(response, SHELL_TITLE)
+                    if entry == "batch":
+                        self.assertEqual(context["status"], "success")
+        self.assertEqual(self.provider_calls, [])
+
     def test_recommendation_and_conflicting_work_maps_cannot_supply_missing_identity(self):
         self.forbid_service()
         note = {"type": "normal", "title": "Recommended work",
@@ -321,6 +351,21 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                 with self.subTest(entry=entry, payload=payload):
                     response, context = self.parse(entry)
                     self.assert_failed(response, context, entry)
+
+    def test_canonical_cannot_promote_recommended_work_through_public_entries(self):
+        self.forbid_service()
+        note = {"noteId": NOTE_ID, "type": "normal", "title": "Recommended work",
+                "imageList": [{"urlDefault": PROMO_IMAGE}]}
+        for payload in ({"recommend": [note]}, {"feeds": [note]},
+                        {"currentNote": {**note, "noteId": OTHER_ID}, "recommend": [note]}):
+            self.html = (f'<link rel="canonical" href="{NOTE_URL}">'
+                         + f'<meta property="og:image" content="{PROMO_IMAGE}">'
+                         + "<script>window.__INITIAL_STATE__=" + json.dumps(payload) + ";</script>")
+            for entry in ("results", "batch"):
+                with self.subTest(entry=entry, payload=payload):
+                    response, context = self.parse(entry)
+                    self.assert_failed(response, context, entry)
+        self.assertEqual(self.provider_calls, [])
 
     def test_inv06_native_card_filename_reaches_normal_download_action(self):
         self.forbid_service()
@@ -393,3 +438,67 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                     for key in ("filename", "url", "candidate_id", "selected_format_id", "selection_expires_at"):
                         self.assertEqual(again.json()["item"][key], item[key])
                     self.assertEqual(len(self.provider_calls), before + 1)
+
+    def test_inv06_numeric_topic_caption_reaches_native_page_and_download_filename(self):
+        self.forbid_service()
+        title = "简单几分钟调出高光比通透感"
+        body = "先调整画面的整体曝光，再处理高光和阴影，让人物与背景之间保持自然的明暗层次。" * 2
+        for entry in ("results", "batch"):
+            for tags in ("#3分钟学会拍照", "#00后 #3分钟学会拍照 #摄影"):
+                with self.subTest(entry=entry, tags=tags):
+                    self.html = note_html(media_type="video", title=f"{title} {body} {tags}")
+                    response, context = self.parse(entry, NOTE_URL)
+                    self.assertEqual(context["base_filename"], "Work author_" + title)
+                    soup = BeautifulSoup(response.content, "html.parser")
+                    card = soup.select_one('[data-type="video"][data-url][data-download-filename]')
+                    self.assertIsNotNone(card)
+                    filename = card["data-download-filename"] or context["base_filename"] + ".mp4"
+                    suffix = "_1.mp4" if entry == "batch" else ".mp4"
+                    self.assertEqual(filename, "Work author_" + title + suffix)
+                    response = self.client.post(reverse("download_images_api"), {
+                        "media_items": [{"type": "video", "url": card["data-url"],
+                                         "source_platform": "xiaohongshu", "size_bytes": 12345,
+                                         "filename": filename}],
+                        "download_mode": "browser", "route_only": True, "intent": "download",
+                    }, content_type="application/json")
+                    self.assertEqual(response.status_code, 200, response.content)
+                    item = response.json()["items"][0]
+                    self.assertEqual(item["filename"], filename)
+                    self.assertEqual(item["url"], NATIVE_VIDEO)
+                    self.assertEqual(item["download_strategy"], "browser_streaming")
+
+    def test_inv06_numeric_caption_and_explicit_hash_title_reach_selected_action(self):
+        title = "简单几分钟调出高光比通透感"
+        body = "先调整画面的整体曝光，再处理高光和阴影，让人物与背景之间保持自然的明暗层次。" * 2
+        explicit = "#1 Release (2026) + C#"
+        cases = [(f"{title} {body} {tags}", "", title)
+                 for tags in ("#3分钟学会拍照", "#00后 #3分钟学会拍照 #摄影")]
+        cases += [(explicit, description, explicit) for description in ("", "Independent body #release")]
+        for entry in ("results", "batch"):
+            for raw_title, description, expected in cases:
+                for media in (SERVICE_VIDEO, SERVICE_WEBM):
+                    with self.subTest(entry=entry, title=raw_title, description=description, media=media):
+                        cache.clear()
+                        self.service_title, self.service_description = raw_title, description
+                        self.service_media = media
+                        response, context = self.parse(entry)
+                        self.assert_service_heading(response, context, entry, expected)
+                        radio = BeautifulSoup(response.content, "html.parser").select_one("[data-picker-radio]")
+                        candidate = next(row for row in context["upstream_candidates"]
+                                         if row["candidate_id"] == radio["value"])
+                        payload = {"candidate_id": radio["value"], "resource_token": radio["data-token"],
+                                   "action": "download"}
+                        first = self.client.post(reverse("service_selected_format"), payload,
+                                                 content_type="application/json")
+                        self.assertEqual(first.status_code, 200, first.content)
+                        item = first.json()["item"]
+                        suffix = candidate.get("format_id") or candidate["candidate_id"]
+                        self.assertEqual(item["filename"], f"{expected}_{suffix}.{media.rsplit('.', 1)[1]}")
+                        self.assertEqual(item["url"], media)
+                        self.assertEqual(item["candidate_id"], radio["value"])
+                        self.assertEqual(item["download_strategy"], "browser_streaming")
+                        again = self.client.post(reverse("service_selected_format"), payload,
+                                                 content_type="application/json")
+                        self.assertEqual(again.status_code, 200, again.content)
+                        for key in ("filename", "url", "candidate_id", "selected_format_id", "selection_expires_at"):
+                            self.assertEqual(again.json()["item"][key], item[key])

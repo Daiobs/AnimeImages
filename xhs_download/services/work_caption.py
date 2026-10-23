@@ -2,7 +2,7 @@
 import re
 
 
-_TOPIC = re.compile(r"(?<!\S)[#＃](?!\d)([^\s#＃]+)")
+_TOPIC = re.compile(r"(?<!\S)[#＃]([^\s#＃]+)")
 _REPEATED_LEAD = re.compile(r"^(?P<lead>\S{4,60})\s+(?P=lead)\s+(?P<tail>.+)$", re.S)
 
 
