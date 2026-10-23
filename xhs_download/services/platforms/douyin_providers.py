@@ -1437,7 +1437,7 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
                                or f"douyin_{context.aweme_id}"),
                 assets=tuple(assets),
                 metadata={
-                    "title": title or description, "description": description if title else "",
+                    "title": title, "description": description,
                     "selected_provider": self.name, "source_provider": self.name,
                     "provider_label": "天天解析", "fallback_reason": "tiantianjiexi_official_api",
                     "tiantianjiexi_candidate_count": len(assets),
