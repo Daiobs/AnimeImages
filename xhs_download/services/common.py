@@ -62,6 +62,13 @@ class XhsParseError(XhsError):
     pass
 
 
+class XhsWorkContentUnavailableError(XhsParseError):
+    public_message = "未读取到该链接的有效作品内容。"
+
+    def __init__(self):
+        super().__init__(self.public_message)
+
+
 class XhsProviderTimeoutError(XhsParseError):
     pass
 

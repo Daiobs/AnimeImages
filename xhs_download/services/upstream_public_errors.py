@@ -1,5 +1,7 @@
 """Public upstream errors are fixed product copy, never extractor output."""
 
+from .common import XhsWorkContentUnavailableError
+
 UPSTREAM_PUBLIC_MESSAGES = {
     "UPSTREAM_AUTH_REQUIRED": "该公开链接的上游解析需要登录；本入口不读取账号凭据。",
     "UPSTREAM_ACCESS_DENIED": "上游拒绝访问该内容，可能存在地区或访问限制。",
@@ -27,6 +29,8 @@ _LEGACY_MESSAGES["扩展解析超时，请稍后再试。"] = UPSTREAM_PUBLIC_ME
 def public_upstream_error_message(error, *, is_upstream, fallback):
     from .platforms.bilibili import BilibiliIncompleteMediaError
 
+    if isinstance(error, XhsWorkContentUnavailableError):
+        return XhsWorkContentUnavailableError.public_message
     if isinstance(error, BilibiliIncompleteMediaError):
         # This exception contains fixed product copy, not an upstream response.
         return str(error)

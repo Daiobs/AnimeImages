@@ -5,12 +5,35 @@ from unittest.mock import Mock, patch
 from django.test import RequestFactory, SimpleTestCase
 
 from . import views
-from .services.common import XhsParseError
+from .services.common import XhsParseError, XhsWorkContentUnavailableError
 from .services.batch_parse.results import build_batch_result_row
 from .services.upstream_public_errors import UPSTREAM_PUBLIC_MESSAGES, public_upstream_error_message
 
 
 class UpstreamPublicErrorTests(SimpleTestCase):
+    def test_xhs_content_unavailable_uses_fixed_type_not_exception_text(self):
+        error = XhsWorkContentUnavailableError()
+        self.assertEqual(str(error), "未读取到该链接的有效作品内容。")
+        error.args = ("secret https://private.example/?token=secret",)
+        error.public_message = "untrusted instance message"
+        for is_upstream in (False, True):
+            with self.subTest(is_upstream=is_upstream):
+                self.assertEqual(
+                    public_upstream_error_message(error, is_upstream=is_upstream, fallback="generic"),
+                    "未读取到该链接的有效作品内容。",
+                )
+
+    def test_generic_parse_error_cannot_claim_xhs_content_unavailable_message(self):
+        error = XhsParseError("未读取到该链接的有效作品内容。")
+        self.assertEqual(
+            public_upstream_error_message(error, is_upstream=False, fallback="generic"),
+            "generic",
+        )
+        self.assertEqual(
+            public_upstream_error_message(error, is_upstream=True, fallback="generic"),
+            "扩展解析失败：当前上游不可用，请稍后重试。",
+        )
+
     def test_shared_service_timeout_counts_as_batch_timeout(self):
         from .services.platforms.third_party import GenericThirdPartyAdapter
         from .services.provider_lab.contracts import ProviderLabError

@@ -1223,19 +1223,26 @@ class TianTianJieXiResultNormalizer:
 
     @classmethod
     def normalize_payload(cls, payload):
+        from ..work_caption import work_caption_presentation
         if not isinstance(payload, dict):
             raise TianTianJieXiApiError("天天解析返回格式无效")
         if isinstance(payload, ServiceFormatPayload):
             return payload
-        title = first_text(payload, ("title", "name"))
+        raw_title = first_text(payload, ("title", "name"))
         nickname = first_text(payload, ("nickname", "author", "user"))
         description = first_text(payload, ("desc", "description"))
+        title = raw_title
+        filename_title = work_caption_presentation(raw_title, description)['title']
         if nickname and title and nickname not in title:
             title = f"{nickname}_{title}"
+        if nickname and filename_title and nickname not in filename_title:
+            filename_title = f"{nickname}_{filename_title}"
         cover = first_text(payload, ("cover", "cover_url", "pic", "image", "thumbnail"))
         audio_url = first_text(payload, ("audio", "audio_url", "music", "music_url"))
         normalized = {
             "title": title,
+            "_caption_title": raw_title,
+            "_filename_title": filename_title,
             "description": description,
             "cover": cover,
             "videos": cls.collect_video_resources(payload),
@@ -1360,10 +1367,12 @@ class TianTianJieXiResultNormalizer:
     def normalize(self, *, rule, platform_name, source_url, payload):
         from ..service_format_selection import attach_service_picker
         from ..provider_strategy import media_request_context
+        from ..work_caption import work_caption_presentation
         if not isinstance(payload, dict):
             raise ValueError("天天解析结果格式无效")
         payload = filter_service_format_rows(self.normalize_payload(payload), rule)
-        title = clean_filename(str(payload.get("title") or platform_name))
+        title = clean_filename((payload['_filename_title'] if '_filename_title' in payload else
+            work_caption_presentation(payload.get("title"), payload.get("description"))['title']) or platform_name)
         platform_id = getattr(rule, "platform_id", "")
         cover_url = public_url_or_empty(
             payload.get("cover"),

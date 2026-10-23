@@ -16,6 +16,8 @@ from django.test import Client, RequestFactory, SimpleTestCase, TestCase, overri
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
+from contracts.network import offline_requests
+
 from .models import (
     BatchParseRuntimeSetting,
     ProviderAccessMode,
@@ -2629,6 +2631,13 @@ class BatchParseViewTests(TestCase):
 
 
 class TianTianJieXiHealthHardeningTests(TestCase):
+    def setUp(self):
+        # These health fixtures replace providers, but source validation still resolves DNS.
+        self.enterContext(offline_requests(self.reject_unmocked_http))
+
+    def reject_unmocked_http(self, request, **kwargs):
+        raise AssertionError("Health fixture attempted an unmocked HTTP request")
+
     def build_request(self):
         request = RequestFactory().post("/admin/provider-health-tests/run/")
         request.user = get_user_model().objects.create_superuser(
@@ -2876,6 +2885,7 @@ class KukuToolHealthScopeTests(TestCase):
     def setUp(self):
         from .models import ProviderHealthTestSetting
 
+        self.enterContext(offline_requests(self.reject_unmocked_http))
         ProviderHealthTestSetting.objects.create(
             singleton_key=1,
             douyin_url=f"https://www.douyin.com/video/{self.AWEME_ID}",
@@ -2895,6 +2905,9 @@ class KukuToolHealthScopeTests(TestCase):
         self.native = self.start_patch(
             patch("xhs_download.services.platforms.douyin_providers.get_fast_native_result")
         )
+
+    def reject_unmocked_http(self, request, **kwargs):
+        raise AssertionError("Health fixture attempted an unmocked HTTP request")
 
     def start_patch(self, patcher):
         mock = patcher.start()

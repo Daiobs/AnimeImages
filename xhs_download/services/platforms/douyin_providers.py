@@ -877,6 +877,7 @@ def normalize_douyin_display_title(value):
 
 def douyin_caption_presentation(title, description=""):
     """Project an upstream caption without changing its stored source text."""
+    from ..work_caption import caption_presentation
     raw_title = str(title or "").strip()
     raw_description = str(description or "").strip()
     if not normalize_douyin_display_title(raw_title):
@@ -886,44 +887,7 @@ def douyin_caption_presentation(title, description=""):
     caption = raw_title or raw_description
     if not normalize_douyin_display_title(caption):
         caption = ""
-    extra = raw_description if raw_title else ""
-    topic_pattern = re.compile(r"(?<!\S)[#＃]([^\s#＃]+)")
-    topics = list(dict.fromkeys(
-        match.group(1).rstrip("，。！？,.;；:：!")
-        for text in (caption, extra)
-        for match in topic_pattern.finditer(text)
-        if match.group(1).rstrip("，。！？,.;；:：!")
-    ))
-    body = topic_pattern.sub("", caption).strip()
-    lines = [line.strip() for line in body.splitlines() if line.strip()]
-    display_title = " ".join(body.split())
-    remainder = ""
-    derived = False
-    if len(lines) > 1 and len(lines[0]) <= 80:
-        display_title, remainder = lines[0], "\n".join(lines[1:])
-        derived = True
-    elif not extra and topic_pattern.search(caption) and len(display_title) > 60:
-        # A long Chinese social caption often has a whitespace-delimited lead.
-        # Do not apply this to ordinary short titles or English word spacing.
-        lead, separator, tail = display_title.partition(" ")
-        if (separator and 4 <= len(lead) <= 60 and len(tail) >= 20
-                and re.search(r"[\u3400-\u9fff]", lead)
-                and not re.search(r"[A-Za-z]", lead)):
-            display_title, remainder, derived = lead, tail.strip(), True
-    details = [remainder]
-    if extra:
-        extra_body = topic_pattern.sub("", extra).strip()
-        if extra_body != body and extra_body != remainder:
-            details.append(extra_body)
-    if len(display_title) > 200 and not remainder:
-        details.insert(0, body)
-    return {
-        "title": display_title[:200],
-        "description": "\n".join(part for part in details if part),
-        "topics": topics,
-        "caption": "\n".join(part for part in (caption, extra) if part),
-        "title_derived": derived,
-    }
+    return caption_presentation(caption, raw_description if raw_title else "")
 
 
 def source_url_matches_aweme_id(source_url, aweme_id):

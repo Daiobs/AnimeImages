@@ -7,9 +7,11 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from ..assets import MediaAsset, ParseResult
+from ..work_caption import work_caption_metadata, work_caption_presentation
 from ..common import (
     HEADERS,
     XhsParseError,
+    XhsWorkContentUnavailableError,
     clean_filename,
     host_matches,
     normalize_text,
@@ -22,7 +24,6 @@ from .xhs_page_state import (
     XHS_MAX_TITLE_LENGTH,
     extract_xhs_note_id,
     extract_xhs_page_state,
-    normalize_xhs_note_id,
     normalize_xhs_state_text,
 )
 from .xhs_livephoto_builder import (
@@ -339,41 +340,6 @@ def _detect_dom_page_state(soup):
     return "unknown"
 
 
-def _identity_note_id(value):
-    note_id = normalize_xhs_note_id(value)
-    return note_id or extract_xhs_note_id(value)
-
-
-def _current_page_identity_source(soup, source_note_id):
-    source_note_id = normalize_xhs_note_id(source_note_id)
-    if not source_note_id:
-        return ""
-
-    for tag in soup.find_all("link"):
-        rel = tag.get("rel") or ()
-        rel_tokens = rel if isinstance(rel, (list, tuple)) else str(rel).split()
-        if "canonical" not in {str(value).lower() for value in rel_tokens}:
-            continue
-        if _identity_note_id(tag.get("href", "")) == source_note_id:
-            return "canonical"
-
-    for tag in soup.find_all("meta"):
-        key = str(tag.get("property") or tag.get("name") or "").strip().lower()
-        if key not in {"og:url", "twitter:url"}:
-            continue
-        if _identity_note_id(tag.get("content", "")) == source_note_id:
-            return "page_meta"
-
-    identity_attributes = ("data-note-id", "data-noteid", "data-note_id")
-    for container in soup.select("#noteContainer, .note-detail, .note-content"):
-        candidates = (container, *container.find_all(True))
-        for tag in candidates:
-            for attribute in identity_attributes:
-                if _identity_note_id(tag.get(attribute, "")) == source_note_id:
-                    return "current_note_dom"
-    return ""
-
-
 def _build_base_filename(author_name, title, note_id):
     if author_name and title:
         value = f"{author_name}_{title}"
@@ -400,8 +366,11 @@ def _build_xhs_metadata(
     cover_source,
     structured_state,
     fallback_policy,
+    caption_metadata=None,
 ):
     metadata = {
+        **{key: value for key, value in (caption_metadata or {}).items()
+           if key != "title" and value},
         "page_state": page_state,
         "title_source": title_source,
         "author_source": author_source,
@@ -474,10 +443,6 @@ class XiaohongshuAdapter(BasePlatformAdapter):
     ):
         soup = BeautifulSoup(html, "html.parser")
         structured_state = extract_xhs_page_state(soup, source_url=source_url)
-        page_identity_source = _current_page_identity_source(
-            soup,
-            structured_state.source_note_id,
-        )
 
         structured_image_urls = _normalize_image_urls(structured_state.image_urls)
         structured_video_urls = []
@@ -495,7 +460,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             structured_image_urls=structured_image_urls,
             structured_video_urls=structured_video_urls,
             dom_page_state=_detect_dom_page_state(soup),
-            page_identity_source=page_identity_source,
+            page_identity_source=structured_state.page_identity_source,
         )
         if fallback_policy.terminal_state:
             raise XhsParseError(
@@ -503,17 +468,24 @@ class XiaohongshuAdapter(BasePlatformAdapter):
             )
 
         structured_title = normalize_xhs_title(structured_state.title)
-        meta_title = _meta_content(
+        meta_title_raw = _meta_content(
             soup,
             ("og:title", "twitter:title"),
-            normalize_xhs_title,
+            lambda value: value if normalize_xhs_title(value) else "",
         )
-        dom_title = _dom_text(
+        meta_title = normalize_xhs_title(work_caption_presentation(meta_title_raw)["title"])
+        dom_title_raw = _dom_text(
             soup,
             ("#detail-title", ".note-detail .title", ".note-content .title"),
-            normalize_xhs_title,
+            lambda value: value if normalize_xhs_title(value) else "",
         )
+        dom_title = normalize_xhs_title(work_caption_presentation(dom_title_raw)["title"])
         title = structured_title or meta_title or dom_title
+        caption_metadata = (
+            {"description": structured_state.description, "caption": structured_state.caption,
+             "topics": list(structured_state.topics)}
+            if structured_title else work_caption_metadata(meta_title_raw or dom_title_raw)
+        )
         title_source = (
             "structured" if structured_title else "meta" if meta_title else "dom" if dom_title else ""
         )
@@ -614,6 +586,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 cover_source=cover_source,
                 structured_state=structured_state,
                 fallback_policy=fallback_policy,
+                caption_metadata=caption_metadata,
             )
             return ParseResult(
                 platform=self.platform_id,
@@ -645,6 +618,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 cover_source="",
                 structured_state=structured_state,
                 fallback_policy=fallback_policy,
+                caption_metadata=caption_metadata,
             )
             preview_source_sets = ()
             private_snapshot = structured_state.private_selected_note_snapshot
@@ -804,6 +778,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 cover_source="",
                 structured_state=structured_state,
                 fallback_policy=fallback_policy,
+                caption_metadata=caption_metadata,
             ),
         )
 
@@ -912,6 +887,8 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         finally:
             response.close()
 
+        if not result.assets and not result.rich_media:
+            raise XhsWorkContentUnavailableError()
         if not prefer_ultra_hd:
             return result
         return enhance_xhs_ordinary_video(

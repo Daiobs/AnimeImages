@@ -224,6 +224,10 @@ def service_context(raw, parent=None):
 
 def collect_service_video_resources(payload, *, nested_keys, infer_quality=None):
     """Flatten explicit video containers, retaining native variant identity."""
+    from ..work_caption import work_caption_presentation
+    work_title = work_caption_presentation(
+        payload.get("title") or payload.get("name"),
+        payload.get("desc") or payload.get("description"))['title']
     resources = []
     url_keys = ("url", "video_url", "videoUrl", "download_url", "downloadUrl", "play_url", "playUrl")
     label_keys = ("quality_label", "quality", "qualityLabel", "type", "name", "resolution", "clarity")
@@ -281,7 +285,7 @@ def collect_service_video_resources(payload, *, nested_keys, infer_quality=None)
                             "url_inferred" if inferred else "upstream",
                             group_id=group_id, group_index=group_index,
                             work_id=group_id, work_label=(
-                                str(payload.get("title") or "Video")
+                                (work_title or "Video")
                                 + (f" ({group_index})" if len(items(payload.get("videos"))) > 1 else "")
                                 if group_id else ""),
                             _unlabelled_alias=generic_label and not inferred)
@@ -795,11 +799,14 @@ class KukutoolResultNormalizer:
     def normalize(self, *, rule, platform_name, source_url, payload):
         from ..service_format_selection import attach_service_picker
         from ..provider_strategy import media_request_context
+        from ..work_caption import work_caption_presentation
         if not isinstance(payload, dict):
             raise ValueError("KuKuTool result format is invalid")
         payload = filter_service_format_rows(self.normalize_payload(payload), rule)
 
-        title = clean_filename(str(payload.get("title") or platform_name))
+        title = clean_filename(work_caption_presentation(
+            payload.get("title") or payload.get("name"),
+            payload.get("desc") or payload.get("description"))['title'] or platform_name)
         allowed_suffixes = getattr(rule, "media_host_suffixes", ())
         platform_id = getattr(rule, "platform_id", "")
         cover_url = public_url_or_empty(

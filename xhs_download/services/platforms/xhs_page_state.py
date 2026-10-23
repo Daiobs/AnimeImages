@@ -5,9 +5,10 @@ from dataclasses import dataclass, field
 from html import unescape
 from types import MappingProxyType
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from ..common import normalize_text
+from ..work_caption import work_caption_metadata
 
 
 XHS_NOTE_ID_RE = re.compile(r"^[0-9a-fA-F]{24}$")
@@ -65,6 +66,9 @@ class XhsPageState:
     note_id: str = ""
     source_note_id: str = ""
     title: str = ""
+    description: str = ""
+    caption: str = ""
+    topics: tuple[str, ...] = ()
     author_name: str = ""
     post_type: str = "unknown"
     image_urls: tuple[str, ...] = ()
@@ -82,6 +86,9 @@ class XhsPageState:
     structured_image_list_present: bool = False
     structured_video_present: bool = False
     terminal_page_state: bool = False
+    page_note_id: str = ""
+    page_identity_source: str = ""
+    page_identity_conflict: bool = False
     private_selected_note_snapshot: XhsPrivateSelectedNoteSnapshotV1 | None = field(
         default=None,
         repr=False,
@@ -119,6 +126,55 @@ def extract_xhs_note_id(source_url):
             if note_id:
                 return note_id
     return ""
+
+
+def _page_url_note_id(value):
+    try:
+        parsed = urlparse(urljoin("https://www.xiaohongshu.com/", str(value or "")))
+        host = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port not in {None, 80, 443}
+            or not (host == "xiaohongshu.com" or host.endswith(".xiaohongshu.com"))
+        ):
+            return ""
+        return extract_xhs_note_id(parsed.geturl())
+    except ValueError:
+        return ""
+
+
+def _page_identity(soup, source_note_id):
+    claims = []
+    for tag in soup.find_all("link"):
+        rel = tag.get("rel") or ()
+        rel_tokens = rel if isinstance(rel, (list, tuple)) else str(rel).split()
+        if "canonical" in {str(value).lower() for value in rel_tokens}:
+            note_id = _page_url_note_id(tag.get("href"))
+            if note_id:
+                claims.append((note_id, "canonical"))
+    for tag in soup.find_all("meta"):
+        key = str(tag.get("property") or tag.get("name") or "").strip().lower()
+        if key in {"og:url", "twitter:url"}:
+            note_id = _page_url_note_id(tag.get("content"))
+            if note_id:
+                claims.append((note_id, "page_meta"))
+    for container in soup.select("#noteContainer, .note-detail, .note-content"):
+        for attribute in ("data-note-id", "data-noteid", "data-note_id"):
+            note_id = normalize_xhs_note_id(container.get(attribute))
+            if note_id:
+                claims.append((note_id, "current_note_dom"))
+
+    # A matching claim must not hide another current-page identity.
+    claimed_ids = {note_id for note_id, _source in claims}
+    if source_note_id:
+        claimed_ids.add(source_note_id)
+    if len(claimed_ids) > 1:
+        return "", "", True
+    if claims:
+        return claims[0][0], claims[0][1], False
+    return "", "", False
 
 
 def normalize_xhs_state_text(value, *, max_length):
@@ -330,6 +386,7 @@ def _candidate_score(mapping, path, *, source_note_id):
 
 def _select_current_note(payloads, source_note_id):
     candidates = []
+    candidate_note_ids = set()
     note_candidate_found = False
     other_note_candidate_found = False
     for payload in payloads:
@@ -338,8 +395,12 @@ def _select_current_note(payloads, source_note_id):
                 continue
             note_candidate_found = True
             candidate_note_id = _candidate_note_id(mapping, path)
+            path_tokens = {_key_token(part) for part in path}
+            if candidate_note_id:
+                candidate_note_ids.add(candidate_note_id)
+            elif path_tokens & {"feed", "feeds", "recommend", "recommendations"}:
+                other_note_candidate_found = True
             if source_note_id and candidate_note_id != source_note_id:
-                path_tokens = {_key_token(part) for part in path}
                 if candidate_note_id or path_tokens & {
                     "feed",
                     "feeds",
@@ -360,6 +421,10 @@ def _select_current_note(payloads, source_note_id):
 
     candidates.sort(key=lambda candidate: (-candidate[0], tuple(candidate[2])))
     selected = candidates[0]
+    if not source_note_id:
+        other_note_candidate_found = other_note_candidate_found or bool(
+            candidate_note_ids - {selected[1]}
+        )
     return (
         selected[3],
         selected[1],
@@ -588,12 +653,16 @@ def _extract_cover_urls(note):
     return _unique_strings(candidates)
 
 
-def _extract_title(note):
-    value = _mapping_value(
+def _extract_caption(note):
+    title = _mapping_value(
         note,
-        ("title", "displayTitle", "display_title", "noteTitle", "note_title", "desc", "description"),
+        ("title", "displayTitle", "display_title", "noteTitle", "note_title"),
     )
-    return normalize_xhs_state_text(value, max_length=XHS_MAX_TITLE_LENGTH)
+    description = _mapping_value(note, ("desc", "description"))
+    return work_caption_metadata(
+        normalize_text(title) if isinstance(title, str) else "",
+        normalize_text(description) if isinstance(description, str) else "",
+    )
 
 
 def _extract_author(note):
@@ -668,6 +737,9 @@ def _extract_explicit_page_state(payloads):
 
 def extract_xhs_page_state(soup, source_url=None):
     source_note_id = extract_xhs_note_id(source_url)
+    page_note_id, page_identity_source, page_identity_conflict = _page_identity(
+        soup, source_note_id
+    )
     payloads = tuple(_iter_script_payloads(soup, source_note_id=source_note_id))
     (
         note,
@@ -675,11 +747,20 @@ def extract_xhs_page_state(soup, source_url=None):
         note_candidate_found,
         other_note_candidate_found,
     ) = _select_current_note(payloads, source_note_id)
+    if page_note_id and selected_note_id and page_note_id != selected_note_id:
+        page_identity_conflict = True
+    if page_identity_conflict:
+        note = None
+        page_note_id = ""
+        page_identity_source = ""
     explicit_page_state = _extract_explicit_page_state(payloads)
     if note is None:
         return XhsPageState(
-            note_id=source_note_id,
+            note_id=source_note_id or page_note_id,
             source_note_id=source_note_id,
+            page_note_id=page_note_id,
+            page_identity_source=page_identity_source,
+            page_identity_conflict=page_identity_conflict,
             page_state=explicit_page_state,
             explicit_page_state=explicit_page_state,
             structured_state_found=explicit_page_state != "unknown",
@@ -698,10 +779,17 @@ def extract_xhs_page_state(soup, source_url=None):
     if page_state == "unknown":
         page_state = "available"
 
+    caption = _extract_caption(note)
     return XhsPageState(
         note_id=selected_note_id or source_note_id,
         source_note_id=source_note_id,
-        title=_extract_title(note),
+        page_note_id=page_note_id,
+        page_identity_source=page_identity_source,
+        page_identity_conflict=page_identity_conflict,
+        title=normalize_xhs_state_text(caption["title"], max_length=XHS_MAX_TITLE_LENGTH),
+        description=caption["description"],
+        caption=caption["caption"],
+        topics=tuple(caption["topics"]),
         author_name=_extract_author(note),
         post_type=_extract_post_type(note, image_urls, video_urls),
         image_urls=image_urls,
