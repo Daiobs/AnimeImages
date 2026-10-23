@@ -1691,6 +1691,8 @@
                 ? await downloadReliabilityApi.pollDownloadStatus({
                     statusUrl,
                     pollAfterMs: prepared.pollAfterMs,
+                    startTimeoutMs: prepared.expiresInSeconds * 1000,
+                    signal: operation && operation.signal,
                     onStreaming: () => {
                         assertDownloadCurrent(operation);
                         setProgressPending("传输中");

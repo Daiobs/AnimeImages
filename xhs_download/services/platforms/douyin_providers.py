@@ -30,7 +30,7 @@ from ..douyin_continuation import (
 )
 from ..env_config import runtime_bool
 from ..provider_settings import get_platform_provider_settings, normalize_provider_order
-from ..provider_manifest import build_provider_manifest_token
+from ..provider_manifest import build_provider_manifest_token, douyin_tiantian_image_asset_id
 from ..provider_reliability import (
     ProviderFailureClass,
     ProviderOutcome,
@@ -1181,6 +1181,36 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             return ""
         return cover_url
 
+    def build_image_urls(self, payload, adapter):
+        from ..downloads import validate_tiantianjiexi_douyin_image_url
+
+        # A rejected video still identifies a video response; images may be covers.
+        if payload.get("videos"):
+            return ()
+        images = payload.get("images") or ()
+        if not isinstance(images, (list, tuple)):
+            return ()
+        urls = []
+        seen = set()
+        for value in images:
+            if not isinstance(value, str) or not value.strip():
+                continue
+            url = value.strip()
+            if url in seen:
+                continue
+            try:
+                validate_tiantianjiexi_douyin_image_url(
+                    url, existing_suffixes=adapter.media_host_suffixes,
+                )
+            except (TypeError, ValueError):
+                continue
+            seen.add(url)
+            urls.append(url)
+        return tuple(urls)
+
+    def payload_has_media(self, payload, adapter):
+        return bool(self.build_candidates(payload, adapter) or self.build_image_urls(payload, adapter))
+
     def parse(self, adapter, context):
         if not self.provider_settings.provider_is_enabled(self.name):
             return None
@@ -1256,9 +1286,7 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
                     for parameter in provider_parse_parameters.values()
                 )
             ):
-                parse_options["payload_validator"] = lambda payload: bool(
-                    self.build_candidates(payload, adapter)
-                )
+                parse_options["payload_validator"] = lambda payload: self.payload_has_media(payload, adapter)
             if source_identity and (
                 "source_identity" in provider_parse_parameters
                 or any(
@@ -1317,7 +1345,7 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             )
             raise
         candidates = self.build_candidates(payload, adapter)
-        if not candidates:
+        if not candidates and not self.build_image_urls(payload, adapter):
             log_provider_event(
                 "douyin_provider_candidates_empty",
                 self.name,
@@ -1330,15 +1358,15 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
                 candidate_count=0,
                 error_type="empty_candidates",
             )
-            raise ValueError("天天解析未返回可用抖音视频资源")
+            raise ValueError("天天解析未返回可用抖音媒体资源")
 
         result = self.result_from_payload(adapter, context, payload, candidates)
-        candidate = candidates[0]
+        candidate = candidates[0] if candidates else result.image_assets[0]
         if not self.suppress_selected_log:
             log_provider_event(
                 "douyin_provider_selected", self.name, context, parse_started_at,
                 fallback_reason="tiantianjiexi_official_api",
-                selected_size_bytes=candidate.size_bytes, candidate_count=len(candidates),
+                selected_size_bytes=candidate.size_bytes, candidate_count=len(candidates) or len(result.image_assets),
                 quality_label=candidate.quality_label, selected_quality=candidate.quality_label,
                 remaining_budget_ms=int(max(0, remaining_budget) * 1000),
                 assigned_timeout_ms=int(max(0, timeout_seconds) * 1000),
@@ -1359,28 +1387,62 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
             return None
         payload, age = self.provider.get_cached_payload_entry(
             source_key_for_request(source_url, context.source_identity),
-            lambda value: bool(self.build_candidates(value, adapter)),
+            lambda value: self.payload_has_media(value, adapter),
         )
         if not payload:
             return None
         result = self.result_from_payload(
             adapter, context, payload, self.build_candidates(payload, adapter), allow_network=False,
         )
+        candidate_count = len(payload.get("videos") or ()) if result.video_assets else len(result.image_assets)
         if context.ultra_attempt_controller is not None:
             context.ultra_attempt_controller.reuse_cached_result(self.name, reason="payload_cache")
         record_provider_attempt(
             provider=self.name, outcome=ProviderOutcome.SUCCESS_PAYLOAD_CACHE,
             external_call=False, cache_hit=True, payload_age_ms=age,
-            candidate_count=len(payload.get("videos") or ()),
+            candidate_count=candidate_count,
         )
         log_provider_event(
             "douyin_provider_selected", self.name, context,
-            cache_hit=True, candidate_count=len(payload.get("videos") or ()),
+            cache_hit=True, candidate_count=candidate_count,
             fallback_reason="tiantianjiexi_payload_cache",
         )
         return with_parse_metadata(result, tiantianjiexi_cache_hit=True, tiantianjiexi_payload_age_ms=age)
 
     def result_from_payload(self, adapter, context, payload, candidates, *, allow_network=True):
+        if not candidates:
+            image_urls = self.build_image_urls(payload, adapter)
+            if not image_urls:
+                raise ValueError("天天解析未返回可用抖音媒体资源")
+            cache_key = f"douyin:{self.name}:validated:{context.aweme_id}"
+            assets = []
+            for url in image_urls:
+                asset_id = douyin_tiantian_image_asset_id(context.aweme_id, url)
+                assets.append(MediaAsset(
+                    media_type="image", url=url, preview_url=url, platform=adapter.platform_id,
+                    headers=adapter.headers, media_host_suffixes=adapter.media_host_suffixes,
+                    asset_id=asset_id, provider=self.name, provider_resource_id=context.aweme_id,
+                    provider_cache_key=cache_key, source_platform="douyin",
+                    provider_manifest_token=build_provider_manifest_token(
+                        asset_id=asset_id, provider=self.name, provider_resource_id=context.aweme_id,
+                        provider_cache_key=cache_key, url=url, media_type="image", source_platform="douyin",
+                    ),
+                ))
+            title = str(payload.get("title") or "")
+            description = str(payload.get("description") or "")
+            presentation = douyin_caption_presentation(title, description)
+            return ParseResult(
+                platform=adapter.platform_id, post_type="image",
+                base_filename=(safe_external_base_filename(presentation["title"])
+                               or f"douyin_{context.aweme_id}"),
+                assets=tuple(assets),
+                metadata={
+                    "title": title, "description": description,
+                    "selected_provider": self.name, "source_provider": self.name,
+                    "provider_label": "天天解析", "fallback_reason": "tiantianjiexi_official_api",
+                    "tiantianjiexi_candidate_count": len(assets),
+                },
+            )
         source_url = select_tiantian_request_url(context)
         provider_title = safe_external_base_filename(payload.get("title"))
         if not provider_title:

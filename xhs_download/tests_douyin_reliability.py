@@ -43,6 +43,7 @@ from .services.douyin_continuation import (
     DouyinContinuationError,
     DouyinContinuationPendingError,
     build_douyin_continuation_cache_key,
+    build_douyin_continuation_poll_key,
     build_douyin_continuation_source_key,
     deserialize_douyin_continuation_result,
     find_active_douyin_continuation,
@@ -2064,11 +2065,7 @@ class DownloadHandoffTests(SimpleTestCase):
                 client_identity="client-a",
             )
         self.assertEqual(tampered.exception.error_code, "DOWNLOAD_HANDOFF_INVALID")
-        with patch(
-            "xhs_download.services.download_handoff."
-            "DOWNLOAD_HANDOFF_TTL_SECONDS",
-            -1,
-        ):
+        with patch("time.time", return_value=time.time() + DOWNLOAD_HANDOFF_TTL_SECONDS + 1):
             with self.assertRaises(DownloadHandoffError) as expired:
                 load_download_handoff(
                     tokens.stream_token,
@@ -2099,7 +2096,6 @@ class DownloadHandoffTests(SimpleTestCase):
             "connecting",
             "refreshing",
             "streaming",
-            "completed",
             "failed",
         ):
             updated = update_download_status(
@@ -2142,6 +2138,59 @@ class DownloadHandoffTests(SimpleTestCase):
             "资源连接异常，请稍后重试。",
         )
         self.assertTrue(failed["stream_started"])
+
+    def test_completed_status_cannot_be_reopened_or_extended_by_late_callback(self):
+        tokens = issue_download_handoff_tokens(
+            item={"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg"},
+            base_filename="demo", client_identity="client-a",
+        )
+        initial = load_download_status(tokens.status_token, client_identity="client-a")
+        self.assertTrue(update_download_status(initial.ticket_id, "completed"))
+        completed = load_download_status(tokens.status_token, client_identity="client-a")
+        with patch.object(cache, "set") as write:
+            self.assertFalse(update_download_status(initial.ticket_id, "streaming"))
+            self.assertFalse(update_download_status(initial.ticket_id, "failed"))
+            self.assertEqual(load_download_status(tokens.status_token, client_identity="client-a"), completed)
+        write.assert_not_called()
+
+    def test_status_progress_never_retains_media_authority_and_reads_do_not_keep_it_alive(self):
+        from .services.download_handoff import (
+            build_download_handoff_cache_key, build_download_status_cache_key,
+        )
+        clock = time.time()
+        # Redis has its own clock; advance application expiry without assuming
+        # that physical cache eviction follows Python's clock.
+        with patch("xhs_download.services.download_handoff.time") as handoff_clock:
+            handoff_clock.time.return_value = clock
+            tokens = issue_download_handoff_tokens(
+                item={"type": "image", "url": "https://ci.xiaohongshu.com/demo.jpg?secret=1"},
+                base_filename="demo", client_identity="client-a",
+            )
+            initial = load_download_status(tokens.status_token, client_identity="client-a")
+            # Existing tickets from the previous process gain only a status binding.
+            key = build_download_status_cache_key(initial.ticket_id)
+            old = cache.get(key)
+            old.pop("client_identity")
+            cache.set(key, old, timeout=60)
+            self.assertEqual(load_download_status(tokens.status_token, client_identity="client-a").status, "issued")
+            self.assertTrue(update_download_status(initial.ticket_id, "streaming"))
+            handoff_clock.time.return_value = clock + 70
+            launch_record = cache.get(build_download_handoff_cache_key(initial.ticket_id))
+            self.assertEqual(launch_record["expires_at"], clock + tokens.expires_in_seconds)
+            with self.assertRaises(DownloadHandoffError) as launch_expired:
+                load_download_handoff(tokens.stream_token, client_identity="client-a")
+            self.assertEqual(launch_expired.exception.status_code, 410)
+            status_record = cache.get(key)
+            self.assertNotIn("item", status_record)
+            self.assertNotIn("secret", json.dumps(status_record))
+            with self.assertRaises(DownloadHandoffError):
+                load_download_handoff(tokens.status_token, client_identity="client-a")
+            self.assertEqual(load_download_status(tokens.status_token, client_identity="client-a").status, "streaming")
+            handoff_clock.time.return_value = clock + 301
+            with self.assertRaises(DownloadHandoffError) as expired:
+                load_download_status(tokens.status_token, client_identity="client-a")
+            self.assertEqual(expired.exception.status_code, 410)
+            self.assertFalse(update_download_status(initial.ticket_id, "streaming"))
 
     def test_failed_after_streaming_preserves_sticky_start_fact(self):
         tokens = issue_download_handoff_tokens(
@@ -3805,6 +3854,28 @@ class DouyinContinuationViewTests(TestCase):
         self.client_identity = hashlib.sha256(
             b"127.0.0.1"
         ).hexdigest()[:24]
+
+    def test_terminal_poll_does_not_claim_an_unobserved_native_result(self):
+        for state in ("failed", "timeout", "missing", "poll_limit"):
+            with self.subTest(state=state):
+                task_id = "empty-" + state
+                if state != "missing":
+                    cache.set(build_douyin_continuation_cache_key(task_id),
+                              {"status": state if state != "poll_limit" else "pending"}, 15)
+                if state == "poll_limit":
+                    cache.set(build_douyin_continuation_poll_key(task_id), 100, 15)
+                token = issue_douyin_continuation_token(
+                    task_id=task_id, client_identity=self.client_identity, platform_key="home",
+                )
+                response = self.client.post(
+                    "/media/douyin-continuation/",
+                    data=json.dumps({"continuation_token": token}), content_type="application/json",
+                )
+                body = response.json()
+                self.assertIn(body["status"], {"failed", "timeout"})
+                self.assertNotIn("已返回", body["message"])
+                self.assertNotIn("普通清晰度", body["message"])
+                self.assertNotIn("已保留", body["message"])
 
     @patch("xhs_download.views.parse_media_page")
     @patch(

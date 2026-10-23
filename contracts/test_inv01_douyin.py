@@ -19,6 +19,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 from django.conf import settings
 from django.core.cache import cache
 from django.test import TransactionTestCase, override_settings
@@ -85,6 +86,7 @@ class UpstreamTransport:
         self.last_activity = self.started
         self.release_ultra = threading.Event()
         self.ultra_waits = False
+        self.native_available = True
 
     def services(self):
         with self.lock:
@@ -110,6 +112,10 @@ class UpstreamTransport:
 
     def answer(self, request):
         parsed = urlsplit(request.url)
+        if not self.native_available and parsed.hostname in {
+            "aweme.snssdk.com", "www.iesdouyin.com", "www.douyin.com",
+        }:
+            return fake_response(request, payload={"aweme_list": []})
         if parsed.hostname == "aweme.snssdk.com" and parsed.path == "/aweme/v1/feed/":
             self.record("native")
             time.sleep(NATIVE_SECONDS)
@@ -256,6 +262,42 @@ class DouyinUltraHTTPContracts(TransactionTestCase):
                          "INV-01: the configured order decides which provider goes first")
         self.assertTrue(body["has_results"])
         self.assertIn(ULTRA_TITLE, body["html"])
+
+    @override_settings(DOUYIN_ULTRA_PROVIDER_ORDER="tiantianjiexi,native")
+    def test_titleless_long_gallery_caption_survives_public_continuation(self):
+        title = "Gallery lead"
+        details = "\u56fe\u6587\u6b63\u6587" * 150
+        description = f"{title}\n{details} #tailtopic"
+        images = [f"https://p3-sign.douyinpic.com/contract-gallery/{index}.webp" for index in range(3)]
+        self.assertGreater(len(description), 200)
+        self.assertLessEqual(len(description), 2000)
+        self.transport.ultra_waits = True
+        self.transport.native_available = False
+        with patch.dict(ULTRA_PAYLOAD, {"code": 200, "data": {
+            "description": description, "images": images, "videos": [],
+        }}, clear=True):
+            body, _ = self.parse()
+            self.assertEqual(body["status"], "continuation_pending", body)
+            self.assertFalse(body["has_results"])
+            self.transport.release_ultra.set()
+            settled = self.poll_until_settled(body["continuation_token"])
+        self.assertEqual(settled["status"], "success", settled)
+        self.assertTrue(settled["has_results"])
+        soup = BeautifulSoup(settled["html"], "html.parser")
+        self.assertEqual(
+            [node["data-download-filename-stem"] for node in soup.select("[data-download-filename-stem]")],
+            [f"{title}_{index:02d}" for index in range(1, 4)],
+        )
+        heading = soup.select_one(".result-title")
+        self.assertIn(title, heading.get_text())
+        self.assertNotIn(details, heading.get_text())
+        caption = soup.select_one("details[data-result-caption]")
+        self.assertIsNotNone(caption)
+        self.assertIn(details, caption.select_one(".result-caption-description").get_text())
+        self.assertEqual([node.get_text(strip=True) for node in caption.select("li")], ["#tailtopic"])
+        for url in images:
+            self.assertIn(url, settled["html"])
+        self.assertEqual(self.transport.services(), ["tiantianjiexi"])
 
     def test_inv01_ultra_stays_offered_while_a_configured_service_is_usable(self):
         # A1: KuKuTool switched off in admin must not withdraw ultra while TianTian, first in the order, can run.

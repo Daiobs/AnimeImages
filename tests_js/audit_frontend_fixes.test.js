@@ -23,8 +23,7 @@ async function runPoll(responses, extra = {}) {
     const epoch = Date.UTC(2026, 0, 1);
     const result = await reliability.pollDownloadStatus({
         statusUrl: "/media/download-status/test-ticket/",
-        maxDurationMs: 15000,
-        maxPolls: 30,
+        startTimeoutMs: 60000,
         now: () => elapsed,
         epochNow: () => epoch + elapsed,
         wait: async (delay) => { waits.push(delay); elapsed += delay; },
@@ -84,16 +83,16 @@ test("valid ordinary response resets the busy backoff", async () => {
     assert.equal(observation.result.status, "completed");
 });
 
-test("repeated busy replies stay inside the original time and count limits", async () => {
-    const observation = await runPoll([response(503)], {maxPolls: 1000, maxDurationMs: 60000});
-    assert.ok(observation.requests.length <= reliability.MAX_STATUS_POLL_COUNT);
-    assert.ok(observation.elapsed < reliability.MAX_STATUS_POLL_DURATION_MS);
+test("repeated busy replies stay inside the status-service outage budget", async () => {
+    const observation = await runPoll([response(503)]);
+    assert.ok(observation.requests.length <= 6);
+    assert.ok(observation.elapsed < reliability.STATUS_FAILURE_OBSERVATION_MS);
     assert.ok(Math.max(...observation.waits) <= 4000);
     assert.equal(reliability.downloadStartDisposition(observation.result), "unconfirmed");
 });
 
-test("exhausted count after a busy reply preserves the busy explanation", async () => {
-    const observation = await runPoll([response(429)], {maxPolls: 1});
+test("exhausted startup time after a busy reply preserves the busy explanation", async () => {
+    const observation = await runPoll([response(429)], {startTimeoutMs: 1000});
     assert.equal(observation.requests.length, 1);
     assert.match(observation.result.message, /状态查询暂时繁忙/);
 });
@@ -126,7 +125,7 @@ test("elapsed time is checked again after a delayed timer", async () => {
 
 test("omitted poll budgets use documented defaults, not the minimum one-call budget", async () => {
     const observation = await runPoll([response(429), response(200)], {
-        maxDurationMs: undefined, maxPolls: undefined,
+        startTimeoutMs: undefined,
     });
     assert.equal(observation.requests.length, 2);
     assert.equal(observation.result.status, "completed");

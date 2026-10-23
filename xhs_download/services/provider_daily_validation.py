@@ -376,12 +376,26 @@ def download_smoke_report_lines(details) -> tuple[str, ...]:
         " error_type=" + _smoke_text(details["error_type"], r"[A-Za-z][A-Za-z0-9_]{0,119}")
         if "error_type" in details else ""
     )
+    media_type = (
+        " media_type=" + _smoke_text(details["media_type"], r"image|video|audio")
+        if "media_type" in details else ""
+    )
+    continuation = details.get("continuation")
+    continuation = continuation if isinstance(continuation, dict) else {}
+    continuation_line = (
+        "continuation: status=" + _smoke_text(
+            continuation.get("status"), r"not_needed|success|unchanged|failed|timeout",
+        )
+        + " error_code=" + _smoke_text(continuation.get("error_code"), r"DOUYIN_CONTINUATION_[A-Z_]{1,50}")
+        + " poll_count=" + _smoke_number(continuation.get("poll_count"))
+    )
     content_type = _smoke_text(
         download.get("content_type"),
         r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,63}",
     )
     return (
-        f"download_smoke: platform={platform} provider={provider}{access_scope}{stage}",
+        f"download_smoke: platform={platform} provider={provider}{access_scope}{stage}{media_type}",
+        *((continuation_line,) if continuation else ()),
         "fields: " + " ".join(
             f"{name}={_smoke_boolean(fields.get(name))}"
             for name in ("title", "cover", "quality", "size")

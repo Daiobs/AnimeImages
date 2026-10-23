@@ -6,6 +6,24 @@ const path = require("node:path");
 const test = require("node:test");
 const reliability = require("../static/js/download_reliability.js");
 
+test("large-file observation outlives startup and the old 30-query ceiling", async () => {
+    let elapsed = 0, calls = 0;
+    const result = await reliability.pollDownloadStatus({
+        statusUrl: "/media/download-status/ticket/",
+        startTimeoutMs: 60000,
+        now: () => elapsed,
+        wait: async ms => { elapsed += ms; },
+        fetchStatus: async () => {
+            calls += 1;
+            return fakeJsonResponse(200, {ok: true, stream_started: elapsed >= 20000,
+                status: elapsed < 20000 ? "connecting" : elapsed < 180000 ? "streaming" : "completed"});
+        },
+    });
+    assert.equal(result.status, "completed");
+    assert.ok(elapsed >= 180000);
+    assert.ok(calls > 30);
+});
+
 test("provider resources require an explicit browser direct capability", () => {
     assert.equal(reliability.browserDirectFetchSafe({
         provider: "tiantianjiexi",
@@ -163,10 +181,12 @@ test("streaming followed by downstream failure cannot remain a successful handof
         wait: async () => {},
         fetchStatus: async () => fakeJsonResponse(200, ++calls === 1
             ? {ok: true, status: "streaming", stream_started: true}
-            : {ok: false, status: "failed", stream_started: true, error_code: "UPSTREAM_CONNECTION_ERROR"}),
+            : {ok: false, status: "failed", stream_started: true, error_code: "DOWNLOAD_CONNECTION_CLOSED"}),
     });
     assert.equal(calls, 2);
     assert.equal(result.status, "failed");
+    assert.equal(result.errorCode, "DOWNLOAD_CONNECTION_CLOSED");
+    assert.doesNotMatch(result.message, /上游|取消/);
     assert.equal(reliability.downloadStartDisposition(result), "failed");
 });
 
@@ -232,12 +252,14 @@ for (const [status, responseStatus, errorCode] of [
     });
 }
 
-test("completed ends observation; streaming remains unconfirmed at the query limit", async () => {
+test("completed ends observation; leaving a streaming page only ends observation", async () => {
     for (const status of ["streaming", "completed"]) {
         for (const streamStarted of [false, true]) {
+            const page = new EventTarget();
             const result = await reliability.pollDownloadStatus({
                 statusUrl: "/media/download-status/ticket/",
-                maxPolls: 1,
+                window: page,
+                wait: async () => page.dispatchEvent(new Event("pagehide")),
                 fetchStatus: async () => fakeJsonResponse(200, {
                     ok: true,
                     status,
@@ -252,11 +274,12 @@ test("completed ends observation; streaming remains unconfirmed at the query lim
 });
 
 test("polling timeout is bounded and never remains pending", async () => {
-    let calls = 0;
+    let calls = 0, clock = 0;
     const result = await reliability.pollDownloadStatus({
         statusUrl: "/media/download-status/ticket/",
-        maxPolls: 3,
-        wait: async () => {},
+        startTimeoutMs: 1500,
+        now: () => clock,
+        wait: async ms => { clock += ms; },
         fetchStatus: async () => {
             calls += 1;
             return fakeJsonResponse(200, {
@@ -283,7 +306,7 @@ test("a hanging status request is aborted by the overall polling boundary", asyn
     const startedAt = Date.now();
     const result = await reliability.pollDownloadStatus({
         statusUrl: "/media/download-status/ticket/",
-        maxDurationMs: 50,
+        startTimeoutMs: 50,
         fetchStatus: async (_url, options) => {
             capturedSignal = options.signal;
             return new Promise(() => {});
@@ -295,12 +318,13 @@ test("a hanging status request is aborted by the overall polling boundary", asyn
     assert.equal(capturedSignal.aborted, true);
 });
 
-test("polling clamps caller input to the hard 30-request ceiling", async () => {
-    let calls = 0;
+test("startup observation remains bounded by launch authorization, not file duration", async () => {
+    let calls = 0, clock = 0;
     const result = await reliability.pollDownloadStatus({
         statusUrl: "/media/download-status/ticket/",
-        maxPolls: 1000,
-        wait: async () => {},
+        startTimeoutMs: 60000,
+        now: () => clock,
+        wait: async ms => { clock += ms; },
         fetchStatus: async () => {
             calls += 1;
             return fakeJsonResponse(200, {
@@ -310,7 +334,8 @@ test("polling clamps caller input to the hard 30-request ceiling", async () => {
         },
     });
 
-    assert.equal(calls, reliability.MAX_STATUS_POLL_COUNT);
+    assert.equal(calls, 120);
+    assert.ok(clock < 60000);
     assert.equal(result.status, "poll_timeout");
 });
 
@@ -416,11 +441,11 @@ test("cancelling while observing a started stream stops queries without restarti
 
 for (const unavailable of ["expired", "invalid-json", "unknown-state", "busy"]) {
     test(`status ${unavailable} after streaming does not claim the media failed or completed`, async () => {
-        let calls = 0;
+        let calls = 0, clock = 0;
         const result = await reliability.pollDownloadStatus({
             statusUrl: "/media/download-status/ticket/",
-            maxPolls: 2,
-            wait: async () => {},
+            now: () => clock,
+            wait: async ms => { clock += ms; },
             fetchStatus: async () => {
                 if (++calls === 1) return fakeJsonResponse(200, {ok: true, status: "streaming"});
                 if (unavailable === "expired") return fakeJsonResponse(410, {ok: false, status: "expired"});
@@ -429,7 +454,7 @@ for (const unavailable of ["expired", "invalid-json", "unknown-state", "busy"]) 
                 return fakeJsonResponse(200, {status: "other"});
             },
         });
-        assert.equal(calls, 2);
+        assert.ok(calls >= 2 && calls <= 10);
         assert.equal(result.status, "poll_timeout");
         assert.equal(result.streamStarted, true);
         assert.equal(reliability.downloadStartDisposition(result), "unconfirmed");
@@ -441,7 +466,7 @@ test("status body parsing is covered by the existing overall deadline", async ()
     const start = Date.now();
     const result = await reliability.pollDownloadStatus({
         statusUrl: "/media/download-status/ticket/",
-        maxDurationMs: 50,
+        startTimeoutMs: 50,
         fetchStatus: async (_url, options) => {
             signal = options.signal;
             return {ok: true, status: 200, json: () => new Promise(() => {})};
@@ -462,4 +487,62 @@ test("external cancellation during a status request does not schedule another po
         },
     }), {name: "AbortError"});
     assert.equal(calls, 1);
+});
+
+test("hidden pages pause status reads; return resumes the same transfer", async () => {
+    const doc = new EventTarget();
+    doc.hidden = false;
+    let calls = 0, elapsed = 0, paused;
+    const hidden = new Promise(resolve => { paused = resolve; });
+    const observing = reliability.pollDownloadStatus({
+        statusUrl: "/status", document: doc, now: () => elapsed,
+        wait: async ms => { elapsed += ms; },
+        fetchStatus: async () => {
+            if (++calls === 1) {
+                doc.hidden = true;
+                paused();
+                return fakeJsonResponse(200, {ok: true, status: "streaming"});
+            }
+            return fakeJsonResponse(200, {ok: true, status: "completed"});
+        },
+    });
+    await hidden;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 1);
+    elapsed += 180000;
+    doc.hidden = false;
+    doc.dispatchEvent(new Event("visibilitychange"));
+    assert.equal((await observing).status, "completed");
+    assert.equal(calls, 2);
+});
+
+test("cancelling while hidden removes observers and never resumes the media request", async () => {
+    const doc = new EventTarget(), controller = new AbortController();
+    doc.hidden = true;
+    let calls = 0;
+    const observing = reliability.pollDownloadStatus({
+        statusUrl: "/status", document: doc, signal: controller.signal,
+        fetchStatus: async () => { calls += 1; },
+    });
+    controller.abort();
+    await assert.rejects(observing, {name: "AbortError"});
+    doc.hidden = false;
+    doc.dispatchEvent(new Event("visibilitychange"));
+    assert.equal(calls, 0);
+});
+
+test("pagehide aborts only the in-flight status GET", async () => {
+    const page = new EventTarget();
+    let querySignal;
+    const observing = reliability.pollDownloadStatus({
+        statusUrl: "/status", window: page,
+        fetchStatus: async (url, init) => {
+            assert.equal(url, "/status");
+            querySignal = init.signal;
+            return new Promise(() => {});
+        },
+    });
+    page.dispatchEvent(new Event("pagehide"));
+    assert.equal((await observing).status, "poll_timeout");
+    assert.equal(querySignal.aborted, true);
 });

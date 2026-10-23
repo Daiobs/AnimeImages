@@ -625,6 +625,15 @@ def execute_provider_health_test(context, item):
             download = download_smoke_details["download"]
             if download["status"] == "success":
                 return record(ProviderHealthTestStatus.SUCCESS)
+            if download["status"] == "not_run" and download.get("error_code") in {
+                "SMOKE_BROWSER_ONLY_RESOURCE", "SMOKE_MEDIA_TYPE_UNSUPPORTED",
+            }:
+                return record(
+                    ProviderHealthTestStatus.SKIPPED,
+                    "DownloadSmokeUnsupported",
+                    download["error_code"],
+                    "所选资源不适用现有服务端前缀探针，未验证用户下载，不计为成功或失败。",
+                )
             return record(
                 ProviderHealthTestStatus.FAILED,
                 download_smoke_details.get("error_type") or "DownloadSmokeFailure",

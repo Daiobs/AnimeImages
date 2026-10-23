@@ -2,20 +2,21 @@
 
 import json
 import re
+import time
 
 from django.contrib.auth.models import AnonymousUser
 from django.http import HttpRequest
 
-from .common import XhsParseError
-from .downloads import probe_media_prefix
+from .common import XhsDownloadError, XhsParseError
+from .downloads import probe_media_prefix, reject_upstream_server_download
 from .registry import parse_media_page
 
 
 SMOKE_PLATFORMS = {
-    "download_smoke_xhs_gallery": ("xiaohongshu", "image"),
-    "download_smoke_xhs_video": ("xiaohongshu", "video"),
-    "download_smoke_douyin": ("douyin", "video"),
-    "download_smoke_bilibili": ("bilibili", "video"),
+    "download_smoke_xhs_gallery": "xiaohongshu",
+    "download_smoke_xhs_video": "xiaohongshu",
+    "download_smoke_douyin": "douyin",
+    "download_smoke_bilibili": "bilibili",
 }
 
 
@@ -30,8 +31,49 @@ def smoke_request(context):
     return request
 
 
-def parse_sample(request, source_url, platform):
+def complete_continuation(pending, request, observation):
+    """Observe the same bounded continuation as the page, without parsing again."""
+    from .douyin_continuation import (
+        DOUYIN_CONTINUATION_MAX_POLLS, DOUYIN_CONTINUATION_POLL_AFTER_MS,
+        DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS, DOUYIN_CONTINUATION_TTL_SECONDS,
+        DouyinContinuationError, issue_douyin_continuation_token, poll_douyin_continuation,
+    )
+    from .rate_limits import get_client_identity
+
+    identity = get_client_identity(request)
+    token = issue_douyin_continuation_token(
+        task_id=pending.task_id, client_identity=identity, platform_key="home",
+    )
+    deadline = time.monotonic() + DOUYIN_CONTINUATION_TTL_SECONDS + DOUYIN_CONTINUATION_RESULT_GRACE_SECONDS
+    delay = DOUYIN_CONTINUATION_POLL_AFTER_MS / 1000
+    observation.update(status="timeout", error_code="DOUYIN_CONTINUATION_TIMEOUT", poll_count=0)
+    for _ in range(DOUYIN_CONTINUATION_MAX_POLLS):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(delay, remaining))
+        try:
+            outcome, _ = poll_douyin_continuation(token, client_identity=identity)
+        except DouyinContinuationError as error:
+            observation.update(status="failed", error_code=error.error_code)
+            break
+        observation["poll_count"] += 1
+        if outcome.status == "continuation_pending":
+            delay = outcome.poll_after_ms / 1000
+            continue
+        observation.update(status=outcome.status, error_code=outcome.error_code)
+        if outcome.status == "success" and outcome.result is not None:
+            return outcome.result
+        break
+    # The page retains its already displayed result on failed/expired continuation.
+    if pending.fallback_result is not None and pending.fallback_result.assets:
+        return pending.fallback_result
+    raise XhsParseError("SMOKE_CONTINUATION_UNAVAILABLE")
+
+
+def parse_sample(request, source_url, platform, continuation):
     from ..views import ultra_hd_is_available
+    from .douyin_continuation import DouyinContinuationPendingError
     from .env_config import runtime_default_int
     from .rate_limits import consume_fixed_window, get_client_identity
 
@@ -40,6 +82,8 @@ def parse_sample(request, source_url, platform):
         from .douyin_ultra_attempts import DouyinUltraAttemptController
         options["prefer_ultra_hd"] = ultra_hd_is_available(request, platform)
         if options["prefer_ultra_hd"]:
+            options["allow_continuation"] = True
+            options["continuation_identity"] = get_client_identity(request)
             options["ultra_attempt_controller"] = DouyinUltraAttemptController(
                 client_identity=get_client_identity(request),
                 limit=runtime_default_int("ULTRA_HD_RATE_LIMIT_PER_MINUTE", 10),
@@ -52,24 +96,30 @@ def parse_sample(request, source_url, platform):
         from .platforms.bilibili_fallback import authorized_services
         if authorized_services(request, source_url, reserve_limits=False):
             options["bilibili_service_authorizer"] = lambda: authorized_services(request, source_url)
-    return parse_media_page(source_url, **options)
+    try:
+        return parse_media_page(source_url, **options)
+    except DouyinContinuationPendingError as pending:
+        return complete_continuation(pending, request, continuation)
 
 
-def default_resource(result, media_type, request):
+def default_resource(result, request):
     """Use the template's default selection and the action's original authority."""
-    from ..templatetags.ytdlp_picker import ytdlp_presentation
+    from ..templatetags.ytdlp_picker import remaining_picker_videos, ytdlp_presentation
+    from ..views import build_result_display_context
     from ..ytdlp_selection_views import _admitted
     from . import service_format_selection, ytdlp_selection
     from .upstream_candidates import resolve_candidate_record
 
-    metadata = result.metadata or {}
-    candidates = metadata.get("upstream_candidates") or []
-    presentation = ytdlp_presentation(candidates, metadata.get("upstream_route"))
-    if media_type == "video" and presentation:
-        group = next((group for group in presentation.get("groups", [presentation])
-                      if group.get("videos")), None)
-        if group:
-            selected = group["selected"]
+    display = build_result_display_context(result, probe_missing_video_sizes=False)
+    presentation = ytdlp_presentation(
+        display["upstream_candidates"], (result.metadata or {}).get("upstream_route"),
+        display["video_items"], display["display_title"], display["base_filename"],
+    )
+    if presentation:
+        for group in presentation.get("groups", [presentation]):
+            selected = group.get("selected")
+            if not selected or not (selected.get("can_download") or selected.get("can_legacy_download")):
+                continue
             record = resolve_candidate_record(selected["resource_token"], selected["candidate_id"])
             provider = record["provider_id"]
             service = provider in service_format_selection.PROVIDERS
@@ -80,12 +130,19 @@ def default_resource(result, media_type, request):
                 item = selection.selected_legacy_descriptor(record)
             else:
                 item = selection.selected_descriptor(record)
-            asset = next((asset for asset in result.assets if asset.url == item["url"]), None)
+            asset = next((asset for asset in result.assets
+                          if item.get("asset_id") and asset.asset_id == item["asset_id"]), None)
+            if asset is None:
+                asset = next((asset for asset in result.assets if asset.url == item["url"]), None)
             return item, asset, selected
-    asset = next((asset for asset in result.assets if asset.media_type == media_type), None)
-    if asset is None:
+    # Match the ordinary result region: remaining video cards, then image cards.
+    items = remaining_picker_videos(presentation, display["video_items"]) + display["image_items"]
+    if not items:
         raise XhsParseError("SMOKE_RESOURCE_MISSING")
-    return {**asset.to_download_item(), "size_bytes": asset.size_bytes}, asset, {}
+    item = items[0]
+    asset = next((asset for asset in result.assets
+                  if asset.url == item["url"] and asset.media_type == item["type"]), None)
+    return {**item, "size_bytes": item.get("size_bytes") or getattr(asset, "size_bytes", 0)}, asset, {}
 
 
 def field_coverage(result, asset, selected):
@@ -111,10 +168,11 @@ def run_download_smoke(context, test_key, source_url):
     )
     from .provider_lab.contracts import safe_error_detail
 
-    platform, media_type = SMOKE_PLATFORMS[test_key]
+    platform = SMOKE_PLATFORMS[test_key]
     request = smoke_request(context)
     details = {
         "schema_version": 1, "platform": platform, "provider": "",
+        "media_type": "", "continuation": {"status": "not_needed", "error_code": "", "poll_count": 0},
         "stage": "parse",
         "fields": {key: None for key in ("title", "cover", "quality", "size")},
         "access_scope": "staff" if getattr(request.user, "is_staff", False) else "anonymous_policy",
@@ -122,16 +180,16 @@ def run_download_smoke(context, test_key, source_url):
                      "bytes_received": 0},
     }
     try:
-        result = parse_sample(request, source_url, platform)
-        if result.platform != platform:
-            raise XhsParseError("SMOKE_PLATFORM_MISMATCH")
+        result = parse_sample(request, source_url, platform, details["continuation"])
         metadata = result.metadata or {}
-        first_asset = next((asset for asset in result.assets if asset.media_type == media_type), None)
-        details["provider"] = str(getattr(first_asset, "provider", "") or metadata.get("selected_provider")
-                                  or metadata.get("source_provider") or "native")
+        first_asset = next(iter(result.assets), None)
+        if first_asset is not None:
+            details["provider"] = str(first_asset.provider or metadata.get("selected_provider")
+                                      or metadata.get("source_provider") or "native")
         details["fields"] = field_coverage(result, first_asset, {})
         details["stage"] = "selection"
-        item, asset, selected = default_resource(result, media_type, request)
+        item, asset, selected = default_resource(result, request)
+        details["media_type"] = item["type"]
         details["provider"] = str(item.get("provider") or getattr(asset, "provider", "")
                                   or metadata.get("selected_provider") or metadata.get("source_provider") or "native")
         details["fields"] = field_coverage(result, asset, selected)
@@ -140,6 +198,14 @@ def run_download_smoke(context, test_key, source_url):
         if guard:
             details["download"]["error_code"] = guard[0]
         else:
+            try:
+                reject_upstream_server_download(item)
+            except XhsDownloadError:
+                details["download"]["error_code"] = "SMOKE_BROWSER_ONLY_RESOURCE"
+                return details
+            if item["type"] not in {"image", "video"}:
+                details["download"]["error_code"] = "SMOKE_MEDIA_TYPE_UNSUPPORTED"
+                return details
             identity, limit_response = check_download_request_limits(request)
             if limit_response is not None:
                 try:
@@ -164,8 +230,13 @@ def run_download_smoke(context, test_key, source_url):
         http_status = getattr(error, "http_status", None)
         if not code and details["stage"] == "parse" and type(http_status) is int and 100 <= http_status <= 599:
             code = f"PARSE_HTTP_{http_status}"
-        if str(error) in {"SMOKE_SELECTION_NOT_ADMITTED", "SMOKE_RESOURCE_MISSING", "SMOKE_PLATFORM_MISMATCH"}:
+        if str(error) in {"SMOKE_SELECTION_NOT_ADMITTED", "SMOKE_RESOURCE_MISSING",
+                          "SMOKE_CONTINUATION_UNAVAILABLE"}:
             code = str(error)
+        if str(error) == "SMOKE_CONTINUATION_UNAVAILABLE":
+            terminal_code = details["continuation"]["error_code"]
+            if re.fullmatch(r"DOUYIN_CONTINUATION_[A-Z_]{1,50}", terminal_code):
+                code = terminal_code
         details["download"]["error_code"] = code or "SMOKE_PARSE_OR_SELECTION_FAILED"
         details["error_type"] = type(error).__name__
     return details

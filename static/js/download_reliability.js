@@ -13,6 +13,7 @@
         RATE_LIMIT_CACHE_ERROR: "下载状态服务暂时不可用，请稍后再试。",
         UPSTREAM_SSL_ERROR: "资源连接异常，请稍后重试。",
         UPSTREAM_CONNECTION_ERROR: "资源暂时无法连接，请稍后重试。",
+        DOWNLOAD_CONNECTION_CLOSED: "下载连接已提前关闭，尚未确认文件传输完成。请查看浏览器下载栏。",
         TIANTIANJIEXI_REFRESH_TIMEOUT: "资源刷新超时，请重新解析后再试。",
         TIANTIANJIEXI_REFRESH_FAILED: "资源已失效，自动刷新失败，请重新解析。",
         TIANTIANJIEXI_RESOURCE_EXPIRED: "资源已失效，请重新解析后再试。",
@@ -32,8 +33,9 @@
         + "请查看浏览器下载栏，请勿重复点击下载。";
     const DEFAULT_STATUS_POLL_INTERVAL_MS = 500;
     const MAX_STATUS_POLL_INTERVAL_MS = 1000;
-    const MAX_STATUS_POLL_DURATION_MS = 15000;
-    const MAX_STATUS_POLL_COUNT = 30;
+    const DEFAULT_START_OBSERVATION_MS = 60000;
+    const STREAM_STATUS_POLL_INTERVAL_MS = 2000;
+    const STATUS_FAILURE_OBSERVATION_MS = 15000;
     const MAX_BUSY_BACKOFF_MS = 4000;
 
     function booleanValue(value) {
@@ -188,7 +190,7 @@
         return "failed";
     }
 
-    function fetchStatusWithTimeout(fetchStatus, statusUrl, timeoutMs) {
+    function fetchStatusWithTimeout(fetchStatus, statusUrl, timeoutMs, signal) {
         const controller = typeof AbortController === "function"
             ? new AbortController()
             : null;
@@ -200,6 +202,7 @@
                 }
                 settled = true;
                 windowClearTimeout(timer);
+                if (signal) signal.removeEventListener("abort", abort);
                 if (error && error.name === "AbortError") reject(error);
                 else resolve(value);
             };
@@ -209,6 +212,12 @@
                     controller.abort();
                 }
             }, timeoutMs);
+            const abort = () => {
+                finish(null);
+                if (controller) controller.abort();
+            };
+            if (signal) signal.addEventListener("abort", abort, {once: true});
+            if (signal && signal.aborted) { abort(); return; }
 
             Promise.resolve(fetchStatus(statusUrl, {
                 method: "GET",
@@ -257,23 +266,18 @@
             250,
             MAX_STATUS_POLL_INTERVAL_MS,
         );
-        const maxDurationMs = boundedInteger(
-            settings.maxDurationMs,
-            MAX_STATUS_POLL_DURATION_MS,
+        const startTimeoutMs = boundedInteger(
+            settings.startTimeoutMs,
+            DEFAULT_START_OBSERVATION_MS,
             50,
-            MAX_STATUS_POLL_DURATION_MS,
-        );
-        const maxPolls = boundedInteger(
-            settings.maxPolls,
-            MAX_STATUS_POLL_COUNT,
-            1,
-            MAX_STATUS_POLL_COUNT,
+            300000,
         );
         const startedAt = now();
         let nextDelayMs = intervalMs;
         let busyCount = 0;
         let busyResult = null;
         let lastStreaming = null;
+        let failureStartedAt = null;
         const unfinishedResult = () => ({
             ...(busyResult || statusPollTimeoutResult()),
             streamStarted: Boolean(lastStreaming),
@@ -281,77 +285,118 @@
             upstreamAttemptCount: lastStreaming ? lastStreaming.upstreamAttemptCount : 0,
         });
 
-        for (let attempt = 0; attempt < maxPolls; attempt += 1) {
-            if (attempt > 0) {
-                const remainingMs = maxDurationMs - (now() - startedAt);
-                if (nextDelayMs >= remainingMs) {
-                    return unfinishedResult();
-                }
-                await wait(nextDelayMs);
+        const doc = settings.document || (typeof document !== "undefined" ? document : null);
+        const page = settings.window || (typeof window !== "undefined" ? window : null);
+        const observer = new AbortController();
+        let pageLeft = false;
+        const leavePage = () => { pageLeft = true; observer.abort(); };
+        const cancel = () => observer.abort();
+        if (page) page.addEventListener("pagehide", leavePage);
+        if (settings.signal) settings.signal.addEventListener("abort", cancel, {once: true});
+        const checkCancelled = () => {
+            if (settings.signal && settings.signal.aborted) {
+                throw Object.assign(new Error("Status observation cancelled"), {name: "AbortError"});
             }
-            if ((now() - startedAt) >= maxDurationMs) {
-                return unfinishedResult();
-            }
+        };
+        const remainingObservationMs = () => Math.min(
+            lastStreaming ? Infinity : startTimeoutMs - (now() - startedAt),
+            failureStartedAt === null ? Infinity : STATUS_FAILURE_OBSERVATION_MS - (now() - failureStartedAt),
+        );
+        const noteFailure = () => { if (failureStartedAt === null) failureStartedAt = now(); };
 
-            const remainingDurationMs = Math.max(
-                1,
-                maxDurationMs - (now() - startedAt),
-            );
-            const observation = await fetchStatusWithTimeout(
-                fetchStatus,
-                statusUrl,
-                Math.min(2000, remainingDurationMs),
-            );
-            if (!observation) {
-                if ((now() - startedAt) >= maxDurationMs) {
-                    return unfinishedResult();
+        try {
+            for (let attempt = 0; ; attempt += 1) {
+                checkCancelled();
+                if (pageLeft) return unfinishedResult();
+                if (doc && doc.hidden) {
+                    await new Promise(resolve => {
+                        const resume = () => {
+                            if (doc.hidden && !observer.signal.aborted) return;
+                            doc.removeEventListener("visibilitychange", resume);
+                            observer.signal.removeEventListener("abort", resume);
+                            resolve();
+                        };
+                        doc.addEventListener("visibilitychange", resume);
+                        observer.signal.addEventListener("abort", resume, {once: true});
+                        resume();
+                    });
+                    checkCancelled();
+                    if (pageLeft) return unfinishedResult();
                 }
-                continue;
-            }
-            const {response, payload} = observation;
+                if (remainingObservationMs() <= 0) return unfinishedResult();
+                if (attempt > 0) {
+                    if (nextDelayMs >= remainingObservationMs()) return unfinishedResult();
+                    await wait(nextDelayMs);
+                    checkCancelled();
+                    if (pageLeft) return unfinishedResult();
+                    if (doc && doc.hidden) continue;
+                    if (remainingObservationMs() <= 0) return unfinishedResult();
+                }
+                const observation = await fetchStatusWithTimeout(
+                    fetchStatus,
+                    statusUrl,
+                    Math.max(1, Math.min(2000, remainingObservationMs())),
+                    observer.signal,
+                );
+                checkCancelled();
+                if (pageLeft) return unfinishedResult();
+                if (!observation) {
+                    noteFailure();
+                    continue;
+                }
+                const {response, payload} = observation;
 
-            if (response.status === 429 || response.status === 503) {
-                busyCount += 1;
-                const retryAfterMs = retryAfterDelayMs(response, epochNow());
-                const fallbackMs = Math.min(MAX_BUSY_BACKOFF_MS, 1000 * (2 ** Math.min(busyCount - 1, 2)));
-                nextDelayMs = Math.max(intervalMs, retryAfterMs === null ? fallbackMs : retryAfterMs);
-                busyResult = statusPollBackoffResult(response.status, nextDelayMs);
-                // Only query status again within this poll's original time/count budget.
-                // Never retry earlier than the server asks or restart a download.
-                continue;
-            }
-            nextDelayMs = intervalMs;
-            busyCount = 0;
-            busyResult = null;
-            // A broken status response is not evidence that the media transfer failed.
-            if (!payload || !DOWNLOAD_STATUS_STATES.includes(String(payload.status || "").toLowerCase())) continue;
+                if (response.status === 429 || response.status === 503) {
+                    noteFailure();
+                    busyCount += 1;
+                    const retryAfterMs = retryAfterDelayMs(response, epochNow());
+                    const fallbackMs = Math.min(MAX_BUSY_BACKOFF_MS, 1000 * (2 ** Math.min(busyCount - 1, 2)));
+                    nextDelayMs = Math.max(intervalMs, retryAfterMs === null ? fallbackMs : retryAfterMs);
+                    busyResult = statusPollBackoffResult(response.status, nextDelayMs);
+                    // Bound status-service outages, not healthy media transfer duration.
+                    continue;
+                }
+                nextDelayMs = lastStreaming ? STREAM_STATUS_POLL_INTERVAL_MS : intervalMs;
+                busyCount = 0;
+                busyResult = null;
+                // A broken status response is not evidence that the media transfer failed.
+                if (!payload || !DOWNLOAD_STATUS_STATES.includes(String(payload.status || "").toLowerCase())) {
+                    noteFailure();
+                    continue;
+                }
+                if (!response.ok && lastStreaming) return unfinishedResult();
+                failureStartedAt = null;
 
-            const parsed = parseDownloadStatusPayload(
-                payload,
-                response.status,
-            );
-            if (parsed.status === "expired" && lastStreaming) return unfinishedResult();
-            if (["failed", "expired"].includes(parsed.status)) {
-                return parsed;
-            }
-            if (isDownloadStartTerminal(parsed.status)) {
-                return parsed;
-            }
-            if (!response.ok) {
-                return {
-                    ...parsed,
-                    ok: false,
-                    status: response.status === 410 ? "expired" : "failed",
-                };
-            }
-            if (parsed.streamStarted || parsed.status === "streaming") {
-                lastStreaming = {...parsed, streamStarted: true};
-                if (typeof settings.onStreaming === "function") {
-                    settings.onStreaming(lastStreaming);
+                const parsed = parseDownloadStatusPayload(
+                    payload,
+                    response.status,
+                );
+                if (parsed.status === "expired" && lastStreaming) return unfinishedResult();
+                if (["failed", "expired"].includes(parsed.status)) {
+                    return parsed;
+                }
+                if (isDownloadStartTerminal(parsed.status)) {
+                    return parsed;
+                }
+                if (!response.ok) {
+                    return {
+                        ...parsed,
+                        ok: false,
+                        status: response.status === 410 ? "expired" : "failed",
+                    };
+                }
+                if (parsed.streamStarted || parsed.status === "streaming") {
+                    lastStreaming = {...parsed, streamStarted: true};
+                    nextDelayMs = STREAM_STATUS_POLL_INTERVAL_MS;
+                    if (typeof settings.onStreaming === "function") {
+                        settings.onStreaming(lastStreaming);
+                    }
                 }
             }
+        } finally {
+            if (page) page.removeEventListener("pagehide", leavePage);
+            if (settings.signal) settings.signal.removeEventListener("abort", cancel);
         }
-        return unfinishedResult();
     }
 
     return Object.freeze({
@@ -359,8 +404,8 @@
         DOWNLOAD_STATUS_POLL_TIMEOUT_MESSAGE,
         DOWNLOAD_STATUS_STATES,
         ERROR_MESSAGES,
-        MAX_STATUS_POLL_COUNT,
-        MAX_STATUS_POLL_DURATION_MS,
+        DEFAULT_START_OBSERVATION_MS,
+        STATUS_FAILURE_OBSERVATION_MS,
         browserDirectFetchSafe,
         downloadStartDisposition,
         errorMessage,

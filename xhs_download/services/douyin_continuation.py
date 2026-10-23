@@ -45,11 +45,13 @@ DOUYIN_CONTINUATION_METADATA_KEYS = frozenset(
         "tiantianjiexi_candidate_count",
         "ultra_retry_after_seconds",
         "title",
+        "description",
         "title_source",
     }
 )
 DOUYIN_CONTINUATION_METADATA_STRING_LIMITS = {
     "title": 200,
+    "description": 2000,
     "title_source": 40,
 }
 
@@ -159,16 +161,38 @@ def safe_continuation_metadata(metadata):
     return safe
 
 
-def serialize_douyin_continuation_result(result):
-    if (
-        not isinstance(result, ParseResult)
-        or result.platform != "douyin"
-        or result.post_type != "video"
-        or not result.video_assets
-    ):
-        raise ValueError("continuation result is not a Douyin video")
+def _encode_with_bounded_description(value, metadata):
+    def encode():
+        return json.dumps(
+            value, ensure_ascii=True, separators=(",", ":"), sort_keys=True,
+        ).encode("utf-8")
 
-    asset = result.video_assets[0]
+    encoded = encode()
+    description = metadata.get("description")
+    if len(encoded) <= DOUYIN_CONTINUATION_MAX_CACHE_BYTES or not isinstance(description, str):
+        return encoded
+    # Keep media/authorization intact; optional text uses only the remaining bytes.
+    metadata.pop("description")
+    encoded = encode()
+    if len(encoded) > DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
+        return encoded
+    low, high, retained = 0, len(description), None
+    while low <= high:
+        middle = (low + high) // 2
+        metadata["description"] = description[:middle]
+        candidate = encode()
+        if len(candidate) <= DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
+            encoded, retained, low = candidate, middle, middle + 1
+        else:
+            high = middle - 1
+    if retained is None:
+        metadata.pop("description", None)
+    else:
+        metadata["description"] = description[:retained]
+    return encoded
+
+
+def _serialize_continuation_asset(asset):
     provider = str(asset.provider or "").strip().lower()
     if provider not in DOUYIN_CONTINUATION_ALLOWED_PROVIDERS:
         raise ValueError("continuation provider is not allowed")
@@ -179,37 +203,59 @@ def serialize_douyin_continuation_result(result):
         asset.url,
         "续查资源 URL 不在允许的抖音媒体域名内",
     )
-    for preview_url in (asset.cover_url, asset.cover_preview_url):
+    for preview_url in (asset.preview_url, asset.cover_url, asset.cover_preview_url):
         if preview_url:
             validate_douyin_media_url(
                 preview_url,
                 "续查封面 URL 不在允许的抖音媒体域名内",
             )
 
+    return {
+        "media_type": asset.media_type,
+        "url": str(asset.url),
+        "preview_url": str(asset.preview_url or ""),
+        "cover_url": str(asset.cover_url or ""),
+        "cover_preview_url": str(asset.cover_preview_url or ""),
+        "filename": str(asset.filename or "")[:200],
+        "ext": str(asset.ext or "")[:16],
+        "quality_label": str(asset.quality_label or "")[:80],
+        "size_bytes": max(0, int(asset.size_bytes or 0)),
+        "size_is_estimate": bool(asset.size_is_estimate),
+        "asset_id": str(asset.asset_id or "")[:160],
+        "provider": provider,
+        "provider_resource_id": str(asset.provider_resource_id or "")[:160],
+        "provider_cache_key": str(asset.provider_cache_key or "")[:240],
+        "provider_manifest_token": str(asset.provider_manifest_token or ""),
+        "source_platform": str(asset.source_platform or ""),
+    }
+
+
+def serialize_douyin_continuation_result(result):
+    if (
+        not isinstance(result, ParseResult)
+        or result.platform != "douyin"
+        or result.post_type not in {"video", "image"}
+        or not result.assets
+    ):
+        raise ValueError("continuation result is not a Douyin media result")
+    assets = result.video_assets[:1] if result.post_type == "video" else result.assets
+    if not assets or any(asset.media_type != result.post_type for asset in assets):
+        raise ValueError("continuation media type is invalid")
+    provider = assets[0].provider
+    if any((asset.provider, asset.provider_resource_id) !=
+           (provider, assets[0].provider_resource_id) for asset in assets):
+        raise ValueError("continuation assets belong to different works")
     payload = {
         "platform": "douyin",
-        "post_type": "video",
+        "post_type": result.post_type,
         "base_filename": clean_filename(result.base_filename)[:200],
-        "asset": {
-            "media_type": "video",
-            "url": str(asset.url),
-            "cover_url": str(asset.cover_url or ""),
-            "cover_preview_url": str(asset.cover_preview_url or ""),
-            "filename": str(asset.filename or "")[:200],
-            "ext": str(asset.ext or "")[:16],
-            "quality_label": str(asset.quality_label or "")[:80],
-            "size_bytes": max(0, int(asset.size_bytes or 0)),
-            "size_is_estimate": bool(asset.size_is_estimate),
-            "asset_id": str(asset.asset_id or "")[:160],
-            "provider": provider,
-            "provider_resource_id": str(asset.provider_resource_id or "")[:160],
-            "provider_cache_key": str(asset.provider_cache_key or "")[:240],
-            "provider_manifest_token": str(
-                asset.provider_manifest_token or ""
-            ),
-        },
         "metadata": safe_continuation_metadata(result.metadata),
     }
+    # Retain the existing single-video cache shape; galleries keep every signed image.
+    if result.post_type == "video":
+        payload["asset"] = _serialize_continuation_asset(assets[0])
+    else:
+        payload["assets"] = [_serialize_continuation_asset(asset) for asset in assets]
     refs = []
     for candidate in (result.metadata or {}).get('upstream_candidates', ()):
         if not isinstance(candidate, dict) or candidate.get('provider_id') != provider:
@@ -220,33 +266,21 @@ def serialize_douyin_continuation_result(result):
         refs.append(ref)
     if refs:
         payload['format_refs'] = refs
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
+    encoded = _encode_with_bounded_description(payload, payload["metadata"])
     if len(encoded) > DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
         raise ValueError("continuation result exceeds cache limit")
     return payload
 
 
-def deserialize_douyin_continuation_result(payload):
-    if not isinstance(payload, dict):
-        raise ValueError("continuation result is missing")
-    asset_data = payload.get("asset")
-    if (
-        payload.get("platform") != "douyin"
-        or payload.get("post_type") != "video"
-        or not isinstance(asset_data, dict)
-    ):
-        raise ValueError("continuation result is invalid")
-
+def _deserialize_continuation_asset(asset_data, media_type):
+    if not isinstance(asset_data, dict) or asset_data.get("media_type") != media_type:
+        raise ValueError("continuation media type is invalid")
     provider = str(asset_data.get("provider") or "").strip().lower()
     if provider not in DOUYIN_CONTINUATION_ALLOWED_PROVIDERS:
         raise ValueError("continuation provider is invalid")
     item = {
-        "type": "video",
+        "type": media_type,
+        "source_platform": str(asset_data.get("source_platform") or ""),
         "url": str(asset_data.get("url") or ""),
         "asset_id": str(asset_data.get("asset_id") or ""),
         "provider": provider,
@@ -260,11 +294,16 @@ def deserialize_douyin_continuation_result(payload):
     }
     if not provider_manifest_is_valid(item):
         raise ValueError("continuation provider manifest is invalid")
+    if media_type == "image":
+        from .downloads import tiantianjiexi_douyin_manifest_is_allowed
+        if not tiantianjiexi_douyin_manifest_is_allowed(item):
+            raise ValueError("continuation image authorization is invalid or expired")
     validate_douyin_media_url(
         item["url"],
         "续查资源 URL 不在允许的抖音媒体域名内",
     )
     for preview_url in (
+        asset_data.get("preview_url"),
         asset_data.get("cover_url"),
         asset_data.get("cover_preview_url"),
     ):
@@ -274,10 +313,11 @@ def deserialize_douyin_continuation_result(payload):
                 "续查封面 URL 不在允许的抖音媒体域名内",
             )
 
-    asset = MediaAsset(
-        media_type="video",
+    return MediaAsset(
+        media_type=media_type,
         url=item["url"],
         platform="douyin",
+        preview_url=str(asset_data.get("preview_url") or ""),
         cover_url=str(asset_data.get("cover_url") or ""),
         cover_preview_url=str(asset_data.get("cover_preview_url") or ""),
         filename=str(asset_data.get("filename") or "")[:200],
@@ -291,7 +331,27 @@ def deserialize_douyin_continuation_result(payload):
         provider_resource_id=item["provider_resource_id"],
         provider_cache_key=item["provider_cache_key"],
         provider_manifest_token=item["provider_manifest_token"],
+        source_platform=item["source_platform"],
     )
+
+
+def deserialize_douyin_continuation_result(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("continuation result is missing")
+    post_type = payload.get("post_type")
+    if payload.get("platform") != "douyin" or post_type not in {"video", "image"}:
+        raise ValueError("continuation result is invalid")
+    if len(json.dumps(payload, ensure_ascii=True, separators=(",", ":"))) > DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
+        raise ValueError("continuation result exceeds cache limit")
+    asset_data = [payload.get("asset")] if post_type == "video" else payload.get("assets")
+    if not isinstance(asset_data, list) or not asset_data:
+        raise ValueError("continuation assets are missing")
+    assets = tuple(_deserialize_continuation_asset(item, post_type) for item in asset_data)
+    provider = assets[0].provider
+    resource_id = assets[0].provider_resource_id
+    if any((asset.provider, asset.provider_resource_id) != (provider, resource_id)
+           for asset in assets):
+        raise ValueError("continuation assets belong to different works")
     metadata = safe_continuation_metadata(payload.get('metadata'))
     from .upstream_candidates import resolve_candidate_record
     candidates = []
@@ -303,7 +363,7 @@ def deserialize_douyin_continuation_result(payload):
                 # resolve the same token again with public-address validation.
                 record = resolve_candidate_record(ref['resource_token'], ref['candidate_id'], display_only=True)
                 if (record['provider_id'] == provider
-                        and record.get('dedicated_resource_id') == item['provider_resource_id']):
+                        and record.get('dedicated_resource_id') == resource_id):
                     candidates.append({**record['public'], 'resource_token': ref['resource_token']})
             except (KeyError, TypeError, ValueError, XhsParseError):
                 continue  # Expired references never trigger parsing or renewal.
@@ -318,9 +378,9 @@ def deserialize_douyin_continuation_result(payload):
         metadata['candidate_retained_count'] = len(candidates)
     return ParseResult(
         platform="douyin",
-        post_type="video",
+        post_type=post_type,
         base_filename=clean_filename(payload.get("base_filename"))[:200],
-        assets=(asset,),
+        assets=assets,
         metadata=metadata,
     )
 
@@ -473,12 +533,9 @@ class DouyinContinuationCoordinator:
         if not self._available or not self._active:
             return False
         record = self._record()
-        encoded = json.dumps(
-            record,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
+        encoded = _encode_with_bounded_description(
+            record, record.get("result", {}).get("metadata", {}),
+        )
         if len(encoded) > DOUYIN_CONTINUATION_MAX_CACHE_BYTES:
             self._available = False
             return False
@@ -727,7 +784,7 @@ def poll_douyin_continuation(token, *, client_identity):
         return (
             DouyinContinuationOutcome(
                 status="timeout",
-                message="已返回普通清晰度，超高清解析本次未完成。",
+                message="超高清解析本次未完成，请稍后重试。",
                 error_code="DOUYIN_CONTINUATION_POLL_LIMIT",
             ),
             platform_key,
@@ -745,7 +802,7 @@ def poll_douyin_continuation(token, *, client_identity):
         return (
             DouyinContinuationOutcome(
                 status="timeout",
-                message="已返回普通清晰度，超高清解析本次未完成。",
+                message="超高清解析本次未完成，请稍后重试。",
                 error_code="DOUYIN_CONTINUATION_NOT_FOUND",
             ),
             platform_key,
@@ -806,7 +863,7 @@ def poll_douyin_continuation(token, *, client_identity):
         return (
             DouyinContinuationOutcome(
                 status="failed",
-                message="已返回普通清晰度，超高清解析本次未完成。",
+                message="超高清解析本次未完成，请稍后重试。",
                 error_code="DOUYIN_CONTINUATION_FAILED",
                 retry_after_seconds=retry_after,
             ),
@@ -823,7 +880,7 @@ def poll_douyin_continuation(token, *, client_identity):
         return (
             DouyinContinuationOutcome(
                 status="timeout",
-                message="已返回普通清晰度，超高清解析本次未完成。",
+                message="超高清解析本次未完成，请稍后重试。",
                 error_code="DOUYIN_CONTINUATION_TIMEOUT",
                 retry_after_seconds=retry_after,
             ),

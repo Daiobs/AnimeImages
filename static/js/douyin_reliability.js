@@ -101,7 +101,9 @@
                 continuation_error_code: String(
                     outcome.error_code || "",
                 ),
-                continuation_message: String(outcome.message || ""),
+                continuation_message: outcomeStatus === "unchanged"
+                    ? String(outcome.message || "已保留当前资源。")
+                    : `已保留当前资源。${String(outcome.message || "超高清解析本次未完成。")}`,
                 retry_after_seconds: normalizeRetryAfterSeconds(
                     outcome.retry_after_seconds,
                 ),
@@ -171,7 +173,7 @@
         return {
             status: "timeout",
             error_code: "DOUYIN_CONTINUATION_CLIENT_LIMIT",
-            message: "已返回普通清晰度，超高清解析本次未完成。",
+            message: "超高清解析本次未完成，请稍后重试。",
         };
     }
 

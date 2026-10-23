@@ -39,7 +39,7 @@ class BrowserMessageChannel {
         this.port2 = {postMessage: data => queueMicrotask(() => this.port1.onmessage?.({data}))};
     }
 }
-function browser(fetchImpl, userAgent = "contract-boundary") {
+function browser(fetchImpl, userAgent = "contract-boundary", clock = null) {
     const doc = new DomNode("document");
     doc.body = new DomNode("body"); doc.append(doc.body);
     doc.cookie = "csrftoken=contract";
@@ -48,10 +48,15 @@ function browser(fetchImpl, userAgent = "contract-boundary") {
     const win = {
         document: doc, navigator: {userAgent}, fetch: fetchImpl, URL, AbortController,
         location: {origin: "https://product.example", href: "https://product.example/"},
-        localStorage: {getItem: () => "{}"}, addEventListener() {},
-        setTimeout, clearTimeout,
+        localStorage: {getItem: () => "{}"}, addEventListener() {}, removeEventListener() {},
+        setTimeout: clock ? (callback, delay) => {
+            clock.now += delay;
+            return setImmediate(callback);
+        } : setTimeout,
+        clearTimeout,
     };
     const context = vm.createContext({
+        Date: clock ? class extends Date { static now() { return clock.now; } } : Date,
         window: win, self: win, document: doc, navigator: win.navigator, location: win.location,
         fetch: fetchImpl, URL, Blob, Response, Headers, ReadableStream, AbortController,
         DOMException, MessageChannel: BrowserMessageChannel, crypto: webcrypto, performance,
@@ -63,6 +68,42 @@ function browser(fetchImpl, userAgent = "contract-boundary") {
     });
     return {doc, win, context, load(name) { vm.runInContext(source(name), context, {filename: name}); }};
 }
+
+test("INV04 original attachment button observes a three-minute transfer without another handoff", async () => {
+    const clock = {now: 0}, calls = [];
+    const app = browser(async (url, options) => {
+        calls.push(url);
+        if (url === "/download") {
+            assert.equal(JSON.parse(options.body).route_only, true);
+            return json({status: "routed", route_type: "proxy", download_strategy: "server_single_attachment"});
+        }
+        if (url === "/prepare") return json({ok: true, status: "issued", expires_in_seconds: 60,
+            download_url: "/media/download-stream/ticket/", status_url: "/status", poll_after_ms: 500});
+        assert.equal(url, "/status");
+        return json({ok: true, stream_started: clock.now >= 20000,
+            status: clock.now < 20000 ? "connecting" : clock.now < 180000 ? "streaming" : "completed"});
+    }, "Chrome/131.0.0.0", clock);
+    const page = new DomNode("main", {class: "xhs-download-page", "data-download-url": "/download",
+        "data-download-prepare-url": "/prepare", "data-base-filename": "Contract short title"});
+    const region = new DomNode("section", {id: "parse-results-region"});
+    const card = new DomNode("article", {class: "asset-card", "data-type": "video",
+        "data-url": "https://media.bilivideo.com/resource"});
+    const button = new DomNode("button", {id: "download-btn"});
+    const status = new DomNode("p", {id: "status"});
+    region.append(card, button, status); page.append(region); app.doc.body.append(page);
+    app.load("download_reliability.js"); app.load("xhs_download.js");
+    app.doc.listeners.DOMContentLoaded();
+    await region.listeners.click({target: card, preventDefault() {}});
+    await region.listeners.click({target: button, preventDefault() {}});
+    for (let step = 0; step < 300 && !/传输已结束/.test(status.textContent); step += 1) await tick();
+    assert.ok(clock.now >= 180000, JSON.stringify({clock, calls, status: status.textContent}));
+    assert.equal(app.doc.getElementById("xhs-server-download-frame").src, "/media/download-stream/ticket/");
+    assert.equal(calls.filter(url => url === "/download").length, 1);
+    assert.equal(calls.filter(url => url === "/prepare").length, 1);
+    assert.ok(calls.filter(url => url === "/status").length > 30);
+    assert.match(status.textContent, /服务器传输已结束.*确认文件保存结果/);
+    assert.doesNotMatch(status.textContent, /已保存|保存成功/);
+});
 function selectionItem(quality) {
     const provider = "tiantianjiexi", resource = "7669858827638845160";
     return {

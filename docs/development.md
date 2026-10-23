@@ -134,6 +134,23 @@ Real sample checks require a separately scoped research or browser acceptance ta
 
 Generic diagnostics redact Provider CDN URLs by default. Use URL-revealing debug flags only in local manual checks and never paste those results into a PR.
 
+### Browser Download Acceptance
+
+Arm the browser tool's download-completion listener **before** clicking the normal
+download button (for example, `waitForEvent("download")`), then verify the returned
+file path, bytes and media tracks. Do not replace the button with a direct media
+request. An automation-layer `ERR_BLOCKED_BY_CLIENT` / `blockedReason=inspector`
+is not evidence of a Provider failure; retain that failed attempt and correct the
+test setup without adding a product retry, changing transport or bypassing browser
+security. A second attempt must be explicit, not an automatic replay.
+
+For server attachments, the page observes the application's transfer status, not
+the browser download manager or final disk write. Launch authorization stays
+short-lived and one-use. Actual transfer progress retains the separate read-only
+status; status reads do not renew it. Large files are not subject to the old
+15-second observation cutoff. Server EOF and browser file completion remain
+separate evidence; status-service failure must not restart or cancel the media.
+
 ## Local Artifacts
 
 Do not commit:
