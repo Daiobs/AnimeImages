@@ -122,7 +122,9 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                 return response
             response.headers["Content-Type"] = "application/json"
             response._content = json.dumps({"code": 200, "data": {
-                "title": self.service_title, "description": self.service_description,
+                "title": self.service_title,
+                **({"description": self.service_description}
+                   if self.service_description is not None else {}),
                 "author": "Service author",
                 "videos": [{"streams": [{"url": self.service_media,
                     "qualityLabel": "1080P", "sizeInBytes": 12345}]}],
@@ -439,6 +441,72 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                         self.assertEqual(again.json()["item"][key], item[key])
                     self.assertEqual(len(self.provider_calls), before + 1)
 
+    def test_inv06_pipe_caption_service_page_and_action_stay_clean_on_payload_cache_hit(self):
+        title = "那些再也拍不出第二张的人生照片……"
+        topics = ["引导是出片的关键", "来拍照了", "一分钟拍照灵感", "小红书影像激励计划",
+                  "再也拍不出第二次的人生照", "比美照更有杀伤力的是", "给摄影一分钟"]
+        self.service_title = (
+            f"{title} |||{title} @摄影薯 #引导是出片的关键  #来拍照了 \n"
+            "#一分钟拍照灵感 \n#小红书影像激励计划 \n#再也拍不出第二次的人生照 \n"
+            "#比美照更有杀伤力的是 \n#给摄影一分钟  "
+        )
+        self.service_description = None
+        for entry in ("results", "batch"):
+            for media in (SERVICE_VIDEO, SERVICE_WEBM):
+                with self.subTest(entry=entry, media=media):
+                    cache.clear()
+                    self.service_media = media
+                    before = len(self.provider_calls)
+                    pages = len(self.page_calls)
+                    first_selection = None
+                    for cached in (False, True):
+                        response, context = self.parse(entry)
+                        self.assertEqual(len(self.provider_calls), before + 1)
+                        self.assertFalse(context.get("image_items"))
+                        soup = BeautifulSoup(response.content, "html.parser")
+                        with self.subTest(cached=cached, check="heading"):
+                            self.assert_service_heading(response, context, entry, title)
+                        with self.subTest(cached=cached, check="caption_details"):
+                            details = soup.select_one("details[data-result-caption]")
+                            self.assertIsNotNone(details)
+                            self.assertFalse(details.has_attr("hidden"))
+                            self.assertIsNone(details.find_parent("details", class_="ytdlp-technical"))
+                            self.assertEqual(details.select_one("summary").get_text(strip=True), "作品描述与话题")
+                            body = details.select_one(".result-caption-description")
+                            self.assertIsNotNone(body)
+                            self.assertIn("@摄影薯", body.get_text())
+                            self.assertEqual([node.get_text(strip=True) for node in details.select("li")],
+                                             ["#" + topic for topic in topics])
+                        radios = soup.select("[data-picker-radio]")
+                        self.assertEqual(len(radios), 1)
+                        radio = radios[0]
+                        candidate = next(row for row in context["upstream_candidates"]
+                                         if row["candidate_id"] == radio["value"])
+                        payload = {"candidate_id": radio["value"], "resource_token": radio["data-token"],
+                                   "action": "download"}
+                        action = self.client.post(reverse("service_selected_format"), payload,
+                                                  content_type="application/json")
+                        self.assertEqual(action.status_code, 200, action.content)
+                        item = action.json()["item"]
+                        with self.subTest(cached=cached, check="filename"):
+                            suffix = candidate.get("format_id") or candidate["candidate_id"]
+                            self.assertEqual(item["filename"], f"{title}_{suffix}.{media.rsplit('.', 1)[1]}")
+                        self.assertEqual(item["url"], media)
+                        self.assertEqual(item["candidate_id"], candidate["candidate_id"])
+                        self.assertEqual(item["selected_format_id"], candidate.get("format_id") or "")
+                        self.assertEqual(item["download_strategy"], "browser_streaming")
+                        if first_selection is None:
+                            first_selection = (payload, item)
+                        # Reusing cached payloads must not renew an already issued selection.
+                        old_payload, old_item = first_selection
+                        again = self.client.post(reverse("service_selected_format"), old_payload,
+                                                 content_type="application/json")
+                        self.assertEqual(again.status_code, 200, again.content)
+                        for key in ("filename", "url", "candidate_id", "selected_format_id", "selection_expires_at"):
+                            self.assertEqual(again.json()["item"][key], old_item[key])
+                        self.assertEqual(len(self.provider_calls), before + 1)
+                    self.assertEqual(len(self.page_calls), pages + 2)
+
     def test_inv06_numeric_topic_caption_reaches_native_page_and_download_filename(self):
         self.forbid_service()
         title = "简单几分钟调出高光比通透感"
@@ -483,7 +551,22 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                         self.service_media = media
                         response, context = self.parse(entry)
                         self.assert_service_heading(response, context, entry, expected)
-                        radio = BeautifulSoup(response.content, "html.parser").select_one("[data-picker-radio]")
+                        soup = BeautifulSoup(response.content, "html.parser")
+                        if raw_title == explicit:
+                            details = soup.select_one("details[data-result-caption]")
+                            topic_labels = [node.get_text(strip=True)
+                                            for node in soup.select(".result-caption-topics li")]
+                            self.assertNotIn("#1", topic_labels)
+                            if description:
+                                self.assertIsNotNone(details)
+                                self.assertEqual(topic_labels, ["#release"])
+                                detail_body = details.select_one(".result-caption-description")
+                                self.assertIsNotNone(detail_body)
+                                self.assertIn("Independent body", detail_body.get_text())
+                            else:
+                                self.assertIsNone(details)
+                                self.assertEqual(topic_labels, [])
+                        radio = soup.select_one("[data-picker-radio]")
                         candidate = next(row for row in context["upstream_candidates"]
                                          if row["candidate_id"] == radio["value"])
                         payload = {"candidate_id": radio["value"], "resource_token": radio["data-token"],
