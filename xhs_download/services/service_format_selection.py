@@ -313,15 +313,20 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
         return result
     text_metadata = work_caption_metadata(raw_title, raw_description)
     if provider in DOUYIN_PROVIDERS:
-        # Dedicated Douyin consumers already project these original fields.
-        text_metadata.update({key: result.metadata[key] for key in ('title', 'description')
-                              if key in result.metadata})
+        # Dedicated consumers project the original pair. A derived description
+        # beside a raw caption title would falsely look like independent fields.
+        text_metadata['title'] = result.metadata.get('title', raw_title)
+        text_metadata['description'] = result.metadata.get('description', raw_description)
     metadata = {**result.metadata, **text_metadata,
                 'upstream_candidates': candidates,
                 'candidate_retained_count': len(candidates), 'retained_count': len(candidates)}
     if isinstance(metadata.get('description'), str):
         metadata['description'] = metadata['description'][:2000]
-    return replace(result, metadata=metadata)
+    base_filename = result.base_filename
+    if result.platform == 'third_party' and base_filename == provider and presentation['title']:
+        # Candidate-only service execution starts with the provider as a placeholder.
+        base_filename = picker.clean_filename(presentation['title'])[:180] or base_filename
+    return replace(result, base_filename=base_filename, metadata=metadata)
 
 
 def selected_link_descriptor(record):

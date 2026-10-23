@@ -273,3 +273,11 @@ class NativeSharedWorkTitleTests(SimpleTestCase):
         self.assertEqual(result.metadata['description'], description[:2000])
         self.assertEqual(result.metadata['caption'], description[:2000])
         self.assertEqual(result.metadata['topics'], ['话题' + str(index) for index in range(16)])
+
+    def test_native_topics_only_body_survives_without_a_derived_title(self):
+        result = self.parse_note('', '#摄影 #日常')
+        self.assertTrue(result.video_assets)
+        self.assertNotIn('title', result.metadata)
+        self.assertEqual(result.metadata['description'], '#摄影 #日常')
+        self.assertEqual(result.metadata['caption'], '#摄影 #日常')
+        self.assertEqual(result.metadata['topics'], ['摄影', '日常'])

@@ -175,12 +175,22 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
         self.assertFalse(BeautifulSoup(response.content, "html.parser").select("[data-picker-radio]"))
         self.assertNotIn(PROMO_IMAGE, response.content.decode())
 
+    def assert_service_heading(self, response, context, entry, title):
+        soup = BeautifulSoup(response.content, "html.parser")
+        heading = soup.select_one(".batch-result-title" if entry == "batch" else ".result-title")
+        self.assertIsNotNone(heading)
+        self.assertEqual(" ".join(heading.get_text().split()),
+                         title if entry == "batch" else "视频笔记 " + title)
+        self.assertEqual(context["base_filename"], title)
+        self.assertNotIn("tiantianjiexi_generic", heading.get_text())
+
     def assert_clean_service(self, response, context, entry):
         self.assertFalse(context.get("image_items"))
         self.assertFalse(context.get("video_items"))
         candidates = context["upstream_candidates"]
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["work_label"], self.service_title)
+        self.assert_service_heading(response, context, entry, self.service_title)
         radios = BeautifulSoup(response.content, "html.parser").select("[data-picker-radio]")
         self.assertEqual(len(radios), 1)
         for polluted in (SHELL_TITLE, SHELL_AUTHOR, PROMO_IMAGE):
@@ -359,6 +369,7 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                     before = len(self.provider_calls)
                     response, context = self.parse(entry)
                     self.assertFalse(context.get("image_items"))
+                    self.assert_service_heading(response, context, entry, WORK_TITLE)
                     radio = BeautifulSoup(response.content, "html.parser").select_one("[data-picker-radio]")
                     self.assertIsNotNone(radio)
                     candidate = next(row for row in context["upstream_candidates"]

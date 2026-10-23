@@ -484,7 +484,8 @@ class XiaohongshuAdapter(BasePlatformAdapter):
         caption_metadata = (
             {"description": structured_state.description, "caption": structured_state.caption,
              "topics": list(structured_state.topics)}
-            if structured_title else work_caption_metadata(meta_title_raw or dom_title_raw)
+            if structured_state.current_note_found and structured_state.caption
+            else work_caption_metadata(meta_title_raw or dom_title_raw)
         )
         title_source = (
             "structured" if structured_title else "meta" if meta_title else "dom" if dom_title else ""

@@ -1477,16 +1477,21 @@ class BatchParseAdapterDeadlineTests(SimpleTestCase):
 
     @patch("xhs_download.services.platforms.xiaohongshu.request_get_with_retry")
     def test_xiaohongshu_adapter_caps_request_to_item_deadline(self, mock_get):
+        note_url = "https://www.xiaohongshu.com/explore/0123456789abcdef01234567"
         response = Mock(
-            text="<html><body></body></html>",
-            url="https://www.xiaohongshu.com/explore/example",
+            text=(
+                f'<html><head><link rel="canonical" href="{note_url}">'
+                '<meta property="og:image" content="https://sns-img.xhscdn.com/spectrum/fixture-note!webp">'
+                '</head><body></body></html>'
+            ),
+            url=note_url,
         )
         response.close = Mock()
         mock_get.return_value = response
         deadline = monotonic() + 0.5
 
         XiaohongshuAdapter().parse(
-            "https://www.xiaohongshu.com/explore/example",
+            note_url,
             timeout_seconds=5,
             deadline_monotonic=deadline,
         )
