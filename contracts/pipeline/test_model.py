@@ -7,8 +7,11 @@ from xhs_download.services.pipeline import (
     Item,
     Kind,
     Tracks,
+    Variant,
     Work,
+    fact_gaps,
     field_coverage,
+    height_from_label,
     validate_work,
 )
 
@@ -114,3 +117,52 @@ class FieldCoverageContract(TestCase):
         self.assertEqual(field_coverage(work), {
             "title": "provider", "cover": None, "quality": "provider", "size": "enrichment",
         })
+
+
+class UnknownTracksContract(TestCase):
+    """D-01: tracks nobody stated stay unknown and are delivered as complete files."""
+
+    def test_tracks_default_to_unknown(self):
+        self.assertIs(Variant(variant_id="v", url="https://media.example.test/v").tracks,
+                      Tracks.UNKNOWN)
+
+    def test_unknown_tracks_can_be_the_default_and_rank_by_quality(self):
+        unknown = variant("u", height=1080, tracks=Tracks.UNKNOWN)
+        complete = variant("av", height=720, tracks=Tracks.AV)
+        self.assertEqual(item(complete, unknown).default_variant.variant_id, "u")
+        only_unknown = video_work(variants=(variant("u", tracks=Tracks.UNKNOWN),))
+        self.assertEqual(validate_work(only_unknown), ())
+        self.assertEqual(only_unknown.items[0].default_variant.variant_id, "u")
+
+    def test_fact_gaps_count_unknown_tracks_of_video_and_audio_only(self):
+        unknown = variant("u", tracks=Tracks.UNKNOWN)
+        cases = [
+            ("unknown video", video_work(variants=(unknown,)), ("TRACKS_UNKNOWN",)),
+            ("complete video", video_work(variants=(variant("av", tracks=Tracks.AV),)), ()),
+            ("split video", video_work(variants=(
+                variant("v", tracks=Tracks.VIDEO_ONLY, merge_with="a"),
+                variant("a", tracks=Tracks.AUDIO_ONLY, container="m4a"))), ()),
+            ("unknown audio", Work(source_url=SOURCE, work_id="w",
+                                   items=(item(unknown, kind=Kind.AUDIO),)), ("TRACKS_UNKNOWN",)),
+            ("image", Work(source_url=SOURCE, work_id="w",
+                           items=(item(variant("p", container="jpg", tracks=Tracks.UNKNOWN),
+                                       kind=Kind.IMAGE),)), ()),
+        ]
+        for name, work, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(fact_gaps(work), expected)
+
+
+class ResolutionLabelContract(TestCase):
+    """D-01: an explicit P label from the Provider may set height; nothing else may."""
+
+    def test_explicit_p_labels_give_their_number(self):
+        for label, height in (("1080P", 1080), ("2160P", 2160), ("1080P+", 1080),
+                              ("720p60", 720), (" 540P", 540), ("360p", 360)):
+            with self.subTest(label=label):
+                self.assertEqual(height_from_label(label), height)
+
+    def test_other_labels_give_no_height(self):
+        for label in ("原画", "高清", "4K", "1080", "HD", "1080Pro", "100P", "9999P", "", None):
+            with self.subTest(label=label):
+                self.assertIsNone(height_from_label(label))
