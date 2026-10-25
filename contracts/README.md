@@ -108,6 +108,36 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
 - INV-09 checks actual feedback quotas and public Bilibili gray admission, including
   spoofed XFF, X-Real-IP, Forwarded and User-Agent inputs.
 
+## Unified Pipeline
+
+`contracts/pipeline/` pins the kernel in `xhs_download/services/pipeline/` to the
+[unified pipeline contract](../docs/architecture/unified-pipeline.md), confirmed by
+Human on 2026-10-25. No request path uses the kernel yet, so these tests enter at
+the kernel's public API rather than public HTTP. Fake Providers return unified
+results or failures, and a virtual clock replaces real time; no platform code,
+network or database is involved. When a platform switches over, its HTTP contracts
+must reach the kernel instead of an old path.
+
+- Routing: both policies, admin order, the five failure kinds, unmappable results,
+  and bounded cooldown that expires without admin action.
+- Model: default variant, placeholders, split tracks, field coverage.
+- Delivery: one case per table rule, plus Provider, platform and resource-ID
+  counter-cases that must not change the outcome.
+- Filenames: short title, numbering, live-photo pairs, real extensions.
+- Boundary: no platform or Provider names in the kernel; no imports beyond the
+  standard library.
+
+Countercheck base: `834d33167445476025b75ae22950fc01e86fa007`. Each of these
+single-rule kernel mutations fails at least one pipeline contract: height ranked
+above original; delivery reading the resource ID; floor shown before the budget;
+late result replacing without an upgrade; `not_found` continuing the chain; the
+adapter's platform kept; unbounded cooldown; no cooldown after `unavailable`;
+server fallback ignoring the admin switch; server-side archive for readable
+images; description used as the name; `.bin` fallback; live-photo pairs numbered
+apart; placeholder quality accepted; a leftover floor setting dropping a
+`first_success` Provider. Run them with `PYTHONDONTWRITEBYTECODE=1`:
+a same-size edit restored within a second can otherwise reuse stale bytecode.
+
 ## Recorded Counterchecks
 
 Product mutations were made only in an isolated `git archive` copy with no `.env`.
