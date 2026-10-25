@@ -17,7 +17,7 @@ from django.test import (
     override_settings,
 )
 
-from .models import DownloadRequestLog, ObservabilityStatus
+from .models import DownloadAuditEvent, ObservabilityStatus
 from .services.assets import MediaAsset, ParseResult
 from .services.batch_parse.results import build_batch_result_row
 from .services.candidates import MediaCandidate
@@ -2890,7 +2890,7 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
             self.assertEqual(response.status_code, 200)
             mock_fetch.assert_called_once()
             mock_release.assert_not_called()
-            handed_off = DownloadRequestLog.objects.get(download_type="single_stream")
+            handed_off = DownloadAuditEvent.objects.get(download_type="single_stream")
             self.assertEqual(handed_off.phase, "handed_off")
             self.assertEqual(handed_off.status, "pending")
             self.assertEqual(handed_off.actual_bytes, 0)
@@ -2928,7 +2928,7 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
         self.assertTrue(completed.stream_started)
         self.assertFalse(completed.recovered)
         self.assertEqual(completed.upstream_attempt_count, 1)
-        request_log = DownloadRequestLog.objects.get(
+        request_log = DownloadAuditEvent.objects.get(
             download_type="single_stream", phase="transfer_completed"
         )
         self.assertEqual(request_log.status, ObservabilityStatus.SUCCESS)
@@ -2958,7 +2958,7 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
         )
         self.assertEqual(failed.status, "failed")
         self.assertFalse(failed.stream_started)
-        request_log = DownloadRequestLog.objects.get(
+        request_log = DownloadAuditEvent.objects.get(
             download_type="single_stream", phase="cancelled"
         )
         self.assertEqual(request_log.status, "cancelled")
@@ -3056,7 +3056,7 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
         )
         self.assertEqual(failed.status, "failed")
         self.assertTrue(failed.stream_started)
-        request_log = DownloadRequestLog.objects.get(
+        request_log = DownloadAuditEvent.objects.get(
             download_type="single_stream", phase="cancelled"
         )
         self.assertEqual(request_log.status, "cancelled")
@@ -3407,7 +3407,7 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
         self.assertEqual(failed.status, "failed")
         self.assertEqual(failed.error_code, "UPSTREAM_CONNECTION_ERROR")
         self.assertTrue(failed.stream_started)
-        request_log = DownloadRequestLog.objects.get(
+        request_log = DownloadAuditEvent.objects.get(
             download_type="single_stream", phase="failed"
         )
         self.assertEqual(request_log.status, ObservabilityStatus.FAILED)

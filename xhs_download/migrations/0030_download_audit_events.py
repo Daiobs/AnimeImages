@@ -13,22 +13,22 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='downloadrequestlog',
             name='attempt_id',
-            field=models.CharField(blank=True, db_index=True, default='', max_length=64),
+            field=models.CharField(blank=True, db_default='', db_index=True, default='', max_length=64),
         ),
         migrations.AddField(
             model_name='downloadrequestlog',
             name='evidence_source',
-            field=models.CharField(blank=True, choices=[('server_observed', '服务端观测'), ('client_observed', '客户端上报（非落盘确认）')], db_index=True, default='', max_length=24),
+            field=models.CharField(blank=True, choices=[('server_observed', '服务端观测'), ('client_observed', '客户端上报（非落盘确认）')], db_default='', db_index=True, default='', max_length=24),
         ),
         migrations.AddField(
             model_name='downloadrequestlog',
             name='phase',
-            field=models.CharField(blank=True, choices=[('prepared', '准备就绪'), ('handed_off', '已移交'), ('transfer_started', '传输开始'), ('transfer_completed', '传输完成（非磁盘保存）'), ('failed', '失败'), ('cancelled', '取消'), ('unknown', '结果未知')], db_index=True, default='', max_length=24),
+            field=models.CharField(blank=True, choices=[('prepared', '准备就绪'), ('handed_off', '已移交'), ('transfer_started', '传输开始'), ('transfer_completed', '传输完成（非磁盘保存）'), ('failed', '失败'), ('cancelled', '取消'), ('unknown', '结果未知')], db_default='', db_index=True, default='', max_length=24),
         ),
         migrations.AddField(
             model_name='downloadrequestlog',
             name='transport',
-            field=models.CharField(blank=True, choices=[('browser_native', '原生直链'), ('browser_streaming', 'SW 流式'), ('browser_blob', '浏览器 Blob'), ('server_attachment', '服务端转交'), ('server_zip', '服务端 ZIP'), ('server_merge', '服务端合流')], db_index=True, default='', max_length=32),
+            field=models.CharField(blank=True, choices=[('browser_native', '原生直链'), ('browser_streaming', 'SW 流式'), ('browser_blob', '浏览器 Blob'), ('server_attachment', '服务端转交'), ('server_zip', '服务端 ZIP'), ('server_merge', '服务端合流')], db_default='', db_index=True, default='', max_length=32),
         ),
         migrations.AlterField(
             model_name='downloadrequestlog',

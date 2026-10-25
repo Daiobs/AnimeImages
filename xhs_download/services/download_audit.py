@@ -10,10 +10,10 @@ from django.urls import reverse
 from django.utils.crypto import constant_time_compare
 
 from ..models import (
+    DownloadAuditEvent,
     DownloadAuditEvidence,
     DownloadAuditPhase,
     DownloadAuditTransport,
-    DownloadRequestLog,
 )
 from .observability import record_download_request_log, request_privacy_fields
 
@@ -94,7 +94,7 @@ def issue_browser_download_audit(request, item, *, prepared_log=None):
         trusted_item["provider"] = item.get("provider") or item.get("provider_id") or ""
         prepared = prepared_log
         if prepared is not None:
-            if (not isinstance(prepared, DownloadRequestLog) or not prepared.pk
+            if (not isinstance(prepared, DownloadAuditEvent) or not prepared.pk
                     or prepared.phase != DownloadAuditPhase.PREPARED or prepared.transport
                     or prepared.evidence_source != DownloadAuditEvidence.SERVER_OBSERVED
                     or any(getattr(prepared, key) != identity[key]
@@ -158,7 +158,7 @@ def record_browser_download_audit(request, payload):
             or isinstance(prepared_id, bool) or not isinstance(prepared_id, int)):
         raise ValueError("Invalid download audit receipt")
     try:
-        prepared = DownloadRequestLog.objects.filter(
+        prepared = DownloadAuditEvent.objects.filter(
             pk=prepared_id, attempt_id=attempt_id, phase=DownloadAuditPhase.PREPARED,
             transport="", evidence_source=DownloadAuditEvidence.SERVER_OBSERVED,
             client_identity_hash=identity["client_identity_hash"], ip_hash=identity["ip_hash"],

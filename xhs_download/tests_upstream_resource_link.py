@@ -10,7 +10,7 @@ from django.core.cache import cache
 from django.test import RequestFactory, TestCase, override_settings
 
 from . import views
-from .models import DownloadRequestLog, ObservabilityStatus, RoutingDecisionLog
+from .models import DownloadAuditEvent, DownloadRequestLog, ObservabilityStatus, RoutingDecisionLog
 from .services.provider_manifest import build_provider_manifest_token
 from .services.upstream_delivery import normalize_upstream_result
 
@@ -80,11 +80,12 @@ class UpstreamResourceLinkTests(TestCase):
         response = self.post(intent=None)
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(DownloadRequestLog.objects.count(), before + 1)
-        log = DownloadRequestLog.objects.latest("pk")
+        log = DownloadAuditEvent.objects.latest("pk")
         self.assertEqual((log.phase, log.status), ("prepared", "pending"))
         self.assertEqual(log.actual_bytes, 0)
         self.assertEqual(log.route_type, "direct")
-        self.assertFalse(DownloadRequestLog.objects.filter(phase="transfer_completed").exists())
+        self.assertFalse(DownloadAuditEvent.objects.filter(phase="transfer_completed").exists())
+        self.assertEqual(DownloadRequestLog.objects.get().status, ObservabilityStatus.SUCCESS)
         self.assertTrue(RoutingDecisionLog.objects.get().success)
 
     def test_mature_provider_route_is_prepared_and_link_intent_remains_denied(self):
@@ -99,7 +100,7 @@ class UpstreamResourceLinkTests(TestCase):
         response = self.post(intent=None, media_items=[item])
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(DownloadRequestLog.objects.count(), 1)
-        log = DownloadRequestLog.objects.get()
+        log = DownloadAuditEvent.objects.get()
         self.assertEqual((log.phase, log.status), ("prepared", "pending"))
         self.assertEqual(log.route_type, "direct")
         self.assertTrue(RoutingDecisionLog.objects.get().success)

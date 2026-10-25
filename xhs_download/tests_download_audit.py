@@ -3,6 +3,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core import signing
 from django.core.cache import cache
@@ -13,7 +14,7 @@ from django.test import Client, RequestFactory, TestCase, TransactionTestCase, o
 from django.urls import reverse
 from django.template.loader import render_to_string
 
-from .models import DownloadRequestLog, ObservabilityStatus, PolicyControlRecord, RoutingDecisionLog
+from .models import DownloadAuditEvent, DownloadRequestLog, ObservabilityStatus, PolicyControlRecord, RoutingDecisionLog
 from .services.admin_console import build_admin_console_context
 from .services.download_audit import (
     MAX_BYTES, SCHEMA, TOKEN_MAX_AGE, TOKEN_SALT, download_attempts,
@@ -57,7 +58,8 @@ class DownloadAuditTests(TestCase):
         self.assertEqual({k: v for k, v in result.items() if k != "download_audit"}, original)
         audit = result["download_audit"]
         self.assertEqual(audit["endpoint"], reverse("media_browser_download_telemetry"))
-        prepared = DownloadRequestLog.objects.get()
+        prepared = DownloadAuditEvent.objects.get()
+        self.assertFalse(DownloadRequestLog.objects.exists())
         self.assertEqual(prepared.status, "pending")
         self.assertEqual(prepared.phase, "prepared")
         self.assertEqual(prepared.transport, "")
@@ -81,6 +83,7 @@ class DownloadAuditTests(TestCase):
                         self.assertEqual(response.status_code, expected, response.content[:200])
                         self.assertEqual(response.json()['status'], 'error')
         self.assertFalse(DownloadRequestLog.objects.exists())
+        self.assertFalse(DownloadAuditEvent.objects.exists())
 
     def test_issue_fail_open_returns_original(self):
         with patch("xhs_download.services.download_audit.record_transfer_audit", return_value=None):
@@ -88,6 +91,7 @@ class DownloadAuditTests(TestCase):
         with patch("xhs_download.services.download_audit.reverse", side_effect=RuntimeError("offline")):
             self.assertIs(issue_browser_download_audit(self.request, self.item), self.item)
         self.assertFalse(DownloadRequestLog.objects.exists())
+        self.assertFalse(DownloadAuditEvent.objects.exists())
 
     def test_existing_dispatch_preparation_is_reused_without_duplicate_attempt(self):
         prepared = record_transfer_audit(
@@ -97,12 +101,13 @@ class DownloadAuditTests(TestCase):
         )
         result = issue_browser_download_audit(self.request, self.item, prepared_log=prepared)
         self.assertEqual(result["download_audit"]["attempt_id"], prepared.attempt_id)
-        self.assertEqual(DownloadRequestLog.objects.count(), 1)
-        self.assertEqual(DownloadRequestLog.objects.get().route_type, "direct")
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.get().route_type, "direct")
         other = RequestFactory().post("/", REMOTE_ADDR="203.0.113.11")
         other.user = self.request.user
         self.assertIs(issue_browser_download_audit(other, self.item, prepared_log=prepared), self.item)
-        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
+        self.assertFalse(DownloadRequestLog.objects.exists())
 
     def test_gallery_receipts_are_not_issued_per_image(self):
         items = [{"type": "image", "url": f"https://ci.xiaohongshu.com/{index}.jpg"}
@@ -112,6 +117,7 @@ class DownloadAuditTests(TestCase):
         self.assertEqual(result, items)
         self.assertFalse(any("download_audit" in item for item in result))
         self.assertFalse(DownloadRequestLog.objects.exists())
+        self.assertFalse(DownloadAuditEvent.objects.exists())
 
     def test_thousand_image_http_dispatch_keeps_one_aggregate_preparation(self):
         items = [{"type": "image", "source_platform": "xiaohongshu",
@@ -128,10 +134,13 @@ class DownloadAuditTests(TestCase):
         self.assertEqual(response.json()["route_type"], "direct")
         self.assertEqual(len(response.json()["items"]), 1000)
         self.assertFalse(any("download_audit" in item for item in response.json()["items"]))
-        log = DownloadRequestLog.objects.get()
+        log = DownloadAuditEvent.objects.get()
         self.assertEqual((log.phase, log.status), ("prepared", "pending"))
         self.assertEqual(log.image_count, 1000)
         self.assertEqual(log.actual_bytes, 0)
+        legacy = DownloadRequestLog.objects.get()
+        self.assertEqual((legacy.phase, legacy.status, legacy.image_count), ("", "success", 1000))
+        self.assertEqual(log.legacy_log_id, legacy.pk)
         self.assertEqual(RoutingDecisionLog.objects.count(), 1)
 
     def test_trusted_dispatch_feedback_is_once_and_not_transfer_success(self):
@@ -143,7 +152,10 @@ class DownloadAuditTests(TestCase):
                 browser_egress_estimated_bytes=1024, status="success", dispatch_feedback=True,
             )
         self.assertEqual(prepared.status, "pending")
-        self.assertFalse(DownloadRequestLog.objects.filter(status="success").exists())
+        self.assertFalse(DownloadAuditEvent.objects.filter(status="success").exists())
+        legacy = DownloadRequestLog.objects.get()
+        self.assertEqual((legacy.status, legacy.phase, legacy.attempt_id), ("success", "", ""))
+        self.assertEqual(prepared.legacy_log_id, legacy.pk)
         feedback = RoutingDecisionLog.objects.get()
         self.assertTrue(feedback.success)
         self.assertEqual(feedback.route_type, "direct")
@@ -156,6 +168,8 @@ class DownloadAuditTests(TestCase):
             ))
         self.assertEqual(RoutingDecisionLog.objects.count(), 1)
         self.assertEqual(PolicyControlRecord.objects.count(), 1)
+        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 4)
 
     def test_feedback_flag_cannot_enable_client_or_transfer_phase_feedback(self):
         for phase, evidence in (("handed_off", "client_observed"), ("transfer_completed", "server_observed")):
@@ -165,6 +179,8 @@ class DownloadAuditTests(TestCase):
             )
         self.assertFalse(RoutingDecisionLog.objects.exists())
         self.assertFalse(PolicyControlRecord.objects.exists())
+        self.assertFalse(DownloadRequestLog.objects.exists())
+        self.assertEqual(DownloadAuditEvent.objects.count(), 2)
 
     def test_missing_identity_does_not_issue_portable_receipt(self):
         with patch("xhs_download.services.download_audit.request_privacy_fields", return_value={
@@ -172,13 +188,15 @@ class DownloadAuditTests(TestCase):
         }):
             self.assertIs(issue_browser_download_audit(self.request, self.item), self.item)
         self.assertFalse(DownloadRequestLog.objects.exists())
+        self.assertFalse(DownloadAuditEvent.objects.exists())
 
     def test_native_handoff_is_pending_and_idempotent(self):
         receipt = self.issue()
         for _ in range(2):
             self.assertTrue(record_browser_download_audit(self.request, self.event(receipt)))
-        self.assertEqual(DownloadRequestLog.objects.count(), 2)
-        event = DownloadRequestLog.objects.get(phase="handed_off")
+        self.assertEqual(DownloadAuditEvent.objects.count(), 2)
+        self.assertFalse(DownloadRequestLog.objects.exists())
+        event = DownloadAuditEvent.objects.get(phase="handed_off")
         self.assertEqual(event.status, "pending")
         self.assertEqual(event.evidence_source, "client_observed")
         self.assertEqual(event.provider, "tiantianjiexi")
@@ -189,7 +207,7 @@ class DownloadAuditTests(TestCase):
         for changes in ({"phase": "transfer_started"}, {"phase": "transfer_completed"}, {"actual_bytes": 1}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 record_browser_download_audit(self.request, self.event(receipt, **changes))
-        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
 
     def test_client_cannot_claim_server_transport_preparation_or_metadata(self):
         receipt = self.issue()
@@ -228,7 +246,7 @@ class DownloadAuditTests(TestCase):
         with patch("django.core.signing.time.time", return_value=now + TOKEN_MAX_AGE + 2):
             with self.assertRaises(ValueError):
                 record_browser_download_audit(self.request, self.event(receipt))
-        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
 
     def test_token_does_not_renew_or_read_media_authorization(self):
         self.item["selection_expires_at"] = 1
@@ -257,7 +275,7 @@ class DownloadAuditTests(TestCase):
             record_browser_download_audit(self.request, self.event(
                 receipt, token=signing.dumps(token_data, salt=TOKEN_SALT),
             ))
-        DownloadRequestLog.objects.all().delete()
+        DownloadAuditEvent.objects.all().delete()
         with self.assertRaises(ValueError):
             record_browser_download_audit(self.request, self.event(receipt))
 
@@ -268,7 +286,7 @@ class DownloadAuditTests(TestCase):
                 self.assertTrue(record_browser_download_audit(self.request, self.event(
                     receipt, phase=phase, transport=transport, actual_bytes=1024,
                 )))
-            completed = DownloadRequestLog.objects.get(attempt_id=receipt["attempt_id"], phase="transfer_completed")
+            completed = DownloadAuditEvent.objects.get(attempt_id=receipt["attempt_id"], phase="transfer_completed")
             self.assertEqual(completed.status, "success")
             self.assertEqual(completed.evidence_source, "client_observed")
             self.assertIn("非磁盘保存", completed.audit_phase_label)
@@ -283,15 +301,16 @@ class DownloadAuditTests(TestCase):
                 route.assert_not_called()
                 control.assert_not_called()
         self.assertEqual(RoutingDecisionLog.objects.count(), 0)
+        self.assertFalse(DownloadRequestLog.objects.exists())
 
     def test_duplicate_event_constraint_does_not_rewrite_observation(self):
         receipt = self.issue()
         event = self.event(receipt, phase="failed", transport="browser_streaming", actual_bytes=10, error_code="NETWORK_ERROR")
         record_browser_download_audit(self.request, event)
         record_browser_download_audit(self.request, {**event, "actual_bytes": 999})
-        self.assertEqual(DownloadRequestLog.objects.get(phase="failed").actual_bytes, 10)
+        self.assertEqual(DownloadAuditEvent.objects.get(phase="failed").actual_bytes, 10)
         with self.assertRaises(IntegrityError), transaction.atomic():
-            DownloadRequestLog.objects.create(
+            DownloadAuditEvent.objects.create(
                 attempt_id=receipt["attempt_id"], phase="failed", transport="browser_streaming",
             )
 
@@ -336,7 +355,7 @@ class DownloadAuditTests(TestCase):
         self.assertNotIn("pending", ObservabilityStatus.values)
         self.assertIn("legacy", legacy.audit_phase_label)
         self.assertEqual(legacy_download_logs(DownloadRequestLog.objects.all()).count(), 2)
-        self.assertEqual(download_attempts(DownloadRequestLog.objects.all()).count(), 0)
+        self.assertEqual(download_attempts(DownloadAuditEvent.objects.all()).count(), 0)
 
     def test_attempt_summary_does_not_count_late_handoff_as_completion(self):
         receipt = self.issue()
@@ -344,7 +363,7 @@ class DownloadAuditTests(TestCase):
             record_browser_download_audit(self.request, self.event(
                 receipt, phase=phase, transport="browser_blob", actual_bytes=1024,
             ))
-        attempts = download_attempts(DownloadRequestLog.objects.all())
+        attempts = download_attempts(DownloadAuditEvent.objects.all())
         self.assertEqual(attempts.count(), 1)
         self.assertEqual(attempts.get().phase, "transfer_completed")
         record_browser_download_audit(self.request, self.event(
@@ -357,7 +376,7 @@ class DownloadAuditTests(TestCase):
         receipt = self.issue()
         for phase in ("transfer_completed", "cancelled"):
             record_browser_download_audit(self.request, self.event(receipt, phase=phase, transport="browser_blob"))
-        self.assertEqual(download_attempts(DownloadRequestLog.objects.all()).get().status, "cancelled")
+        self.assertEqual(download_attempts(DownloadAuditEvent.objects.all()).get().status, "cancelled")
 
     def test_outcome_is_ranked_across_days_before_filtering_its_time(self):
         from django.utils import timezone
@@ -369,11 +388,11 @@ class DownloadAuditTests(TestCase):
         record_browser_download_audit(self.request, self.event(
             receipt, phase="transfer_completed", transport="browser_blob", actual_bytes=100,
         ))
-        DownloadRequestLog.objects.update(created_at=before)
+        DownloadAuditEvent.objects.update(created_at=before)
         record_browser_download_audit(self.request, self.event(receipt, transport="browser_blob"))
-        today = DownloadRequestLog.objects.filter(created_at__gte=cutoff)
+        today = DownloadAuditEvent.objects.filter(created_at__gte=cutoff)
         self.assertEqual(download_attempts(today).count(), 0)
-        previous = download_attempts(DownloadRequestLog.objects.filter(created_at__lt=cutoff))
+        previous = download_attempts(DownloadAuditEvent.objects.filter(created_at__lt=cutoff))
         self.assertEqual(previous.get().phase, "transfer_completed")
         self.assertEqual(previous.get().observed_bytes, 100)
         record_browser_download_audit(self.request, self.event(
@@ -381,7 +400,7 @@ class DownloadAuditTests(TestCase):
         ))
         self.assertEqual(download_attempts(today).get().phase, "failed")
         self.assertEqual(download_attempts(today).get().observed_bytes, 100)
-        self.assertFalse(download_attempts(DownloadRequestLog.objects.filter(created_at__lt=cutoff)).exists())
+        self.assertFalse(download_attempts(DownloadAuditEvent.objects.filter(created_at__lt=cutoff)).exists())
 
     def test_large_file_table_labels_client_evidence_not_disk_success(self):
         from download_console.models import DownloadRuntimeSetting
@@ -427,38 +446,84 @@ class DownloadAuditTests(TestCase):
         self.assertEqual(cards["今日 legacy 行数（旧口径，不计新完成率）"], 1)
         self.assertEqual(context["provider_top"], [{"provider": "tiantianjiexi", "count": 3}])
 
-    def test_admin_log_page_displays_event_and_legacy_without_public_access(self):
+    def test_admin_log_page_separates_event_and_legacy_without_public_access(self):
         receipt = self.issue()
         record_browser_download_audit(self.request, self.event(receipt))
-        record_download_request_log(self.request, status="success")
+        record_download_request_log(self.request, status="success", download_type="legacy-only")
         url = reverse("download_logs")
         self.assertEqual(self.client.get(url).status_code, 404)
-        admin = get_user_model().objects.create_superuser(username="audit-admin", password="test-only-password")
-        self.client.force_login(admin)
+        self.assertEqual(self.client.get(url, {"records": "legacy"}).status_code, 404)
+        user = get_user_model().objects.create_superuser(username="audit-admin", password="test-only-password")
+        self.client.force_login(user)
         response = self.client.get(url)
+        self.assertEqual(response.context["download_log_records"], "audit")
+        self.assertEqual(response.context["page_obj"].paginator.count, 2)
+        self.assertTrue(all(isinstance(row, DownloadAuditEvent) for row in response.context["page_obj"]))
         self.assertContains(response, receipt["attempt_id"])
         self.assertContains(response, "原生直链")
         self.assertContains(response, "已移交")
         self.assertContains(response, "客户端上报（非落盘确认）")
-        self.assertContains(response, "legacy（旧口径，未区分阶段）")
+        self.assertNotContains(response, "legacy-only")
+        self.assertNotContains(response, "legacy（旧口径，未区分阶段）")
+        self.assertContains(response, '?records=legacy')
+        self.assertContains(response, 'name="records" value="audit"')
         self.assertNotContains(response, self.item["url"])
+        legacy_response = self.client.get(url, {"records": "legacy"})
+        self.assertEqual(legacy_response.context["download_log_records"], "legacy")
+        self.assertEqual(legacy_response.context["page_obj"].paginator.count, 1)
+        self.assertTrue(all(isinstance(row, DownloadRequestLog) for row in legacy_response.context["page_obj"]))
+        self.assertContains(legacy_response, "legacy-only")
+        self.assertContains(legacy_response, "legacy（旧口径，未区分阶段）")
+        self.assertContains(legacy_response, 'name="records" value="legacy"')
+        self.assertNotContains(legacy_response, receipt["attempt_id"])
+        self.assertNotContains(legacy_response, "客户端上报（非落盘确认）")
+        filtered = self.client.get(url, {"records": "legacy", "download_type": "legacy-only"})
+        self.assertEqual(filtered.context["page_obj"].paginator.count, 1)
+        self.assertIn("records=legacy", filtered.context["page_querystring"])
+
+    def test_audit_and_legacy_admins_are_registered_read_only(self):
+        user = get_user_model().objects.create_superuser(username="audit-reader", password="test-only-password")
+        request = RequestFactory().get("/admin/")
+        request.user = user
+        for model in (DownloadAuditEvent, DownloadRequestLog):
+            with self.subTest(model=model.__name__):
+                registered = admin.site._registry[model]
+                self.assertTrue(registered.has_view_permission(request))
+                self.assertFalse(registered.has_add_permission(request))
+                self.assertFalse(registered.has_change_permission(request))
+                self.assertIn("audit_phase", registered.list_display)
+
+    def test_audit_log_search_applies_request_provider_and_error_filters(self):
+        user = get_user_model().objects.create_superuser(username="audit-search", password="test-only-password")
+        self.client.force_login(user)
+        wanted = DownloadAuditEvent.objects.create(
+            request_id="wanted-request", provider="wanted-provider", error_type="wanted-error",
+        )
+        DownloadAuditEvent.objects.create(request_id="unrelated")
+        for query in ("wanted-request", "wanted-provider", "wanted-error"):
+            with self.subTest(query=query):
+                response = self.client.get(reverse("download_logs"), {"q": query})
+                self.assertEqual([row.pk for row in response.context["page_obj"]], [wanted.pk])
 
 
 class DownloadAuditMigrationTests(TransactionTestCase):
     def test_existing_rows_keep_empty_audit_fields_and_original_status(self):
         before = [("xhs_download", "0029_providerhealthtestrun_download_smoke_details")]
-        after = [("xhs_download", "0030_download_audit_events")]
         executor = MigrationExecutor(connection)
+        after = executor.loader.graph.leaf_nodes()
         try:
             executor.migrate(before)
             old_model = executor.loader.project_state(before).apps.get_model("xhs_download", "DownloadRequestLog")
-            pk = old_model.objects.create(request_id="legacy-preparation", status="success", download_type="single_prepare").pk
+            original = old_model.objects.create(request_id="legacy-preparation", status="success", download_type="single_prepare")
             executor = MigrationExecutor(connection)
             executor.migrate(after)
-            migrated = DownloadRequestLog.objects.get(pk=pk)
+            migrated = DownloadRequestLog.objects.get(pk=original.pk)
             self.assertEqual(migrated.status, "success")
             self.assertEqual(migrated.download_type, "single_prepare")
+            self.assertEqual(migrated.request_id, original.request_id)
+            self.assertEqual(migrated.created_at, original.created_at)
             self.assertEqual((migrated.attempt_id, migrated.phase, migrated.transport, migrated.evidence_source), ("", "", "", ""))
+            self.assertFalse(DownloadAuditEvent.objects.filter(pk=original.pk).exists())
         finally:
             MigrationExecutor(connection).migrate(after)
 
@@ -502,15 +567,16 @@ class DownloadAuditEndpointTests(TestCase):
             self.assertEqual(response.status_code, 204)
             self.assertEqual(response["Cache-Control"], "no-store")
             self.assertEqual(response.content, b"")
-        event = DownloadRequestLog.objects.get(phase="handed_off")
+        event = DownloadAuditEvent.objects.get(phase="handed_off")
         self.assertEqual(event.evidence_source, "client_observed")
-        self.assertEqual(DownloadRequestLog.objects.count(), 2)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 2)
+        self.assertFalse(DownloadRequestLog.objects.exists())
 
     def test_csrf_missing_and_invalid_rejected_before_audit(self):
         self.assertEqual(self.post(csrf=False).status_code, 403)
         self.csrf_token = "invalid"
         self.assertEqual(self.post().status_code, 403)
-        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
 
     def test_fake_token_cross_identity_and_expired_token_rejected(self):
         self.assertEqual(self.post(self.payload(token="fake-token")).status_code, 400)
@@ -518,7 +584,7 @@ class DownloadAuditEndpointTests(TestCase):
         self.assertEqual(self.post(HTTP_USER_AGENT="other-browser").status_code, 400)
         with patch("django.core.signing.time.time", return_value=time.time() + TOKEN_MAX_AGE + 2):
             self.assertEqual(self.post().status_code, 400)
-        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
 
     def test_native_false_completion_and_server_claim_rejected(self):
         for changes in (
@@ -529,7 +595,7 @@ class DownloadAuditEndpointTests(TestCase):
         ):
             with self.subTest(changes=changes):
                 self.assertEqual(self.post(self.payload(**changes)).status_code, 400)
-        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
 
     def test_unknown_fields_and_invalid_bounds_rejected(self):
         for changes in (
@@ -540,24 +606,26 @@ class DownloadAuditEndpointTests(TestCase):
         ):
             with self.subTest(changes=changes):
                 self.assertEqual(self.post(self.payload(**changes)).status_code, 400)
-        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
 
     def test_sw_and_blob_http_completion_is_only_client_observed(self):
         for transport in ("browser_streaming", "browser_blob"):
             self.assertEqual(self.post(self.payload(
                 phase="transfer_completed", transport=transport, actual_bytes=123,
             )).status_code, 204)
-        self.assertEqual(DownloadRequestLog.objects.filter(
+        self.assertEqual(DownloadAuditEvent.objects.filter(
             phase="transfer_completed", evidence_source="client_observed", actual_bytes=123,
         ).count(), 2)
         self.assertFalse(RoutingDecisionLog.objects.exists())
+        self.assertFalse(DownloadRequestLog.objects.exists())
 
     def test_storage_failure_is_non_blocking_and_does_not_claim_success(self):
         with patch("xhs_download.services.download_audit.record_transfer_audit", return_value=None):
             self.assertEqual(self.post().status_code, 204)
-        with patch("xhs_download.services.download_audit.DownloadRequestLog.objects.filter", side_effect=RuntimeError("audit unavailable")):
+        with patch("xhs_download.services.download_audit.DownloadAuditEvent.objects.filter", side_effect=RuntimeError("audit unavailable")):
             self.assertEqual(self.post().status_code, 204)
-        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
+        self.assertFalse(DownloadRequestLog.objects.exists())
 
     def test_rate_limit_and_content_type_boundaries_remain(self):
         self.assertEqual(self.client.get(self.url).status_code, 405)
@@ -566,7 +634,8 @@ class DownloadAuditEndpointTests(TestCase):
         with override_settings(BROWSER_DOWNLOAD_TELEMETRY_RATE_LIMIT_PER_MINUTE=1):
             self.assertEqual(self.post().status_code, 204)
             self.assertEqual(self.post().status_code, 429)
-        self.assertEqual(DownloadRequestLog.objects.count(), 2)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 2)
+        self.assertFalse(DownloadRequestLog.objects.exists())
 
 
 class DownloadAuditOperationalIsolationTests(TestCase):
@@ -590,11 +659,11 @@ class DownloadAuditOperationalIsolationTests(TestCase):
             server_egress_estimated_bytes=200,
         )
 
-    def add_noise(self):
+    def add_noise(self, model=DownloadRequestLog):
         from django.utils import timezone
 
         for phase in ("prepared", "handed_off", "transfer_started", "transfer_completed", "failed", "cancelled", "unknown", ""):
-            DownloadRequestLog.objects.create(
+            model.objects.create(
                 request_id="client-noise", attempt_id="client-noise", phase=phase,
                 transport="browser_blob", evidence_source="client_observed", status="failed",
                 provider="tiantianjiexi", route_type="zip", final_policy_route="zip",
@@ -602,17 +671,17 @@ class DownloadAuditOperationalIsolationTests(TestCase):
                 estimated_bytes=2 ** 40, server_egress_estimated_bytes=2 ** 40,
             )
         for phase in ("prepared", "handed_off", "transfer_started", "cancelled", "unknown"):
-            DownloadRequestLog.objects.create(
+            model.objects.create(
                 request_id="server-noise", attempt_id="server-pending", phase=phase,
                 transport="server_attachment", evidence_source="server_observed", status="pending",
                 provider="tiantianjiexi", route_type="zip", final_policy_route="zip",
                 actual_bytes=2 ** 40, server_egress_estimated_bytes=2 ** 40,
             )
-        DownloadRequestLog.objects.filter(request_id__in=("client-noise", "server-noise")).update(
+        model.objects.filter(request_id__in=("client-noise", "server-noise")).update(
             created_at=timezone.now() - timezone.timedelta(seconds=1),
         )
 
-    def test_filter_retains_legacy_and_server_terminal_only(self):
+    def test_defensive_filter_retains_legacy_and_server_terminal_only(self):
         self.add_noise()
         self.assertSetEqual(
             set(operational_download_logs(DownloadRequestLog.objects.all()).values_list("pk", flat=True)),
@@ -620,7 +689,7 @@ class DownloadAuditOperationalIsolationTests(TestCase):
         )
         self.assertEqual(DownloadRequestLog.objects.count(), 15)
 
-    def test_server_terminal_events_are_deduplicated_and_cancellation_is_not_failure(self):
+    def test_defensive_legacy_terminal_filter_deduplicates_and_excludes_cancellation(self):
         failed = DownloadRequestLog.objects.create(
             attempt_id=self.completed.attempt_id, phase="failed", transport="server_attachment",
             evidence_source="server_observed", status="failed", actual_bytes=200,
@@ -633,7 +702,34 @@ class DownloadAuditOperationalIsolationTests(TestCase):
         )
         self.assertEqual(list(records.values_list("pk", flat=True)), [self.legacy.pk])
         cards = {row["label"]: row["value"] for row in build_admin_console_context()["cards"]}
-        self.assertEqual(cards["今日下载实际流量（服务端已发送）"], "200 B")
+        self.assertEqual(cards["今日下载实际流量（服务端已发送）"], "0 B")
+        self.assertEqual(cards["今日下载次数（去重尝试）"], 0)
+
+    def test_event_noise_does_not_change_legacy_rows_or_admin_business_metrics(self):
+        legacy_rows = list(DownloadRequestLog.objects.order_by("pk").values())
+        before = build_admin_console_context()
+        self.add_noise(DownloadAuditEvent)
+        DownloadAuditEvent.objects.create(
+            attempt_id="audit-only-server-complete", phase="transfer_completed",
+            transport="server_attachment", evidence_source="server_observed", status="success",
+            actual_bytes=4096, provider="audit-only", route_type="zip", final_policy_route="zip",
+        )
+        after = build_admin_console_context()
+        self.assertEqual(list(DownloadRequestLog.objects.order_by("pk").values()), legacy_rows)
+        self.assertEqual(DownloadRequestLog.objects.count(), 2)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 14)
+        self.assertEqual(operational_download_logs(DownloadRequestLog.objects.all()).count(), 2)
+        for key in ("routing_summary", "system_stability", "failure_top", "blocked_rows"):
+            with self.subTest(panel=key):
+                self.assertEqual(after[key], before[key])
+        before_cards = {row["label"]: row["value"] for row in before["cards"]}
+        after_cards = {row["label"]: row["value"] for row in after["cards"]}
+        for label in (
+            "今日 legacy 行数（旧口径，不计新完成率）",
+            "今日 legacy 记录流量（未复核）", "今日限流 / 阻止次数",
+        ):
+            self.assertEqual(after_cards[label], before_cards[label])
+        self.assertEqual(after_cards["今日下载次数（去重尝试）"], 3)
 
     def test_operational_consumers_unchanged_by_client_and_stage_noise(self):
         from django.utils import timezone
@@ -670,7 +766,14 @@ class DownloadAuditOperationalIsolationTests(TestCase):
         }
         with patch("django.utils.timezone.now", return_value=timezone.now()):
             before = {name: reader() for name, reader in readers.items()}
-            self.add_noise()
-            for name, reader in readers.items():
-                with self.subTest(consumer=name):
-                    self.assertEqual(reader(), before[name])
+            legacy_rows = list(DownloadRequestLog.objects.order_by("pk").values())
+            for model in (DownloadAuditEvent, DownloadRequestLog):
+                self.add_noise(model)
+                cache.clear()
+                if model is DownloadAuditEvent:
+                    self.assertEqual(list(DownloadRequestLog.objects.order_by("pk").values()), legacy_rows)
+                    self.assertEqual(DownloadRequestLog.objects.count(), 2)
+                    self.assertEqual(DownloadAuditEvent.objects.count(), 13)
+                for name, reader in readers.items():
+                    with self.subTest(storage=model.__name__, consumer=name):
+                        self.assertEqual(reader(), before[name])

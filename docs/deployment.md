@@ -495,6 +495,35 @@ Keep each deployed version tied to a Git commit. If deployment fails:
 2. Re-run migrations only if rollback migrations are safe.
 3. Confirm `check`, smoke URLs, and logs.
 
+### Download audit migration compatibility
+
+The download audit split (`0030` / `0031`) keeps `DownloadRequestLog` for the
+existing business records and moves phase/client observations to
+`DownloadAuditEvent`. Do not deploy the original PR #132 migration alone:
+its four non-null columns lacked persistent database defaults. Corrected `0030`
+is safe for the PR #131 ORM even before `0031`; `0031` also repairs databases
+that already applied the original `0030`.
+
+Apply migrations while application writers are stopped using the existing
+release procedure. `0031` transfers audit rows atomically, preserving their IDs,
+timestamps and all scalar fields. It checks the copied rows before removing the
+old copies, then repairs the event sequence. Existing signed audit receipts keep
+their preparation IDs. The transfer takes a PostgreSQL table lock; budget for
+the actual history size during the approved maintenance window.
+
+For an explicitly authorized rollback to PR #131 (`8d91d52`), restore its code
+and corresponding static assets but retain the upgraded database. Do not reverse
+`0030` or `0031`, restore an older business database, or fake migration records.
+Old ORM inserts use the persistent empty database defaults; old readers do not
+see the separate phase/client events. A schema reversal with event history is
+explicitly refused. Returning to the fixed code reads the retained events again.
+The optional business-log ID is a historical correlation without a foreign key,
+so old-code pruning can delete its business rows without blocking or deleting
+the separate observations.
+Both log tables use the existing `prune_observability_logs --days` retention
+window; Provider administration audit retention is unchanged. This compatibility
+note does not authorize a release or rollback.
+
 Production baseline v0.1 should be tagged only after smoke passes:
 
 ```bash

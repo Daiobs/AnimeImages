@@ -7,6 +7,7 @@ from django.utils import timezone
 from download_console.models import DownloadRuntimeSetting
 
 from ..models import (
+    DownloadAuditEvent,
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
@@ -316,14 +317,14 @@ def build_admin_console_context():
     recent_7d_start = now - timezone.timedelta(days=7)
 
     today_parse = ParseRequestLog.objects.filter(created_at__gte=today_start)
-    today_download = DownloadRequestLog.objects.filter(created_at__gte=today_start)
-    recent_24h_download = DownloadRequestLog.objects.filter(created_at__gte=recent_24h_start)
-    recent_7d_download = DownloadRequestLog.objects.filter(created_at__gte=recent_7d_start)
+    today_download = legacy_download_logs(DownloadRequestLog.objects.filter(created_at__gte=today_start))
+    recent_24h_download = legacy_download_logs(DownloadRequestLog.objects.filter(created_at__gte=recent_24h_start))
+    recent_7d_download = legacy_download_logs(DownloadRequestLog.objects.filter(created_at__gte=recent_7d_start))
 
-    today_attempts = download_attempts(today_download)
-    recent_24h_attempts = download_attempts(recent_24h_download)
-    recent_7d_attempts = download_attempts(recent_7d_download)
-    today_legacy = legacy_download_logs(today_download)
+    today_attempts = download_attempts(DownloadAuditEvent.objects.filter(created_at__gte=today_start))
+    recent_24h_attempts = download_attempts(DownloadAuditEvent.objects.filter(created_at__gte=recent_24h_start))
+    recent_7d_attempts = download_attempts(DownloadAuditEvent.objects.filter(created_at__gte=recent_7d_start))
+    today_legacy = today_download
     today_download_count = today_attempts.count()
     today_download_success = today_attempts.filter(phase="transfer_completed").count()
     today_download_failed = today_attempts.filter(phase="failed").count()

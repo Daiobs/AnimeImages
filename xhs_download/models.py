@@ -534,7 +534,7 @@ class DownloadAuditEvidence(models.TextChoices):
     CLIENT_OBSERVED = "client_observed", "客户端上报（非落盘确认）"
 
 
-class DownloadRequestLog(models.Model):
+class DownloadLogFields(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     request_id = models.CharField(max_length=128, db_index=True)
     client_identity_hash = models.CharField(max_length=64, blank=True, default="")
@@ -549,10 +549,10 @@ class DownloadRequestLog(models.Model):
         db_index=True,
     )
     download_type = models.CharField(max_length=32, blank=True, default="", db_index=True)
-    attempt_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
-    phase = models.CharField(max_length=24, choices=DownloadAuditPhase.choices, blank=True, default="", db_index=True)
-    transport = models.CharField(max_length=32, choices=DownloadAuditTransport.choices, blank=True, default="", db_index=True)
-    evidence_source = models.CharField(max_length=24, choices=DownloadAuditEvidence.choices, blank=True, default="", db_index=True)
+    attempt_id = models.CharField(max_length=64, blank=True, default="", db_default="", db_index=True)
+    phase = models.CharField(max_length=24, choices=DownloadAuditPhase.choices, blank=True, default="", db_default="", db_index=True)
+    transport = models.CharField(max_length=32, choices=DownloadAuditTransport.choices, blank=True, default="", db_default="", db_index=True)
+    evidence_source = models.CharField(max_length=24, choices=DownloadAuditEvidence.choices, blank=True, default="", db_default="", db_index=True)
     item_count = models.PositiveSmallIntegerField(default=0)
     image_count = models.PositiveSmallIntegerField(default=0)
     video_count = models.PositiveSmallIntegerField(default=0)
@@ -591,6 +591,32 @@ class DownloadRequestLog(models.Model):
     healing_confidence = models.FloatField(default=0)
 
     class Meta:
+        abstract = True
+
+    def __str__(self):
+        return f"{local_datetime_label(self.created_at)} {self.status} {self.download_type}"
+
+    @property
+    def audit_phase_label(self):
+        return self.get_phase_display() if self.phase else "legacy（旧口径，未区分阶段）"
+
+    @property
+    def audit_transport_label(self):
+        return self.get_transport_display() if self.transport else "未观测"
+
+    @property
+    def audit_evidence_label(self):
+        return self.get_evidence_source_display() if self.evidence_source else "legacy（非保存证明）"
+
+    @property
+    def audit_time_label(self):
+        from .services.admin_console import format_admin_datetime
+
+        return format_admin_datetime(self.created_at)
+
+
+class DownloadRequestLog(DownloadLogFields):
+    class Meta:
         ordering = ("-created_at",)
         constraints = (
             models.UniqueConstraint(
@@ -613,26 +639,30 @@ class DownloadRequestLog(models.Model):
         verbose_name = "下载请求日志"
         verbose_name_plural = "下载请求日志"
 
-    def __str__(self):
-        return f"{local_datetime_label(self.created_at)} {self.status} {self.download_type}"
 
-    @property
-    def audit_phase_label(self):
-        return self.get_phase_display() if self.phase else "legacy（旧口径，未区分阶段）"
+class DownloadAuditEvent(DownloadLogFields):
+    # A historical correlation, not a foreign key: old code can prune its own
+    # business rows without knowing about or deleting these observations.
+    legacy_log_id = models.PositiveBigIntegerField(null=True, blank=True, unique=True)
 
-    @property
-    def audit_transport_label(self):
-        return self.get_transport_display() if self.transport else "未观测"
-
-    @property
-    def audit_evidence_label(self):
-        return self.get_evidence_source_display() if self.evidence_source else "legacy（非保存证明）"
-
-    @property
-    def audit_time_label(self):
-        from .services.admin_console import format_admin_datetime
-
-        return format_admin_datetime(self.created_at)
+    class Meta:
+        ordering = ("-created_at",)
+        constraints = (
+            models.UniqueConstraint(
+                fields=("attempt_id", "phase", "transport"),
+                condition=~models.Q(attempt_id="") & ~models.Q(phase=""),
+                name="download_audit_stage_once",
+            ),
+        )
+        indexes = (
+            models.Index(fields=("created_at", "status")),
+            models.Index(fields=("attempt_id", "created_at")),
+            models.Index(fields=("phase", "created_at")),
+            models.Index(fields=("transport", "created_at")),
+            models.Index(fields=("provider", "created_at")),
+        )
+        verbose_name = "下载审计事件"
+        verbose_name_plural = "下载审计事件"
 
 
 class RoutingDecisionLog(models.Model):

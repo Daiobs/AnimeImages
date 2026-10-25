@@ -1,12 +1,13 @@
 import hashlib
 import logging
 import re
-from copy import copy
 from urllib.parse import urlparse
 
 from django.conf import settings
+from django.db import transaction
 
 from ..models import (
+    DownloadAuditEvent,
     DownloadAuditPhase,
     DownloadRequestLog,
     ObservabilityStatus,
@@ -273,27 +274,42 @@ def record_download_request_log(request, **fields):
         if payload["phase"]:
             if not payload["attempt_id"] or payload["phase"] not in DownloadAuditPhase.values:
                 raise ValueError("Invalid download audit event")
+            business_status = payload["status"]
             payload["status"] = {
                 DownloadAuditPhase.TRANSFER_COMPLETED: ObservabilityStatus.SUCCESS,
                 DownloadAuditPhase.FAILED: ObservabilityStatus.FAILED,
                 DownloadAuditPhase.UNKNOWN: "unknown",
                 DownloadAuditPhase.CANCELLED: "cancelled",
             }.get(payload["phase"], "pending")
-            log, created = DownloadRequestLog.objects.get_or_create(
-                attempt_id=payload["attempt_id"],
-                phase=payload["phase"],
-                transport=payload["transport"],
-                defaults=payload,
+            business_log = None
+            dispatch = (
+                fields.get("dispatch_feedback") is True
+                and payload["phase"] in {"prepared", "handed_off"}
             )
-            # Only the trusted dispatch caller preserves its existing business feedback.
-            # Client observations and transfer phases never replay that decision.
-            if (created and fields.get("dispatch_feedback") is True
-                    and payload["evidence_source"] == "server_observed"
-                    and payload["phase"] in {"prepared", "handed_off"}
-                    and payload["route_type"]):
-                dispatch = copy(log)
-                dispatch.status = fields.get("status") or ObservabilityStatus.SUCCESS
-                record_download_business_feedback(dispatch, {**payload, "status": dispatch.status})
+            terminal = (
+                fields.get("legacy_log") is True
+                and payload["phase"] in {"transfer_completed", "failed", "cancelled"}
+            )
+            # Event idempotency also protects the original business record. Browser
+            # observations and additional phases never enter the old business table.
+            with transaction.atomic():
+                log, created = DownloadAuditEvent.objects.get_or_create(
+                    attempt_id=payload["attempt_id"],
+                    phase=payload["phase"],
+                    transport=payload["transport"],
+                    defaults=payload,
+                )
+                if (created and payload["evidence_source"] == "server_observed"
+                        and (dispatch or terminal)):
+                    business_payload = {
+                        **payload, "status": business_status,
+                        "attempt_id": "", "phase": "", "transport": "", "evidence_source": "",
+                    }
+                    business_log = DownloadRequestLog.objects.create(**business_payload)
+                    log.legacy_log_id = business_log.pk
+                    log.save(update_fields=("legacy_log_id",))
+            if business_log is not None and dispatch and payload["route_type"]:
+                record_download_business_feedback(business_log, business_payload)
             return log
         log = DownloadRequestLog.objects.create(**payload)
         record_download_business_feedback(log, payload)

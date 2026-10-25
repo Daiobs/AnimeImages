@@ -29,6 +29,7 @@ from djangoProject.health import get_runtime_readiness
 from .services.download_audit import operational_download_logs
 
 from .models import (
+    DownloadAuditEvent,
     DownloadRequestLog,
     KukuToolDownloadDeliveryMode,
     ObservabilityStatus,
@@ -2057,7 +2058,7 @@ def filtered_log_queryset(model, request, filter_fields):
             | Q(query_host__icontains=search)
             | Q(error_type__icontains=search)
         )
-    elif search and model is DownloadRequestLog:
+    elif search and model in (DownloadRequestLog, DownloadAuditEvent):
         queryset = queryset.filter(
             Q(request_id__icontains=search)
             | Q(provider__icontains=search)
@@ -2312,7 +2313,9 @@ def download_logs_view(request):
     if not observability_access_allowed(request, "xhs_download.view_downloadrequestlog"):
         return JsonResponse({"detail": "Not found."}, status=404)
     filter_fields = ("status", "download_type", "route_type", "provider", "source_platform", "error_type")
-    queryset = filtered_log_queryset(DownloadRequestLog, request, filter_fields)
+    records = "legacy" if request.GET.get("records") == "legacy" else "audit"
+    model = DownloadRequestLog if records == "legacy" else DownloadAuditEvent
+    queryset = filtered_log_queryset(model, request, filter_fields)
     page_obj, page_querystring = paginate_admin_queryset(request, queryset)
     return render(
         request,
@@ -2320,6 +2323,7 @@ def download_logs_view(request):
         {
             "title": "下载日志",
             "nav_title": "下载日志",
+            "download_log_records": records,
             "search_placeholder": "搜索 request_id / provider / error_type",
             "filter_fields": filter_fields,
             "filter_values": filter_values_for_request(request, filter_fields),
@@ -2648,6 +2652,7 @@ def log_download_request_event(
     attempt_id="",
     evidence_source="",
     dispatch_feedback=False,
+    legacy_log=False,
 ):
     duration_ms = (time.monotonic() - started_at) * 1000 if started_at else 0
     route_info = route_info or {}
@@ -2678,6 +2683,7 @@ def log_download_request_event(
         attempt_id=attempt_id or (uuid4().hex if phase else ""),
         evidence_source=evidence_source or ("server_observed" if phase else ""),
         dispatch_feedback=dispatch_feedback,
+        legacy_log=legacy_log,
         estimated_bytes=route_info.get("estimated_bytes"),
         actual_bytes=actual_bytes,
         route_type=route_info.get("route_type", ""),
@@ -6173,6 +6179,7 @@ def download_stream_view(request, token):
                 download_type="single_stream",
                 phase=("transfer_completed" if status == "completed" else
                        "cancelled" if error_code == "DOWNLOAD_CONNECTION_CLOSED" else "failed"),
+                legacy_log=True,
                 transport="server_attachment",
                 attempt_id=handoff.ticket_id,
                 media_items=media_items,
