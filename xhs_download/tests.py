@@ -14159,7 +14159,7 @@ class AdminObservabilityMvpTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "今日下载次数")
         self.assertContains(response, "暂无失败记录")
-        self.assertContains(response, "暂无大文件下载记录")
+        self.assertContains(response, "暂无大文件传输观察")
         self.assertContains(response, "暂无路由数据")
         self.assertContains(response, "暂无 Routing v3 反馈数据")
         self.assertContains(response, "Self-Healing Dashboard")
