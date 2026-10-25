@@ -661,4 +661,3 @@ class DownloadAuditOperationalIsolationTests(TestCase):
             for name, reader in readers.items():
                 with self.subTest(consumer=name):
                     self.assertEqual(reader(), before[name])
-
