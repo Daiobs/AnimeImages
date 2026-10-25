@@ -23,6 +23,10 @@ TITLE = '那些再也拍不出第二张的人生照片……'
 BODY = '保留完整的拍摄过程和作品说明。' * 20
 CAPTION = (f'{TITLE} {TITLE} @摄影薯 #引导是出片的关键 #来拍照了 #一分钟拍照灵感 '
            '#小红书影像激励计划 #再也拍不出第二次的人')
+# Text captured from the real service response; media in these tests stays synthetic.
+JOINED_CAPTION = (f'{TITLE} |||{TITLE} @摄影薯 #引导是出片的关键  #来拍照了 \n'
+                  '#一分钟拍照灵感 \n#小红书影像激励计划 \n#再也拍不出第二次的人生照 \n'
+                  '#比美照更有杀伤力的是 \n#给摄影一分钟')
 SOURCE = 'https://source.example/work/one'
 MEDIA = 'https://media.example/video'
 PROVIDERS = ('kukutool_generic', 'tiantianjiexi_generic')
@@ -123,6 +127,37 @@ class SharedWorkTitleTests(SimpleTestCase):
                 self.assert_name_and_authority(row, TITLE, 'mp4')
                 self.assertEqual(result.metadata['caption'], CAPTION)
 
+    def test_joined_repeated_caption_is_split_before_filename_sanitization(self):
+        from .views import build_result_display_context
+        for provider in PROVIDERS:
+            for extension in ('mp4', 'webm'):
+                with self.subTest(provider=provider, extension=extension):
+                    result, row = self.normalize(provider, JOINED_CAPTION, extension=extension)
+                    self.assert_name_and_authority(row, TITLE, extension)
+                    self.assertEqual(result.base_filename, TITLE)
+                    self.assertEqual(result.metadata['title'], TITLE)
+                    self.assertEqual(result.metadata['caption'], JOINED_CAPTION)
+                    self.assertEqual(result.metadata['description'], '@摄影薯')
+                    self.assertEqual(result.metadata['topics'], [
+                        '引导是出片的关键', '来拍照了', '一分钟拍照灵感', '小红书影像激励计划',
+                        '再也拍不出第二次的人生照', '比美照更有杀伤力的是', '给摄影一分钟'])
+                    context = build_result_display_context(result, probe_missing_video_sizes=False)
+                    self.assertEqual(context['display_title'], TITLE)
+                    self.assertEqual(context['display_description'], '@摄影薯')
+                    self.assertEqual(context['display_topics'], result.metadata['topics'])
+
+    def test_joined_caption_retains_body_and_does_not_split_ordinary_pipe_titles(self):
+        from .services.work_caption import work_caption_metadata
+        caption = f'{TITLE} |||{TITLE} 拍摄过程与感想。 #00后 #3分钟学会拍照'
+        text = work_caption_metadata(caption, '单独保存的补充说明 #摄影')
+        self.assertEqual(text['title'], TITLE)
+        self.assertEqual(text['description'], '拍摄过程与感想。\n单独保存的补充说明')
+        self.assertEqual(text['topics'], ['00后', '3分钟学会拍照', '摄影'])
+        self.assertEqual(text['caption'], caption + '\n单独保存的补充说明 #摄影')
+        for title in ('A ||| B', '#1 Release (2026) + C#', '主题 ||| 主题词不能当重复标题'):
+            for description in ('', 'Independent body #release'):
+                self.assertEqual(work_caption_metadata(title, description)['title'], title)
+
     def test_normal_titles_do_not_use_social_caption_word_splitting(self):
         for title in ('How to make a beautiful photograph in bright sunlight with a simple camera',
                       'C#入门教程', '#1 Release (2026) + C#', '中国国家地理 西藏特刊'):
@@ -159,6 +194,8 @@ class SharedWorkTitleTests(SimpleTestCase):
                         self.assertEqual(result.metadata['description'], description)
                         self.assertEqual(result.metadata['caption'], '\n'.join(
                             part for part in (title, description) if part))
+                        self.assertEqual(result.metadata['topics'],
+                                         ['00后', '3分钟学会拍照'] if description else [])
 
     def test_numeric_topic_caption_storage_keeps_existing_bounds(self):
         topics = ['00后', '3分钟学会拍照', '2026' + '拍' * 130] + [f'{index}分钟' for index in range(20)]
