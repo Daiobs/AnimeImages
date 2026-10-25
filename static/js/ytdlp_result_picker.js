@@ -11,7 +11,6 @@
     "use strict";
     const SCHEMA = "ytdlp_selected_format_v1";
     const PAGE_SIZE = 6;
-    const COVER_MAX_BYTES = 2 * 1024 * 1024;
     const controllers = new WeakMap();
     let instanceSequence = 0;
 
@@ -249,7 +248,7 @@
         let activeCheck = null;
         let activeLegacy = false;
         let activeOpen = null;
-        let coverController = null, coverObjectUrl = "", player = null;
+        let coverController = null, player = null;
         const groupName = `doki-ytdlp-instance-${++instanceSequence}`;
         let knownRadios = [], rememberedId = null, knownMediaCheckbox = null, rememberedMediaSelected = true;
         function revealSelection() {
@@ -577,24 +576,17 @@
         }
         async function cover() {
             const image = root.querySelector('[data-cover-available="true"]');
-            if (!image || !ordinary || !ordinary.readBlobWithinLimit) return;
+            if (!image) return;
             coverController = new windowObject.AbortController();
             const timer = windowObject.setTimeout(() => coverController && coverController.abort(), 8000);
             try {
                 const source = await descriptor(root, {id: root.dataset.firstId, token: root.dataset.firstToken}, "cover", environment, coverController.signal);
-                const response = await fetchImpl(source, {method: "GET", credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store", redirect: "error", mode: "cors", signal: coverController.signal});
-                const type = String(response.headers.get("Content-Type") || "").split(";", 1)[0].toLowerCase();
-                if (!response.ok || response.redirected || ["opaque", "opaqueredirect"].includes(response.type)
-                        || (response.url && response.url !== source) || !["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"].includes(type)
-                        || Number(response.headers.get("Content-Length") || 0) > COVER_MAX_BYTES) {
-                    if (response.body && response.body.cancel) await response.body.cancel();
-                    return;
-                }
-                const blob = await ordinary.readBlobWithinLimit(response, COVER_MAX_BYTES, type);
-                if (destroyed || !blob.size) return;
-                coverObjectUrl = windowObject.URL.createObjectURL(blob);
+                if (destroyed || coverController.signal.aborted) return;
+                // The authorized cover is display-only, like the existing card
+                // image. It does not need CORS access or a complete image Blob.
                 image.addEventListener("error", () => { image.hidden = true; }, {once: true});
-                image.src = coverObjectUrl; image.hidden = false;
+                image.referrerPolicy = "no-referrer";
+                image.src = source; image.hidden = false;
             } catch (_) { /* Decoration failures never abort parsing or format selection. */ }
             finally { windowObject.clearTimeout(timer); coverController = null; }
         }
@@ -652,7 +644,6 @@
             if (activeController) activeController.abort();
             if (coverController) coverController.abort();
             closePreview();
-            if (coverObjectUrl) windowObject.URL.revokeObjectURL(coverObjectUrl);
             root.removeEventListener("change", handleChange); root.removeEventListener("click", handleClick);
             controllers.delete(root);
         }};
@@ -719,7 +710,7 @@
             observer.observe(documentObject.body, {childList: true, subtree: true});
         }
     }
-    return Object.freeze({SCHEMA, PAGE_SIZE, COVER_MAX_BYTES, selected, sourceHttps, sourceLink, sameOriginPath,
+    return Object.freeze({SCHEMA, PAGE_SIZE, selected, sourceHttps, sourceLink, sameOriginPath,
         csrf, validateItem, validateLinkItem, descriptor, resolveLink, mount, attach,
         mediaRoots, mediaSelected, selectMedia, snapshotMedia, downloadMedia, legacyMediaNodes});
 }));

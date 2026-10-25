@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import replace
+from hashlib import sha256
 from threading import Event
 import time
 
@@ -9,6 +10,81 @@ from ..common import XhsParseError
 from ..quality_execution import execute_provider, service_configured
 
 SERVICE_ORDER = ("kukutool_generic", "tiantianjiexi_generic")
+
+
+def display_resource_key(url):
+    """Exact resource comparison only; never a download grant or URL alias."""
+    return sha256(url.encode()).hexdigest() if isinstance(url, str) and url else ""
+
+
+def _native_display_candidates(native, service, source_url):
+    candidates = (service.metadata or {}).get("upstream_candidates", [])
+    from .kukutool_generic import canonicalize_source_url
+    from .xhs_page_state import extract_xhs_note_id, normalize_xhs_note_id
+    from ..service_format_selection import SCHEMA
+
+    metadata = native.metadata or {}
+    note_id = normalize_xhs_note_id(metadata.get("note_id"))
+    service_metadata = service.metadata or {}
+    service_source = service_metadata.get("canonical_source_url")
+    service_note_id = service_metadata.get("note_id")
+    identity_signals = service_metadata.get("_source_identity_signals") or ()
+    if not isinstance(identity_signals, (list, tuple)):
+        identity_signals = ()
+    service_note_ids = {identity for value in (*identity_signals, service_note_id)
+                        if (identity := normalize_xhs_note_id(value))}
+    if (getattr(native, "platform", "") != "xiaohongshu" or native.rich_media is not None
+            or metadata.get("source_identity_verified") is not True or not note_id
+            or not service_source
+            or canonicalize_source_url(service_source) != canonicalize_source_url(source_url)
+            or (service_note_id and normalize_xhs_note_id(service_note_id) != note_id)
+            or any(identity != note_id for identity in service_note_ids)
+            or any(identity and identity != note_id for identity in (
+                extract_xhs_note_id(source_url), extract_xhs_note_id(service_source)))):
+        return candidates
+
+    videos = native.video_assets
+    by_resource = {}
+    for asset in videos:
+        key = display_resource_key(asset.url)
+        if key:
+            by_resource.setdefault(key, []).append(asset)
+    groups = {}
+    resource_groups = {}
+    for candidate in candidates:
+        if (not isinstance(candidate, dict) or candidate.get("media_type") != "video"
+                or candidate.get("provider_id") not in SERVICE_ORDER
+                or candidate.get("provider_id") != service_metadata.get("source_provider")
+                or not candidate.get("work_id") or candidate.get("work", {}).get("schema") != SCHEMA):
+            continue
+        group_id = (candidate["provider_id"], candidate["work_id"])
+        groups.setdefault(group_id, []).append(candidate)
+        key = candidate.get("resource_alias_key")
+        if key in by_resource and len(by_resource[key]) == 1:
+            resource_groups.setdefault(key, set()).add(group_id)
+
+    links = {}
+    for group_id, rows in groups.items():
+        matches = {row.get("resource_alias_key") for row in rows
+                   if resource_groups.get(row.get("resource_alias_key")) == {group_id}}
+        if len(matches) == 1:
+            links[group_id] = matches.pop()
+        elif (not matches and len(groups) == 1 and len(videos) == 1
+              and native.post_type == "video" and not native.image_assets
+              and service_note_ids == {note_id}):
+            # Different files share a cover only when the response confirms the
+            # same work. Native keeps its own download control and authority.
+            links[group_id] = display_resource_key(videos[0].url)
+    if not links:
+        return candidates
+    displayed = []
+    for row in candidates:
+        key = links.get((row.get("provider_id"), row.get("work_id"))) if isinstance(row, dict) else None
+        if key and row.get("media_type") == "video":
+            row = {**row, "display_native_resource_key": key,
+                   "display_same_resource": row.get("resource_alias_key") == key}
+        displayed.append(row)
+    return displayed
 
 
 def authorized_services(request, source_url, *, reserve_limits=True):
@@ -125,7 +201,8 @@ def parse_independent(url, *, native_parse, provider_ids, deadline_monotonic=Non
             if selected is native_result and service_result is not None:
                 # Candidate-only service evidence must not remove usable Native
                 # downloads or borrow their download authority/provider identity.
-                metadata["upstream_candidates"] = (service_result.metadata or {}).get("upstream_candidates", [])
+                metadata["upstream_candidates"] = _native_display_candidates(
+                    native_result, service_result, url)
                 for key in ("candidate_count", "candidate_returned_count", "candidate_retained_count",
                             "candidate_unexpanded_count", "returned_count", "retained_count",
                             "declared_count", "examined_count", "rejected_count", "unexpanded_count",

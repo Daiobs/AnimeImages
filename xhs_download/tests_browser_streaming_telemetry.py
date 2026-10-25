@@ -142,6 +142,14 @@ class BrowserStreamingTelemetryEndpointTests(TestCase):
             with self.subTest(host=host):
                 self.assertEqual(self.post(self.payload(media_host=host)).status_code, 400)
 
+    def test_existing_bilibili_stream_hosts_accept_matching_failure_telemetry(self):
+        for host in ("upos.example.bilivideo.com", "upos.example.bilivideo.cn"):
+            with self.subTest(host=host):
+                payload = self.payload(media_host=host, provider="bilibili", **self.response_fields(),
+                    **self.redirect_fields(initial_media_host=host, initial_media_family="BILIBILI_PUBLIC"))
+                self.assertEqual(self.post(payload).status_code, 204)
+        self.assertEqual(self.post(self.payload(media_host="bilivideo.com.evil.test")).status_code, 400)
+
     def test_existing_xhs_family_is_preserved_in_rejection_observation(self):
         for host, family in (("sns-video-hw.xhscdn.com", "XHS_TIANTIAN_HW_EXACT"),
                              ("sns-video-v6.xhscdn.com", "XHS_NATIVE_REVIEWED")):

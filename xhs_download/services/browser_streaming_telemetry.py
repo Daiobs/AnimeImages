@@ -29,7 +29,7 @@ MAX_DURATION_MS = 24 * 60 * 60 * 1000
 DOWNLOAD_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 PROVIDER_PATTERN = re.compile(r"^[a-z0-9_-]{1,64}$")
 HOSTNAME_PATTERN = re.compile(r"^[a-z0-9.-]{1,255}$")
-ALLOWED_MEDIA_HOST_SUFFIXES = ("365yg.com", "douyinvod.com")
+ALLOWED_MEDIA_HOST_SUFFIXES = ("365yg.com", "douyinvod.com", "bilivideo.com", "bilivideo.cn")
 ALLOWED_EXACT_MEDIA_HOSTS = DOUYIN_REVIEWED_EXACT_MEDIA_HOSTS
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
@@ -143,6 +143,7 @@ ALLOWED_INITIAL_MEDIA_FAMILIES = frozenset(
         "DOUYIN_IXIGUA_EXACT",
         "XHS_TIANTIAN_HW_EXACT",
         "XHS_NATIVE_REVIEWED",
+        "BILIBILI_PUBLIC",
         "LOOPBACK_TEST",
         "UNKNOWN",
     }
@@ -266,6 +267,8 @@ def _initial_media_family_for_host(hostname):
     if (hostname in XHS_NATIVE_BROWSER_VIDEO_HOSTS
             or XHS_NATIVE_BROWSER_VIDEO_HOST_PATTERN.fullmatch(hostname)):
         return "XHS_NATIVE_REVIEWED"
+    if any(_hostname_matches_suffix(hostname, suffix) for suffix in ("bilivideo.com", "bilivideo.cn")):
+        return "BILIBILI_PUBLIC"
     return "UNKNOWN"
 
 

@@ -420,6 +420,51 @@ class ServiceFormatSelectionTests(SimpleTestCase):
         self.assertEqual(len(soup.select('[data-picker-primary] [data-picker-radio]')), 2)
         self.assertFalse(soup.select('[data-picker-other], [data-ytdlp-action="copy"], [data-ytdlp-action="legacy"]'))
 
+    def test_case_only_quality_aliases_use_exact_resource_evidence_at_any_resolution(self):
+        self.allow_fixture_manifest()
+        for provider, key in (('tiantianjiexi_generic', 'streams'), ('kukutool_generic', 'video_fullinfo')):
+            for scheme in ('http', 'https'):
+                for label in ('720p', '1080p', '2160p', '1080p+', 'Source'):
+                    with self.subTest(provider=provider, scheme=scheme, label=label):
+                        rows = self.result(provider, payload={'title': 'Work', 'videos': [{key: [
+                            {'url': f'{scheme}://media.example/same.mp4', 'quality_label': label},
+                            {'url': f'{scheme}://media.example/same.mp4', 'quality_label': label.upper(),
+                             'size_bytes': 2048},
+                        ]}]}).metadata['upstream_candidates']
+                        before = deepcopy(rows)
+                        records = [deepcopy(resolve_candidate_record(r['resource_token'], r['candidate_id']))
+                                   for r in rows]
+                        videos = build_service_picker(rows)['videos']
+                        self.assertEqual(len(videos), 1)
+                        self.assertEqual(videos[0]['size_bytes'], 2048)
+                        self.assertEqual(set(videos[0]['alias_candidate_ids']), {r['candidate_id'] for r in rows})
+                        self.assertEqual(rows, before)
+                        for row, record in zip(rows, records):
+                            self.assertEqual(resolve_candidate_record(row['resource_token'], row['candidate_id']), record)
+
+    def test_alias_projection_keeps_distinct_unknown_and_conflicting_resources(self):
+        from .services.service_format_selection import project_bound_aliases
+        rows = self.result(payload={'videos': [{'video_fullinfo': [
+            {'url': 'https://media.example/a.mp4', 'type': '720p', 'size_bytes': 2048},
+            {'url': 'https://media.example/a.mp4', 'type': '720P', 'size_bytes': 2048},
+        ]}]}).metadata['upstream_candidates']
+        self.assertFalse(any(row['legacy_asset_id'] for row in rows))
+        self.assertEqual(len(project_bound_aliases(rows)), 1)
+        for difference in ({'size_bytes': 4096}, {'fps': 60}, {'vcodec': 'hevc'},
+                           {'language': 'en'}, {'dynamic_range': 'HDR'}, {'format_id': 'other'},
+                           {'protocol': 'm3u8'}, {'download_context_required': True}):
+            with self.subTest(difference=difference):
+                changed = [rows[0], {**rows[1], **difference}]
+                self.assertEqual(len(project_bound_aliases(changed)), 2)
+        unknown = [{k: v for k, v in row.items() if k not in {'resource_alias_key', 'legacy_asset_id'}}
+                   for row in rows]
+        self.assertEqual(len(project_bound_aliases(unknown)), 2)
+        different = self.result(payload={'videos': [{'video_fullinfo': [
+            {'url': 'https://media.example/a.mp4', 'type': '720p'},
+            {'url': 'https://media.example/b.mp4', 'type': '720P'},
+        ]}]}).metadata['upstream_candidates']
+        self.assertEqual(len(build_service_picker(different)['videos']), 2)
+
     def test_generic_native_default_is_independent_of_source_first_display_order(self):
         for provider, key in (('tiantianjiexi_generic', 'streams'), ('kukutool_generic', 'video_fullinfo')):
             for scheme in ('https', 'http'):

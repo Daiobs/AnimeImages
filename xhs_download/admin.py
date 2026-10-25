@@ -373,6 +373,10 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
     list_display = (
         "created_at",
         "status",
+        "audit_phase",
+        "audit_transport",
+        "audit_evidence",
+        "attempt_id",
         "download_type",
         "item_count",
         "actual_bytes",
@@ -390,6 +394,9 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
     )
     list_filter = (
         "status",
+        "phase",
+        "transport",
+        "evidence_source",
         "download_type",
         "provider",
         "source_platform",
@@ -403,7 +410,19 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
         "failure_type",
         "created_at",
     )
-    search_fields = ("request_id", "provider", "source_platform", "error_type", "failure_type", "healing_action")
+    search_fields = ("request_id", "attempt_id", "provider", "source_platform", "error_type", "failure_type", "healing_action")
+
+    @admin.display(description="阶段", ordering="phase")
+    def audit_phase(self, obj):
+        return obj.audit_phase_label
+
+    @admin.display(description="实际方式", ordering="transport")
+    def audit_transport(self, obj):
+        return obj.audit_transport_label
+
+    @admin.display(description="证据来源", ordering="evidence_source")
+    def audit_evidence(self, obj):
+        return obj.audit_evidence_label
 
 
 @admin.register(RoutingDecisionLog)

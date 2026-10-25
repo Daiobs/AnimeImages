@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from django.utils import timezone
+from .download_audit import operational_download_logs
 
 from ..models import (
     DownloadRequestLog,
@@ -298,7 +299,7 @@ def build_cost_signals(downloads):
 
 
 def summarize_window(start, end):
-    downloads = list(queryset_between(DownloadRequestLog, start, end))
+    downloads = list(operational_download_logs(queryset_between(DownloadRequestLog, start, end)))
     parses = list(queryset_between(ParseRequestLog, start, end))
     health_runs = list(queryset_between(ProviderHealthTestRun, start, end))
     routing_logs = list(queryset_between(RoutingDecisionLog, start, end))

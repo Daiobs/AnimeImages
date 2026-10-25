@@ -1,11 +1,13 @@
 import hashlib
 import logging
 import re
+from copy import copy
 from urllib.parse import urlparse
 
 from django.conf import settings
 
 from ..models import (
+    DownloadAuditPhase,
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
@@ -213,6 +215,10 @@ def record_download_request_log(request, **fields):
             "is_staff": privacy["is_staff"],
             "status": fields.get("status") or ObservabilityStatus.SUCCESS,
             "download_type": short_text(fields.get("download_type"), 32),
+            "attempt_id": short_text(fields.get("attempt_id"), 64),
+            "phase": short_text(fields.get("phase"), 24),
+            "transport": short_text(fields.get("transport"), 32),
+            "evidence_source": short_text(fields.get("evidence_source"), 24),
             "item_count": safe_int(fields.get("item_count"), summary["item_count"]),
             "image_count": safe_int(fields.get("image_count"), summary["image_count"]),
             "video_count": safe_int(fields.get("video_count"), summary["video_count"]),
@@ -264,18 +270,47 @@ def record_download_request_log(request, **fields):
             "healing_risk": short_text(fields.get("healing_risk"), 16),
             "healing_confidence": float(fields.get("healing_confidence") or 0),
         }
+        if payload["phase"]:
+            if not payload["attempt_id"] or payload["phase"] not in DownloadAuditPhase.values:
+                raise ValueError("Invalid download audit event")
+            payload["status"] = {
+                DownloadAuditPhase.TRANSFER_COMPLETED: ObservabilityStatus.SUCCESS,
+                DownloadAuditPhase.FAILED: ObservabilityStatus.FAILED,
+                DownloadAuditPhase.UNKNOWN: "unknown",
+                DownloadAuditPhase.CANCELLED: "cancelled",
+            }.get(payload["phase"], "pending")
+            log, created = DownloadRequestLog.objects.get_or_create(
+                attempt_id=payload["attempt_id"],
+                phase=payload["phase"],
+                transport=payload["transport"],
+                defaults=payload,
+            )
+            # Only the trusted dispatch caller preserves its existing business feedback.
+            # Client observations and transfer phases never replay that decision.
+            if (created and fields.get("dispatch_feedback") is True
+                    and payload["evidence_source"] == "server_observed"
+                    and payload["phase"] in {"prepared", "handed_off"}
+                    and payload["route_type"]):
+                dispatch = copy(log)
+                dispatch.status = fields.get("status") or ObservabilityStatus.SUCCESS
+                record_download_business_feedback(dispatch, {**payload, "status": dispatch.status})
+            return log
         log = DownloadRequestLog.objects.create(**payload)
-        record_routing_decision_log_from_download(payload)
-        try:
-            from .control_execution_tracker import track_control_execution_from_download_log
-
-            track_control_execution_from_download_log(log)
-        except Exception:
-            logger.exception("policy_control_execution_track_failed")
+        record_download_business_feedback(log, payload)
         return log
     except Exception:
         logger.exception("download_request_log_write_failed")
         return None
+
+
+def record_download_business_feedback(log, payload):
+    record_routing_decision_log_from_download(payload)
+    try:
+        from .control_execution_tracker import track_control_execution_from_download_log
+
+        track_control_execution_from_download_log(log)
+    except Exception:
+        logger.exception("policy_control_execution_track_failed")
 
 
 def record_routing_decision_log_from_download(payload):

@@ -4,6 +4,7 @@ Service file declarations retain their existing delivery semantics. They are
 not yt-dlp track evidence, and never establish codecs or complete audio tracks.
 """
 from dataclasses import replace
+from hashlib import sha256
 import json
 import re
 from time import time
@@ -24,7 +25,7 @@ def public_service_work(work):
 def candidate_facts(metadata, url, kind):
     from .provider_strategy import media_request_context
     legacy = metadata.get('_service_legacy_item') or {}
-    return {
+    facts = {
         'service_file_eligible': metadata.get('_service_picker_issued') is True,
         'download_context_required': picker.context_required(
             metadata.get('http_headers') or metadata.get('headers'), **media_request_context(metadata)),
@@ -35,6 +36,12 @@ def candidate_facts(metadata, url, kind):
         'service_manifest_required': metadata.get('_service_manifest_required') is True,
         'browser_direct_fetch_safe': legacy.get('browser_direct_fetch_safe') is True,
     }
+    if kind in {'video', 'audio'}:
+        # Presentation equality only; never used as resource authority.
+        facts['resource_alias_key'] = (sha256(url.encode()).hexdigest()
+                                       if metadata.get('_service_picker_issued') is True else '')
+        facts['filename_sequence'] = metadata.get('_service_filename_sequence')
+    return facts
 
 
 def capability(candidate):
@@ -110,9 +117,10 @@ def choice(candidate):
 
 
 def project_bound_aliases(rows):
-    """Collapse only the confirmed 1080p/P aliases of one manifest binding.
+    """Collapse case-only quality aliases of one confirmed resource binding.
 
-    A legacy identity is assigned by exact URL and unambiguous work matching.
+    New projections retain exact-URL equality without exposing the URL; older
+    records can use an existing, unambiguous legacy binding instead.
     No private record lookup, token combination or permission union is needed.
     """
     fields = ('provider_id', 'work_id', 'legacy_asset_id', 'legacy_delivery', 'media_type',
@@ -120,23 +128,25 @@ def project_bound_aliases(rows):
               'requires_merge', 'audio_tracks', 'video_tracks', 'width', 'height', 'fps',
               'bitrate', 'duration', 'vcodec', 'acodec', 'language', 'role', 'upstream_role',
               'dynamic_range', 'selected_track_check', 'format_id', 'upstream_asset_id',
-              'audio_asset_present', 'relationships', 'audio_bitrate', 'metadata_source')
+              'audio_asset_present', 'relationships', 'audio_bitrate', 'metadata_source',
+              'service_manifest_required', 'browser_direct_fetch_safe')
     buckets = {}
     for row in rows:
-        # Service normalization does not preserve every possible HDR/track fact.
-        # Do not generalize this confirmed spelling alias to other quality labels.
-        if (row.get('format_label') not in {'1080p', '1080P'}
+        label = row.get('format_label')
+        resource_key = row.get('resource_alias_key')
+        bound = row.get('legacy_asset_id') and row.get('legacy_delivery') == 'existing_manifest'
+        if (not isinstance(label, str) or not label
                 or row.get('media_type') != 'video' or not row.get('work_id')
-                or not row.get('legacy_asset_id') or row.get('legacy_delivery') != 'existing_manifest'
+                or not (resource_key or bound)
                 or any(row.get(key) for key in ('requires_context', 'download_context_required',
                                                 'headers_present', 'requires_cookie'))):
             continue
-        key = json.dumps([row.get(field) for field in fields], sort_keys=True)
+        key = json.dumps([label.casefold(), resource_key, *[row.get(field) for field in fields]], sort_keys=True)
         buckets.setdefault(key, []).append(row)
     replacements = {}
     omitted = set()
     for aliases in buckets.values():
-        if {row['format_label'] for row in aliases} != {'1080p', '1080P'}:
+        if len({row['format_label'] for row in aliases}) < 2:
             continue
         known = [row for row in aliases if picker.number(row.get('size_bytes'))]
         if len({picker.number(row['size_bytes']) for row in known}) > 1:
@@ -256,6 +266,7 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
         if isinstance(row, dict) and row.get('url'):
             work_ids_by_url.setdefault(row['url'], set()).add(row.get('work_id'))
     groups = {}
+    filename_resources = {}
     for row in rows[:MAX_CANDIDATES]:
         if not isinstance(row, dict):
             continue
@@ -289,6 +300,9 @@ def attach_service_picker(result, *, payload, provider, source_url, match=None, 
             metadata['work_label'] = presentation['title']
         metadata['_filename_title'] = work_caption_presentation(
             metadata.get('work_label'), raw_description)['title']
+        if row.get('media_type') in {'video', 'audio'}:
+            resource = (row.get('work_id') or '', url)
+            metadata['_service_filename_sequence'] = filename_resources.setdefault(resource, len(filename_resources) + 1)
         groups.setdefault(row.get('work_id') or '', []).append((url, metadata))
     cover = (candidate_url(payload.get('cover'), validator=projection_validator)
              if projection_validator else safe_resource_url(payload.get('cover')))

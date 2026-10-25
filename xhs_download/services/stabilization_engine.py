@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 
 from django.utils import timezone
+from .download_audit import operational_download_logs
 
 from ..models import (
     DownloadRequestLog,
@@ -283,7 +284,7 @@ def build_stabilization_snapshot(*, window_hours=24):
     window_hours = normalize_window_hours(window_hours)
     now = timezone.now()
     since = now - timezone.timedelta(hours=window_hours)
-    downloads = list(DownloadRequestLog.objects.filter(created_at__gte=since))
+    downloads = list(operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=since)))
     controls = list(PolicyControlRecord.objects.filter(created_at__gte=since))
     feedback = build_feedback(window_hours=window_hours)
     control_convergence = build_control_convergence_snapshot(window_hours=window_hours)
@@ -313,7 +314,7 @@ def build_stability_trend(*, window_hours=24, buckets=6):
     for index in range(buckets):
         start = now - timezone.timedelta(seconds=bucket_seconds * (buckets - index))
         end = start + timezone.timedelta(seconds=bucket_seconds)
-        downloads = list(DownloadRequestLog.objects.filter(created_at__gte=start, created_at__lt=end))
+        downloads = list(operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=start, created_at__lt=end)))
         controls = list(PolicyControlRecord.objects.filter(created_at__gte=start, created_at__lt=end))
         result = stabilization_engine(
             downloads=downloads,

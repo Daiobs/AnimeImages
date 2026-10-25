@@ -16,6 +16,7 @@ import requests
 
 from contracts.network import offline_requests
 from xhs_download.models import ProviderAccessMode, ProviderRuntimeSetting
+from xhs_download.models import DownloadRequestLog
 
 
 SOURCE = 'https://www.instagram.com/p/contract-video/'
@@ -188,3 +189,41 @@ if (item.download_strategy === 'browser_streaming') {
         response = self.action(self.parse()[1])
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()['item']['download_strategy'], 'browser_streaming')
+
+    def test_inv04_authorized_selection_issues_observation_receipt_not_saved_success(self):
+        radio = self.parse()[1]
+        item = self.action(radio).json()['item']
+        audit = item['download_audit']
+        prepared = DownloadRequestLog.objects.get(attempt_id=audit['attempt_id'])
+        self.assertEqual((prepared.phase, prepared.status, prepared.actual_bytes), ('prepared', 'pending', 0))
+        self.assertEqual(prepared.provider, 'tiantianjiexi_generic')
+        calls_before = list(self.media_requests)
+        event = dict(schema=audit['schema'], token=audit['token'], phase='handed_off',
+                     transport='browser_native', actual_bytes=0)
+        for _ in range(2):
+            response = self.client.post(audit['endpoint'], event, content_type='application/json')
+            self.assertEqual(response.status_code, 204, response.content)
+        self.assertEqual(DownloadRequestLog.objects.filter(attempt_id=audit['attempt_id']).count(), 2)
+        self.assertFalse(DownloadRequestLog.objects.filter(attempt_id=audit['attempt_id'], status='success').exists())
+        self.assertEqual(self.client.post(audit['endpoint'], {**event, 'phase': 'transfer_completed'},
+                                         content_type='application/json').status_code, 400)
+        self.assertEqual(self.media_requests, calls_before)
+        self.assertEqual(self.provider_calls, 1)
+
+    def test_inv04_link_preview_do_not_issue_download_receipts_and_sw_report_is_client_observed(self):
+        radio = self.parse()[1]
+        for action in ('link', 'open', 'preview'):
+            response = self.action(radio, action=action)
+            self.assertNotIn('download_audit', response.json().get('item', {}))
+        self.assertEqual(DownloadRequestLog.objects.count(), 0)
+        self.disposition = 'inline'
+        audit = self.action(radio).json()['item']['download_audit']
+        for phase in ('handed_off', 'transfer_started', 'transfer_completed'):
+            response = self.client.post(audit['endpoint'], dict(
+                schema=audit['schema'], token=audit['token'], phase=phase,
+                transport='browser_streaming', actual_bytes=12345 if phase == 'transfer_completed' else 0),
+                content_type='application/json')
+            self.assertEqual(response.status_code, 204, response.content)
+        done = DownloadRequestLog.objects.get(attempt_id=audit['attempt_id'], phase='transfer_completed')
+        self.assertEqual(done.evidence_source, 'client_observed')
+        self.assertEqual(done.actual_bytes, 12345)

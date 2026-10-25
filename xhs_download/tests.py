@@ -7596,10 +7596,14 @@ class XhsDownloadViewTests(TestCase):
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
         self.assertEqual(mock_fetch.call_count, 1)
-        log = DownloadRequestLog.objects.get()
+        log = DownloadRequestLog.objects.get(phase="transfer_completed")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 654)
         self.assertEqual(log.browser_egress_estimated_bytes, 0)
+        self.assertEqual(log.actual_bytes, len(b"video-content"))
+        self.assertTrue(DownloadRequestLog.objects.filter(
+            attempt_id=log.attempt_id, phase="handed_off", status="pending",
+        ).exists())
 
     @patch("xhs_download.views.fetch_media_response")
     def test_download_proxy_video_returns_single_file_response(self, mock_fetch):
@@ -7625,7 +7629,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response["Content-Type"], "video/mp4")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
-        log = DownloadRequestLog.objects.get()
+        log = DownloadRequestLog.objects.get(phase="transfer_completed")
         self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 654)
@@ -7909,7 +7913,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response["Content-Type"], "video/mp4")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
-        log = DownloadRequestLog.objects.get()
+        log = DownloadRequestLog.objects.get(phase="transfer_completed")
         self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 654)
@@ -7938,7 +7942,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response["Content-Type"], "image/jpeg")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"image-content")
-        log = DownloadRequestLog.objects.get()
+        log = DownloadRequestLog.objects.get(phase="transfer_completed")
         self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 321)

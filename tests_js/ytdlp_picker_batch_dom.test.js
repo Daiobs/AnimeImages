@@ -91,6 +91,26 @@ function choose(root, index) {
     const radio = radios(root)[index]; radio.checked = true;
     root.listeners.change?.({target: radio});
 }
+
+test("authorized cover uses the existing image display path without a CORS media fetch", async () => {
+    const {doc, win} = fixture();
+    const root = newPicker(["video"]);
+    root.dataset.firstId = "video"; root.dataset.firstToken = "signed-video";
+    const image = el("img", {"data-cover-available": "true"}); image.hidden = true;
+    root.append(image); doc.body.append(root);
+    const calls = [];
+    picker.mount(root, doc, win, {
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return {ok: true, json: async () => ({status: "success", url: "https://cdn.example.org/cover.jpg"})};
+        }});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.length, 1);
+    assert.equal(JSON.parse(calls[0].options.body).action, "cover");
+    assert.equal(image.src, "https://cdn.example.org/cover.jpg");
+    assert.equal(image.referrerPolicy, "no-referrer");
+    assert.equal(image.hidden, false);
+});
 function card(root, status = "success") {
     const result = el("article", {class: "batch-result-card", "data-status": status});
     result.append(root); return result;

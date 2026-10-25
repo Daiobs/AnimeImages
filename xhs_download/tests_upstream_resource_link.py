@@ -10,7 +10,7 @@ from django.core.cache import cache
 from django.test import RequestFactory, TestCase, override_settings
 
 from . import views
-from .models import DownloadRequestLog, ObservabilityStatus
+from .models import DownloadRequestLog, ObservabilityStatus, RoutingDecisionLog
 from .services.provider_manifest import build_provider_manifest_token
 from .services.upstream_delivery import normalize_upstream_result
 
@@ -75,14 +75,19 @@ class UpstreamResourceLinkTests(TestCase):
                 preflight.assert_called_once()
                 self.assertEqual(DownloadRequestLog.objects.count(), before)
 
-    def test_ordinary_download_still_records_success(self):
+    def test_ordinary_route_records_preparation_and_dispatch_not_transfer_success(self):
         before = DownloadRequestLog.objects.count()
         response = self.post(intent=None)
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(DownloadRequestLog.objects.count(), before + 1)
-        self.assertEqual(DownloadRequestLog.objects.latest("pk").status, ObservabilityStatus.SUCCESS)
+        log = DownloadRequestLog.objects.latest("pk")
+        self.assertEqual((log.phase, log.status), ("prepared", "pending"))
+        self.assertEqual(log.actual_bytes, 0)
+        self.assertEqual(log.route_type, "direct")
+        self.assertFalse(DownloadRequestLog.objects.filter(phase="transfer_completed").exists())
+        self.assertTrue(RoutingDecisionLog.objects.get().success)
 
-    def test_mature_provider_download_logs_are_unchanged_and_link_intent_is_denied(self):
+    def test_mature_provider_route_is_prepared_and_link_intent_remains_denied(self):
         fields = {"asset_id": "douyin:123456789012345678:video:tiantianjiexi",
                   "provider": "tiantianjiexi", "provider_resource_id": "123456789012345678",
                   "provider_cache_key": "douyin:tiantianjiexi:validated:123456789012345678",
@@ -94,7 +99,10 @@ class UpstreamResourceLinkTests(TestCase):
         response = self.post(intent=None, media_items=[item])
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(DownloadRequestLog.objects.count(), 1)
-        self.assertEqual(DownloadRequestLog.objects.get().status, ObservabilityStatus.SUCCESS)
+        log = DownloadRequestLog.objects.get()
+        self.assertEqual((log.phase, log.status), ("prepared", "pending"))
+        self.assertEqual(log.route_type, "direct")
+        self.assertTrue(RoutingDecisionLog.objects.get().success)
 
     def test_anonymous_nonstaff_and_inactive_staff_are_denied(self):
         ordinary = get_user_model().objects.create_user(username="resource-link-user")

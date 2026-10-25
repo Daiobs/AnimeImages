@@ -510,6 +510,30 @@ class ParseRequestLog(models.Model):
         return f"{local_datetime_label(self.created_at)} {self.status} {self.request_id}"
 
 
+class DownloadAuditPhase(models.TextChoices):
+    PREPARED = "prepared", "准备就绪"
+    HANDED_OFF = "handed_off", "已移交"
+    TRANSFER_STARTED = "transfer_started", "传输开始"
+    TRANSFER_COMPLETED = "transfer_completed", "传输完成（非磁盘保存）"
+    FAILED = "failed", "失败"
+    CANCELLED = "cancelled", "取消"
+    UNKNOWN = "unknown", "结果未知"
+
+
+class DownloadAuditTransport(models.TextChoices):
+    BROWSER_NATIVE = "browser_native", "原生直链"
+    BROWSER_STREAMING = "browser_streaming", "SW 流式"
+    BROWSER_BLOB = "browser_blob", "浏览器 Blob"
+    SERVER_ATTACHMENT = "server_attachment", "服务端转交"
+    SERVER_ZIP = "server_zip", "服务端 ZIP"
+    SERVER_MERGE = "server_merge", "服务端合流"
+
+
+class DownloadAuditEvidence(models.TextChoices):
+    SERVER_OBSERVED = "server_observed", "服务端观测"
+    CLIENT_OBSERVED = "client_observed", "客户端上报（非落盘确认）"
+
+
 class DownloadRequestLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     request_id = models.CharField(max_length=128, db_index=True)
@@ -518,11 +542,17 @@ class DownloadRequestLog(models.Model):
     is_staff = models.BooleanField(default=False, db_index=True)
     status = models.CharField(
         max_length=16,
-        choices=ObservabilityStatus.choices,
+        choices=ObservabilityStatus.choices + [
+            ("pending", "待终态"), ("unknown", "未知"), ("cancelled", "取消"),
+        ],
         default=ObservabilityStatus.SUCCESS,
         db_index=True,
     )
     download_type = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    attempt_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    phase = models.CharField(max_length=24, choices=DownloadAuditPhase.choices, blank=True, default="", db_index=True)
+    transport = models.CharField(max_length=32, choices=DownloadAuditTransport.choices, blank=True, default="", db_index=True)
+    evidence_source = models.CharField(max_length=24, choices=DownloadAuditEvidence.choices, blank=True, default="", db_index=True)
     item_count = models.PositiveSmallIntegerField(default=0)
     image_count = models.PositiveSmallIntegerField(default=0)
     video_count = models.PositiveSmallIntegerField(default=0)
@@ -562,6 +592,13 @@ class DownloadRequestLog(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
+        constraints = (
+            models.UniqueConstraint(
+                fields=("attempt_id", "phase", "transport"),
+                condition=~models.Q(attempt_id="") & ~models.Q(phase=""),
+                name="download_audit_event_once",
+            ),
+        )
         indexes = (
             models.Index(fields=("created_at", "status")),
             models.Index(fields=("download_type", "created_at")),
@@ -578,6 +615,24 @@ class DownloadRequestLog(models.Model):
 
     def __str__(self):
         return f"{local_datetime_label(self.created_at)} {self.status} {self.download_type}"
+
+    @property
+    def audit_phase_label(self):
+        return self.get_phase_display() if self.phase else "legacy（旧口径，未区分阶段）"
+
+    @property
+    def audit_transport_label(self):
+        return self.get_transport_display() if self.transport else "未观测"
+
+    @property
+    def audit_evidence_label(self):
+        return self.get_evidence_source_display() if self.evidence_source else "legacy（非保存证明）"
+
+    @property
+    def audit_time_label(self):
+        from .services.admin_console import format_admin_datetime
+
+        return format_admin_datetime(self.created_at)
 
 
 class RoutingDecisionLog(models.Model):

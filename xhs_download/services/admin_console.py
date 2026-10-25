@@ -17,6 +17,7 @@ from ..models import (
     SelfHealingEvent,
 )
 from .routing_policy_adjuster import build_routing_policy_recommendations
+from .download_audit import download_attempts, legacy_download_logs
 from .routing_v3 import build_routing_intelligence_snapshot
 from .recovery_engine import provider_stability_score, provider_stability_status
 
@@ -69,6 +70,13 @@ def top_values(queryset, field_name, limit=10):
         .annotate(count=Count("id"))
         .order_by("-count", field_name)[:limit]
     )
+
+
+def top_legacy_values(queryset, field_name, limit=10):
+    return [
+        {**row, field_name: f"{row[field_name]} [legacy]"}
+        for row in top_values(legacy_download_logs(queryset), field_name, limit)
+    ]
 
 
 def format_admin_datetime(value):
@@ -235,6 +243,9 @@ def build_provider_stability_rows(download_queryset):
 
 
 def build_system_stability_panel(download_24h, download_7d):
+    # Existing policy/stability panels retain their explicitly historical population.
+    download_24h = legacy_download_logs(download_24h)
+    download_7d = legacy_download_logs(download_7d)
     total_24h = download_24h.count()
     failed_24h = download_24h.exclude(status=ObservabilityStatus.SUCCESS).count()
     routing_failures = download_24h.filter(failure_type="routing_failed").count()
@@ -248,7 +259,7 @@ def build_system_stability_panel(download_24h, download_7d):
     provider_rows = build_provider_stability_rows(download_7d)
     return {
         "summary": (
-            {"label": "24h 下载失败率", "value": f"{percent(failed_24h, total_24h)}%"},
+            {"label": "24h legacy 失败率（旧口径）", "value": f"{percent(failed_24h, total_24h)}%"},
             {"label": "24h routing_failure_rate", "value": f"{percent(routing_failures, total_24h)}%"},
             {"label": "24h provider_failure_rate", "value": f"{percent(provider_failures, total_24h)}%"},
             {"label": "24h recovery_count", "value": recovery_count},
@@ -309,13 +320,20 @@ def build_admin_console_context():
     recent_24h_download = DownloadRequestLog.objects.filter(created_at__gte=recent_24h_start)
     recent_7d_download = DownloadRequestLog.objects.filter(created_at__gte=recent_7d_start)
 
-    today_download_count = today_download.count()
-    today_download_success = today_download.filter(status=ObservabilityStatus.SUCCESS).count()
-    today_actual_bytes = sum_field(today_download, "actual_bytes")
-    today_estimated_bytes = sum_field(today_download, "estimated_bytes")
-    recent_24h_actual_bytes = sum_field(recent_24h_download, "actual_bytes")
-    recent_7d_actual_bytes = sum_field(recent_7d_download, "actual_bytes")
-    routing_summary = build_download_routing_summary(recent_24h_download)
+    today_attempts = download_attempts(today_download)
+    recent_24h_attempts = download_attempts(recent_24h_download)
+    recent_7d_attempts = download_attempts(recent_7d_download)
+    today_legacy = legacy_download_logs(today_download)
+    today_download_count = today_attempts.count()
+    today_download_success = today_attempts.filter(phase="transfer_completed").count()
+    today_download_failed = today_attempts.filter(phase="failed").count()
+    observed_terminal_count = today_download_success + today_download_failed
+    server_today = today_attempts.filter(evidence_source="server_observed", transport__startswith="server_")
+    today_actual_bytes = sum_field(server_today, "observed_bytes")
+    today_estimated_bytes = sum_field(today_attempts, "estimated_bytes")
+    recent_24h_actual_bytes = sum_field(recent_24h_attempts.filter(evidence_source="server_observed", transport__startswith="server_"), "observed_bytes")
+    recent_7d_actual_bytes = sum_field(recent_7d_attempts.filter(evidence_source="server_observed", transport__startswith="server_"), "observed_bytes")
+    routing_summary = build_download_routing_summary(legacy_download_logs(recent_24h_download))
     routing_intelligence = build_routing_intelligence_panel()
     system_stability = build_system_stability_panel(recent_24h_download, recent_7d_download)
     self_healing = build_self_healing_panel(recent_24h_start, recent_7d_start)
@@ -341,23 +359,27 @@ def build_admin_console_context():
         usage_label = f"{usage_percent}%"
 
     warning_threshold = int(download_setting.large_download_warning_bytes or 0)
-    large_downloads = recent_24h_download
+    large_downloads = recent_24h_attempts
     if warning_threshold > 0:
-        large_downloads = large_downloads.filter(actual_bytes__gte=warning_threshold)
+        large_downloads = large_downloads.filter(observed_bytes__gte=warning_threshold)
     else:
-        large_downloads = large_downloads.filter(actual_bytes__gt=0)
+        large_downloads = large_downloads.filter(observed_bytes__gt=0)
     large_download_rows = [
         {
             "created_at": format_admin_datetime(row.created_at),
             "download_type": row.download_type,
             "provider": row.provider,
             "source_platform": row.source_platform,
-            "actual_bytes": format_bytes(row.actual_bytes),
+            "observed_bytes": format_bytes(row.observed_bytes),
+            "bytes_evidence": "客户端报告接收量" if row.evidence_source == "client_observed" else "服务端观测发送量",
             "estimated_bytes": format_bytes(row.estimated_bytes),
-            "status": row.status,
+            "phase": row.audit_phase_label,
+            "transport": row.audit_transport_label,
+            "evidence_source": row.audit_evidence_label,
+            "attempt_id": row.attempt_id,
             "request_id": row.request_id,
         }
-        for row in large_downloads.order_by("-actual_bytes", "-created_at")[:10]
+        for row in large_downloads.order_by("-observed_bytes", "-created_at")[:10]
     ]
 
     blocked_rows = [
@@ -389,14 +411,19 @@ def build_admin_console_context():
         "admin_time_zone": getattr(display_tz, "key", ADMIN_DISPLAY_TIME_ZONE),
         "cards": (
             {"label": "今日解析次数", "value": today_parse.count()},
-            {"label": "今日下载次数", "value": today_download_count},
-            {"label": "今日下载成功率", "value": f"{percent(today_download_success, today_download_count)}%"},
-            {"label": "今日下载实际流量", "value": format_bytes(today_actual_bytes)},
+            {"label": "今日下载次数（去重尝试）", "value": today_download_count},
+            {"label": "传输完成率（已观测终态，非落盘）", "value": f"{percent(today_download_success, observed_terminal_count)}%" if observed_terminal_count else "未知"},
+            {"label": "今日下载实际流量（服务端已发送）", "value": format_bytes(today_actual_bytes)},
+            {"label": "今日客户端上报接收量（非服务端流量）", "value": format_bytes(sum_field(today_attempts.filter(evidence_source="client_observed"), "observed_bytes"))},
             {"label": "今日下载估算流量", "value": format_bytes(today_estimated_bytes)},
-            {"label": "今日下载失败数", "value": today_download.filter(status=ObservabilityStatus.FAILED).count()},
+            {"label": "今日下载失败数（去重尝试）", "value": today_download_failed},
+            {"label": "今日未观测终态（含原生移交）", "value": today_attempts.exclude(phase__in=("transfer_completed", "failed", "cancelled")).count()},
+            {"label": "今日取消数", "value": today_attempts.filter(phase="cancelled").count()},
+            {"label": "今日 legacy 行数（旧口径，不计新完成率）", "value": today_legacy.count()},
+            {"label": "今日 legacy 记录流量（未复核）", "value": format_bytes(sum_field(today_legacy, "actual_bytes"))},
             {"label": "今日限流 / 阻止次数", "value": blocked_or_limited},
-            {"label": "24h 下载实际流量", "value": format_bytes(recent_24h_actual_bytes)},
-            {"label": "7 天下载实际流量", "value": format_bytes(recent_7d_actual_bytes)},
+            {"label": "24h 下载实际流量（服务端已发送）", "value": format_bytes(recent_24h_actual_bytes)},
+            {"label": "7 天下载实际流量（服务端已发送）", "value": format_bytes(recent_7d_actual_bytes)},
         ),
         "download_setting": download_setting,
         "download_summary": build_download_runtime_summary(download_setting),
@@ -411,10 +438,10 @@ def build_admin_console_context():
         "routing_intelligence": routing_intelligence,
         "system_stability": system_stability,
         "self_healing": self_healing,
-        "failure_top": top_values(recent_24h_download.exclude(status=ObservabilityStatus.SUCCESS), "error_code"),
+        "failure_top": top_values(recent_24h_download.filter(status__in=(ObservabilityStatus.FAILED, ObservabilityStatus.BLOCKED, ObservabilityStatus.RATE_LIMITED)), "error_code"),
         "large_downloads": large_download_rows,
         "blocked_rows": blocked_rows,
-        "provider_top": top_values(today_download, "provider"),
-        "source_platform_top": top_values(today_download, "source_platform"),
+        "provider_top": top_values(today_attempts, "provider") + top_legacy_values(today_download, "provider"),
+        "source_platform_top": top_values(today_attempts, "source_platform") + top_legacy_values(today_download, "source_platform"),
         "recent_audit": recent_audit,
     }

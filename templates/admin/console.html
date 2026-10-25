@@ -429,23 +429,25 @@
 
         <section class="console-section-grid">
             <div class="console-panel">
-                <h2>最近 24h 大文件下载 Top 10</h2>
+                <h2>最近 24h 大文件传输观察 Top 10</h2>
+                <p class="text-muted">按去重尝试的最终观察时间统计；传输完成不等于磁盘保存。</p>
                 <div class="console-table-wrap">
                     <table class="console-table">
-                        <thead><tr><th>时间</th><th>类型</th><th>Provider</th><th>平台</th><th>实际大小</th><th>状态</th><th>request_id</th></tr></thead>
+                        <thead><tr><th>时间</th><th>类型 / 方式</th><th>Provider</th><th>平台</th><th>观测字节</th><th>阶段</th><th>证据来源</th><th>attempt_id / request_id</th></tr></thead>
                         <tbody>
                         {% for row in large_downloads %}
                             <tr>
                                 <td>{{ row.created_at }}</td>
-                                <td>{{ row.download_type }}</td>
+                                <td>{{ row.download_type }} / {{ row.transport }}</td>
                                 <td>{{ row.provider }}</td>
                                 <td>{{ row.source_platform }}</td>
-                                <td>{{ row.actual_bytes }}</td>
-                                <td>{{ row.status }}</td>
-                                <td>{{ row.request_id }}</td>
+                                <td>{{ row.observed_bytes }}<br>{{ row.bytes_evidence }}</td>
+                                <td>{{ row.phase }}</td>
+                                <td>{{ row.evidence_source }}</td>
+                                <td>{{ row.attempt_id }}<br>{{ row.request_id }}</td>
                             </tr>
                         {% empty %}
-                            <tr><td colspan="7">暂无大文件下载记录</td></tr>
+                            <tr><td colspan="8">暂无大文件传输观察</td></tr>
                         {% endfor %}
                         </tbody>
                     </table>

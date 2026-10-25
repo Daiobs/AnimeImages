@@ -1309,6 +1309,7 @@
                 onProgress(status);
             },
         });
+        if (settings.auditReport) settings.auditReport("handed_off");
         onStage("fetching", STAGE_MESSAGES.fetching);
         const completed = await active.completion;
         onStage("completed", STAGE_MESSAGES.completed);
@@ -1346,7 +1347,85 @@
         return {transport: 'browser_native', state: 'handed_off', filename: '', message};
     }
 
+    function createDownloadAudit(item, options) {
+        const settings = options || {};
+        const grant = item && item.download_audit;
+        const doc = settings.documentObject || (typeof document !== "undefined" ? document : null);
+        let cookieText = "";
+        try { cookieText = String(doc && doc.cookie || ""); } catch (_) { /* Optional audit only. */ }
+        const cookie = cookieText.split(";").map(value => value.trim())
+            .find(value => value.startsWith("csrftoken="));
+        const csrf = settings.csrfToken || (cookie ? cookie.slice("csrftoken=".length) : "");
+        const fetchAudit = settings.auditFetchImpl || (typeof fetch === "function" ? fetch.bind(globalThis) : null);
+        const sent = new Set();
+        let transport = "", receivedBytes = 0;
+        function report(phase, error) {
+            if (!grant || grant.schema !== "download_audit_v1" || !grant.token || !csrf || !fetchAudit
+                    || grant.endpoint !== "/media/browser-download-telemetry/" || !transport) return;
+            const key = `${transport}:${phase}`;
+            if (sent.has(key)) return;
+            sent.add(key);
+            try {
+                // Audit never waits for or retries a media operation. No URL,
+                // candidate or filename is sent; the server owns attribution.
+                Promise.resolve(fetchAudit(grant.endpoint, {
+                    method: "POST", credentials: "same-origin", keepalive: true,
+                    headers: {"Content-Type": "application/json", "X-CSRFToken": csrf},
+                    body: JSON.stringify({schema: grant.schema, token: grant.token, phase, transport,
+                        actual_bytes: receivedBytes,
+                        error_code: String(error && error.errorCode || "").replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 80)}),
+                })).catch(() => {});
+            } catch (_) { /* Audit unavailability must not block delivery. */ }
+        }
+        return {
+            report,
+            transport(value) { transport = value; },
+            progress(value) {
+                receivedBytes = Math.max(receivedBytes, Math.floor(nonNegativeNumber(value && value.receivedBytes)));
+                if (receivedBytes > 0) report("transfer_started");
+            },
+        };
+    }
+
     async function download(item, options) {
+        const original = options && typeof options === "object" ? options : {};
+        const audit = createDownloadAudit(item, original);
+        const settings = {...original, auditReport: audit.report,
+            onProgress(value) {
+                audit.progress(value);
+                if (original.onProgress) original.onProgress(value);
+            },
+            onStage(stage, message) {
+                if (stage === "handed_off") audit.report("handed_off");
+                if (stage === "saving") audit.report("transfer_completed");
+                if (original.onStage) original.onStage(stage, message);
+            },
+            onTransportFallback(value) {
+                audit.transport("browser_blob");
+                if (original.onTransportFallback) original.onTransportFallback(value);
+            },
+        };
+        const video = String(item && (item.type || item.media_type) || "").toLowerCase() === "video";
+        audit.transport(item && item.download_strategy === "browser_native" ? "browser_native"
+            : video ? "browser_streaming" : "browser_blob");
+        try {
+            const result = await deliver(item, settings);
+            audit.transport(result.transport);
+            if (result.transport !== "browser_native") {
+                audit.progress(result);
+                audit.report("transfer_completed");
+                if (result.transport === "browser_blob") audit.report("handed_off");
+            }
+            return result;
+        } catch (error) {
+            const cancelled = error && (error.name === "AbortError" || /CANCEL/.test(error.errorCode || ""));
+            const unknown = error && /UNKNOWN|STATUS_UNAVAILABLE/.test(error.errorCode || "");
+            audit.report(unknown ? "unknown" : cancelled ? "cancelled" : "failed", error);
+            throw error;
+        }
+    }
+
+    async function deliver(item, options) {
         const settings = options && typeof options === "object" ? options : {};
         if (item && streamingProtocol.hasUnsupportedRequestContext(item)) {
             throw downloadError("BROWSER_REQUEST_CONTEXT_UNSUPPORTED", "当前资源需要浏览器无法提供的请求条件，未开始下载。");

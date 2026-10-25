@@ -168,7 +168,7 @@ class DouyinFormatSelectionTests(SimpleTestCase):
         result = self.result()
         row = result.metadata['upstream_candidates'][0]
         link = selected_link_descriptor(self.record(row))
-        self.assertTrue(link['filename'].startswith('media_'))
+        self.assertEqual(link['filename'], 'media.mp4')
         self.assertNotIn('#', link['filename'])
         record = deepcopy(self.record(row))
         record['service_legacy_item']['filename'] = '#摄影 #日常.mp4'
@@ -188,7 +188,9 @@ class DouyinFormatSelectionTests(SimpleTestCase):
                 record = self.record(row)
                 saved_record = deepcopy(record)
                 link = selected_link_descriptor(record)
-                self.assertTrue(link['filename'].startswith(CAPTION_TITLE + '_'))
+                suffix = f"_{row['ordinal']}" if row['ordinal'] > 1 else ''
+                self.assertEqual(link['filename'], CAPTION_TITLE + suffix + '.mp4')
+                self.assertNotIn(row['candidate_id'], link['filename'])
                 self.assertNotIn(CAPTION_DESCRIPTION[:10], link['filename'])
                 self.assertNotIn('#', link['filename'])
                 response = self.download_action(row)

@@ -3,6 +3,7 @@ from collections import Counter, defaultdict
 from django.utils import timezone
 
 from ..models import DownloadRequestLog, ObservabilityStatus, ParseRequestLog, PolicyLearningRun
+from ..services.download_audit import operational_download_logs
 from ..services.download_routing import (
     ROUTE_DIRECT,
     ROUTE_PROXY,
@@ -109,7 +110,7 @@ def build_policy_learning_snapshot(window_hours=24, now=None):
     window_hours = int(window_hours or 24)
     now = now or timezone.now()
     since = now - timezone.timedelta(hours=window_hours)
-    downloads = list(DownloadRequestLog.objects.filter(created_at__gte=since))
+    downloads = list(operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=since)))
     parses = list(ParseRequestLog.objects.filter(created_at__gte=since))
     route_distribution = build_route_distribution(downloads)
     provider_distribution = build_provider_distribution(downloads, parses)

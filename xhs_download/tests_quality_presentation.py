@@ -78,8 +78,7 @@ class QualityPresentationTests(SimpleTestCase):
 
     def test_different_quality_labels_never_share_a_display_identity_or_size(self):
         for labels in (('原画', '1080P'), ('原画', 'source'), ('original', 'source'),
-                       ('1080p', '720p'), ('720P', '流畅'), ('720p', '720P'),
-                       ('1080p+', '1080P+'), ('1080p HDR', '1080P SDR')):
+                       ('1080p', '720p'), ('720P', '流畅'), ('1080p HDR', '1080P SDR')):
             with self.subTest(labels=labels):
                 rows = self.result([('main', labels[0], 0), ('main', labels[1], 2000)]).metadata['upstream_candidates']
                 before = deepcopy(rows)
@@ -90,6 +89,19 @@ class QualityPresentationTests(SimpleTestCase):
                 self.assertTrue(all('alias_candidate_ids' not in row for row in presentation['videos']))
                 self.assertCountEqual([(row['candidate_id'], row['resource_token']) for row in presentation['videos']],
                                       [(row['candidate_id'], row['resource_token']) for row in rows])
+                self.assertEqual(rows, before)
+
+    def test_case_only_aliases_use_legacy_binding_for_old_cached_candidates(self):
+        for labels in (('720p', '720P'), ('1080p+', '1080P+'), ('2160p', '2160P'), ('Source', 'SOURCE')):
+            with self.subTest(labels=labels):
+                rows = self.result([('main', labels[0], 0), ('main', labels[1], 2000)]).metadata['upstream_candidates']
+                rows = [{key: value for key, value in row.items() if key != 'resource_alias_key'} for row in rows]
+                before = deepcopy(rows)
+                presentation = build_service_picker(rows)
+                self.assertEqual(len(presentation['videos']), 1)
+                self.assertEqual(presentation['selected']['candidate_id'], rows[0]['candidate_id'])
+                self.assertEqual(presentation['selected']['resource_token'], rows[0]['resource_token'])
+                self.assertEqual(presentation['selected']['size_bytes'], 2000)
                 self.assertEqual(rows, before)
 
     def test_numeric_plus_source_and_unknown_stable_order_is_not_size_order(self):
