@@ -5,6 +5,7 @@ from django.conf import settings
 from django.db.models import Avg, Count, Q, Sum
 from django.urls import reverse
 from django.utils import timezone
+from .download_audit import operational_download_logs
 
 from download_console.models import DownloadRuntimeSetting
 
@@ -332,7 +333,7 @@ def provider_parse_queryset(config, since):
 
 
 def provider_download_queryset(config, since):
-    return DownloadRequestLog.objects.filter(created_at__gte=since).filter(config.download_query)
+    return operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=since)).filter(config.download_query)
 
 
 def top_error_reasons(queryset, limit=10):
@@ -415,11 +416,11 @@ def build_rollout_guard_context(request):
     recent_7d_start = now - timezone.timedelta(days=7)
 
     today_parse = ParseRequestLog.objects.filter(created_at__gte=today_start)
-    today_download = DownloadRequestLog.objects.filter(created_at__gte=today_start)
+    today_download = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=today_start))
     recent_24h_parse = ParseRequestLog.objects.filter(created_at__gte=recent_24h_start)
-    recent_24h_download = DownloadRequestLog.objects.filter(created_at__gte=recent_24h_start)
+    recent_24h_download = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=recent_24h_start))
     recent_7d_parse = ParseRequestLog.objects.filter(created_at__gte=recent_7d_start)
-    recent_7d_download = DownloadRequestLog.objects.filter(created_at__gte=recent_7d_start)
+    recent_7d_download = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=recent_7d_start))
 
     download_setting = DownloadRuntimeSetting.load()
     runtime_setting = ProviderRuntimeSetting.load()

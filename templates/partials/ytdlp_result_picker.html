@@ -13,8 +13,8 @@
     <div class="quality-media-preview">
         <div class="quality-preview-tile" data-picker-artwork data-picker-preview-only>
             <span class="ytdlp-artwork-placeholder" aria-hidden="true"><i class="bi {% if ytdlp_picker.is_audio %}bi-music-note-beamed{% else %}bi-play-btn{% endif %}"></i></span>
-            {% if ytdlp_picker.legacy_video.cover_url %}
-            {% with item=ytdlp_picker.legacy_video %}
+            {% if ytdlp_picker.cover_video.cover_url or ytdlp_picker.legacy_video.cover_url %}
+            {% with item=ytdlp_picker.cover_video|default:ytdlp_picker.legacy_video %}
             <img data-picker-cover data-picker-legacy-cover
                  src="{% if item.source_platform == 'upstream' %}{{ item.cover_url }}{% else %}{{ proxy_image_url }}?u={{ item.encoded_preview_cover_url|default:item.encoded_cover_url }}{% if item.cover_preview_provider_query %}&{{ item.cover_preview_provider_query }}{% endif %}{% endif %}"
                  {% if item.source_platform == 'upstream' %}referrerpolicy="no-referrer"{% endif %}

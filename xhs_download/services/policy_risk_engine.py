@@ -1,6 +1,7 @@
 from django.utils import timezone
 
 from ..models import DownloadRequestLog, ObservabilityStatus, PolicyOptimizationProposal
+from .download_audit import operational_download_logs
 from ..policy.evolution import SAFETY_REJECT
 from ..services.download_routing import safe_download_size
 
@@ -42,7 +43,7 @@ def infer_impact_area(suggestion):
 
 def policy_area_historical_instability(*, impact_area, window_hours=24):
     since = timezone.now() - timezone.timedelta(hours=int(window_hours or 24))
-    downloads = DownloadRequestLog.objects.filter(created_at__gte=since)
+    downloads = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=since))
     if impact_area == "provider":
         total = downloads.exclude(provider="").count()
         failed = downloads.exclude(provider="").exclude(status=ObservabilityStatus.SUCCESS).count()

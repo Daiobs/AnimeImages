@@ -18,6 +18,101 @@ function deferred() {
 }
 const json = payload => ({ok: true, status: 200, json: async () => payload});
 
+function auditDownloadFixture() {
+    const events = [], links = [];
+    const item = {type: "video", url: "https://v11-default.365yg.com/media/video.mp4",
+        filename: "Short title.mp4", provider: "tiantianjiexi", size_bytes: 5,
+        browser_direct_fetch_safe: true, requires_merge: false, requires_cookie: false,
+        download_audit: {schema: "download_audit_v1", token: "signed-receipt",
+            endpoint: "/media/browser-download-telemetry/"}};
+    const options = {csrfToken: "contract", documentObject: {body: {appendChild() {}},
+        createElement() { return {click() { links.push(this.href); }, remove() {}}; }},
+        auditFetchImpl(url, init) {
+            assert.equal(url, "/media/browser-download-telemetry/");
+            assert.equal(init.headers["X-CSRFToken"], "contract");
+            const event = JSON.parse(init.body);
+            assert.deepEqual(Object.keys(event).sort(),
+                ["actual_bytes", "error_code", "phase", "schema", "token", "transport"]);
+            events.push(event);
+            return Promise.resolve({status: 204});
+        }};
+    return {item, options, events, links};
+}
+
+test("INV03/04 native audit records only handoff, never browser-manager completion", async () => {
+    const ordinary = require("../static/js/ordinary_media_download.js");
+    const f = auditDownloadFixture();
+    const result = await ordinary.download({...f.item, download_strategy: "browser_native",
+        native_download_expires_at: Date.now() + 60000}, {...f.options,
+        fetchImpl() { assert.fail("Native must not fetch media"); },
+        streamingClient: {capabilityAvailable() { assert.fail("Native must not start Worker"); }}});
+    assert.equal(result.state, "handed_off");
+    assert.equal(f.links.length, 1);
+    assert.deepEqual(f.events.map(e => [e.transport, e.phase, e.actual_bytes]),
+        [["browser_native", "handed_off", 0]]);
+});
+
+test("INV03/04 SW audit follows observed bytes, without media retry or Worker business fields", async () => {
+    const ordinary = require("../static/js/ordinary_media_download.js");
+    const protocol = require("../static/js/ordinary_media_streaming_protocol.js");
+    const f = auditDownloadFixture(), end = deferred();
+    let starts = 0, progress;
+    const pending = ordinary.download(f.item, {...f.options,
+        fetchImpl() { assert.fail("No Blob media fetch"); },
+        streamingClient: {capabilityAvailable: () => true, async start(item, settings) {
+            starts += 1; progress = settings.onProgress;
+            assert.equal(protocol.createWorkerDescriptor({...item, downloadId: "a".repeat(32)},
+                {filename: item.filename}).download_audit, undefined);
+            return {downloadId: "stream", completion: end.promise};
+        }}});
+    await tick();
+    assert.deepEqual(f.events.map(e => e.phase), ["handed_off"]);
+    progress({state: "fetching", receivedBytes: 2});
+    progress({state: "fetching", receivedBytes: 3});
+    assert.deepEqual(f.events.map(e => e.phase), ["handed_off", "transfer_started"]);
+    end.resolve({state: "completed", receivedBytes: 5, totalBytes: 5, filename: f.item.filename});
+    await pending;
+    assert.equal(starts, 1);
+    assert.equal(f.events.at(-1).phase, "transfer_completed");
+    assert.equal(f.events.at(-1).actual_bytes, 5);
+    assert.ok(f.events.every(e => e.transport === "browser_streaming"));
+});
+
+test("INV03 audit failure cannot change bounded Blob fallback or trigger a second request", async () => {
+    const ordinary = require("../static/js/ordinary_media_download.js");
+    const f = auditDownloadFixture();
+    Object.defineProperty(f.options.documentObject, "cookie", {
+        get() { throw new Error("Cookie storage unavailable"); },
+    });
+    let mediaRequests = 0, handoffs = 0;
+    const result = await ordinary.download(f.item, {...f.options,
+        streamingClient: {capabilityAvailable: () => false},
+        auditFetchImpl() { throw new Error("Audit unavailable"); },
+        async fetchImpl() {
+            mediaRequests += 1;
+            const response = new Response("video", {headers: {"Content-Type": "video/mp4", "Content-Length": "5"}});
+            Object.defineProperty(response, "url", {value: f.item.url});
+            return response;
+        }, handoffBlob: async () => { handoffs += 1; }});
+    assert.equal(result.transport, "browser_blob");
+    assert.equal(mediaRequests, 1);
+    assert.equal(handoffs, 1);
+});
+
+for (const [name, code, phase] of [["cancel", "DOWNLOAD_CANCELLED", "cancelled"],
+    ["unconfirmed cancel", "STREAMING_CANCEL_STATE_UNKNOWN", "unknown"],
+    ["unknown start", "STREAMING_START_UNKNOWN", "unknown"], ["failed", "UPSTREAM_HTTP_ERROR", "failed"]]) {
+    test(`INV03/04 ${name} audit does not retry or report completed`, async () => {
+        const ordinary = require("../static/js/ordinary_media_download.js");
+        const f = auditDownloadFixture();
+        await assert.rejects(ordinary.download(f.item, {...f.options,
+            fetchImpl() { assert.fail("No retry"); },
+            streamingClient: {capabilityAvailable: () => true,
+                async start() { throw Object.assign(new Error(name), {errorCode: code}); }}}));
+        assert.deepEqual(f.events.map(e => e.phase), [phase]);
+    });
+}
+
 class DomNode extends Node {
     get isConnected() { return this.parentNode ? this.parentNode.isConnected : this.tagName === "DOCUMENT"; }
     get innerText() { return this.textContent; }

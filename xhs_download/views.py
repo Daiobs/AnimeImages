@@ -4,6 +4,7 @@ import time
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -25,6 +26,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from download_console.models import DownloadRuntimeSetting
 from djangoProject.health import get_runtime_readiness
+from .services.download_audit import operational_download_logs
 
 from .models import (
     DownloadRequestLog,
@@ -760,7 +762,7 @@ def build_policy_engine_context(request, runtime_setting):
             "duration_ms": item.duration_ms,
             "request_id": item.request_id,
         }
-        for item in DownloadRequestLog.objects.exclude(final_policy_route="")
+        for item in operational_download_logs(DownloadRequestLog.objects.exclude(final_policy_route=""))
         .order_by("-created_at")[:10]
     ]
     recent_optimizations = [
@@ -1837,8 +1839,8 @@ def ops_dashboard_view(request):
 
     today_parse = ParseRequestLog.objects.filter(created_at__gte=today_start)
     recent_parse = ParseRequestLog.objects.filter(created_at__gte=recent_24h)
-    today_download = DownloadRequestLog.objects.filter(created_at__gte=today_start)
-    recent_download = DownloadRequestLog.objects.filter(created_at__gte=recent_24h)
+    today_download = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=today_start))
+    recent_download = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=recent_24h))
     seven_day_parse = ParseRequestLog.objects.filter(created_at__gte=recent_7d)
 
     today_parse_count = today_parse.count()
@@ -2641,11 +2643,16 @@ def log_download_request_event(
     error=None,
     error_message_short="",
     route_info=None,
+    phase="",
+    transport="",
+    attempt_id="",
+    evidence_source="",
+    dispatch_feedback=False,
 ):
     duration_ms = (time.monotonic() - started_at) * 1000 if started_at else 0
     route_info = route_info or {}
     policy_shadow = route_info.get("policy_decision") or {}
-    if media_items:
+    if media_items and (not phase or dispatch_feedback):
         if not policy_shadow:
             try:
                 policy_shadow = evaluate_policy_shadow(
@@ -2661,11 +2668,16 @@ def log_download_request_event(
     policy_scores = policy_shadow.get("policy_scores") or {}
     recovery = route_info.get("recovery") or {}
     healing = route_info.get("healing") or {}
-    record_download_request_log(
+    return record_download_request_log(
         request,
         download_type=download_type,
         media_items=media_items or (),
         status=status,
+        phase=phase,
+        transport=transport,
+        attempt_id=attempt_id or (uuid4().hex if phase else ""),
+        evidence_source=evidence_source or ("server_observed" if phase else ""),
+        dispatch_feedback=dispatch_feedback,
         estimated_bytes=route_info.get("estimated_bytes"),
         actual_bytes=actual_bytes,
         route_type=route_info.get("route_type", ""),
@@ -4075,8 +4087,12 @@ def browser_download_telemetry_view(request):
 
     try:
         decoded = json.loads(raw_payload.decode("utf-8"))
+        if isinstance(decoded, dict) and decoded.get("schema") == "download_audit_v1":
+            from .services.download_audit import record_browser_download_audit
+            record_browser_download_audit(request, decoded)
+            return _browser_telemetry_response(204)
         telemetry = validate_browser_streaming_telemetry(decoded)
-    except (UnicodeDecodeError, json.JSONDecodeError, BrowserStreamingTelemetryValidationError):
+    except (UnicodeDecodeError, ValueError, BrowserStreamingTelemetryValidationError):
         return _browser_telemetry_response(400, "INVALID_TELEMETRY_PAYLOAD")
 
     log_browser_streaming_telemetry(telemetry)
@@ -5859,6 +5875,10 @@ def download_prepare_api(request):
         log_download_request_event(
             request,
             download_type="single_prepare",
+            phase="prepared",
+            dispatch_feedback=True,
+            transport="server_attachment",
+            attempt_id=handoff_tokens.ticket_id,
             media_items=media_items,
             status=ObservabilityStatus.SUCCESS,
             started_at=started_at,
@@ -6077,6 +6097,14 @@ def download_stream_view(request, token):
         if status in logged_statuses and status in {"connecting", "refreshing", "streaming"}:
             return
         logged_statuses.add(status)
+        if status == "streaming":
+            log_download_request_event(
+                request, download_type="single_stream", media_items=media_items,
+                phase="transfer_started", transport="server_attachment",
+                attempt_id=handoff.ticket_id, started_at=started_at,
+                actual_bytes=int(snapshot.get("actual_yielded_bytes") or 0),
+                route_info=stream_log_route_info,
+            )
         log_fields = {
             "stream_start_timeout_seconds": float(
                 snapshot.get("stream_start_timeout_seconds") or 0
@@ -6143,6 +6171,10 @@ def download_stream_view(request, token):
             log_download_request_event(
                 request,
                 download_type="single_stream",
+                phase=("transfer_completed" if status == "completed" else
+                       "cancelled" if error_code == "DOWNLOAD_CONNECTION_CLOSED" else "failed"),
+                transport="server_attachment",
+                attempt_id=handoff.ticket_id,
                 media_items=media_items,
                 status=(
                     ObservabilityStatus.SUCCESS
@@ -6270,6 +6302,12 @@ def download_stream_view(request, token):
                 error_code=bytes_error_code or "RATE_LIMITED",
             )
         stream_response["Cache-Control"] = "private, no-store"
+        log_download_request_event(
+            request, download_type="single_stream", media_items=media_items,
+            phase="handed_off", transport="server_attachment",
+            attempt_id=handoff.ticket_id, started_at=started_at,
+            actual_bytes=0, route_info=stream_log_route_info,
+        )
         return stream_response
     except Exception as error:
         if stream_response is not None:
@@ -6588,15 +6626,34 @@ def download_images_api(request):
     if download_mode in routed_download_modes and route_info.get("route_type") == ROUTE_DIRECT:
         # Link authorization is not a download attempt or a saved file.
         if not resource_link:
-            log_download_request_event(
-                request,
-                download_type=route_info.get("route_type", "auto"),
-                media_items=media_items,
-                status=ObservabilityStatus.SUCCESS,
-                started_at=started_at,
-                actual_bytes=0,
-                route_info=route_info,
-            )
+            items = list(route_info.get("items", []))
+            auditable_indexes = [
+                index for index, item in enumerate(items)
+                if isinstance(item, dict)
+                and str(item.get("type") or item.get("media_type") or "").lower() in {"video", "audio"}
+            ] if not route_only or data.get("intent") == "download" else []
+            if auditable_indexes:
+                from .services.download_audit import issue_browser_download_audit
+                for position, index in enumerate(auditable_indexes):
+                    prepared = log_download_request_event(
+                        request, download_type=route_info.get("route_type", "auto"),
+                        phase="prepared", media_items=[items[index]], started_at=started_at,
+                        route_info=route_info, dispatch_feedback=(position == 0),
+                    )
+                    items[index] = issue_browser_download_audit(request, items[index], prepared_log=prepared)
+                route_info["items"] = items
+            else:
+                log_download_request_event(
+                    request,
+                    download_type=route_info.get("route_type", "auto"),
+                    phase="prepared",
+                    dispatch_feedback=True,
+                    media_items=media_items,
+                    status=ObservabilityStatus.SUCCESS,
+                    started_at=started_at,
+                    actual_bytes=0,
+                    route_info=route_info,
+                )
         response = JsonResponse(
             {
                 "status": "routed",
@@ -6618,15 +6675,19 @@ def download_images_api(request):
         return response
 
     if route_only and download_mode in routed_download_modes:
-        log_download_request_event(
-            request,
-            download_type=route_info.get("route_type", "auto"),
-            media_items=media_items,
-            status=ObservabilityStatus.SUCCESS,
-            started_at=started_at,
-            actual_bytes=0,
-            route_info=route_info,
-        )
+        # Single attachments acquire their one audit identity with the prepare ticket.
+        if route_info.get("download_strategy") != "server_single_attachment":
+            log_download_request_event(
+                request,
+                download_type=route_info.get("route_type", "auto"),
+                phase="prepared",
+                dispatch_feedback=True,
+                media_items=media_items,
+                status=ObservabilityStatus.SUCCESS,
+                started_at=started_at,
+                actual_bytes=0,
+                route_info=route_info,
+            )
         return JsonResponse(
             {
                 "status": "routed",
@@ -6731,10 +6792,30 @@ def download_images_api(request):
 
     try:
         if route_info.get("download_strategy") == "server_single_attachment":
+            stream_attempt_id = uuid4().hex
+            stream_phases = set()
+
+            def audit_attachment(status, snapshot, error=None):
+                phase = {"streaming": "transfer_started", "completed": "transfer_completed",
+                         "failed": "failed"}.get(status)
+                if status == "failed" and str(getattr(error, "error_code", "")) == "DOWNLOAD_CONNECTION_CLOSED":
+                    phase = "cancelled"
+                if not phase or phase in stream_phases:
+                    return
+                stream_phases.add(phase)
+                log_download_request_event(
+                    request, download_type="single_file", media_items=media_items,
+                    phase=phase, transport="server_attachment", attempt_id=stream_attempt_id,
+                    started_at=started_at, actual_bytes=int(snapshot.get("actual_yielded_bytes") or 0),
+                    error_code=str(getattr(error, "error_code", "")) if error else "",
+                    error=error, route_info=route_info,
+                )
+
             try:
                 single_response, actual_bytes = build_single_attachment_response(
                     media_items[0],
                     data.get("base_filename", "xhs"),
+                    status_callback=audit_attachment,
                 )
             except Exception as error:
                 recovery_decision = proxy_failure_recovery(media_items, route_info, error)
@@ -6751,6 +6832,8 @@ def download_images_api(request):
                     log_download_request_event(
                         request,
                         download_type=ROUTE_DIRECT,
+                        phase="prepared",
+                        dispatch_feedback=True,
                         media_items=media_items,
                         status=ObservabilityStatus.SUCCESS,
                         started_at=started_at,
@@ -6834,10 +6917,14 @@ def download_images_api(request):
             log_download_request_event(
                 request,
                 download_type="single_file",
+                phase="handed_off",
+                dispatch_feedback=True,
+                transport="server_attachment",
+                attempt_id=stream_attempt_id,
                 media_items=media_items,
                 status=ObservabilityStatus.SUCCESS,
                 started_at=started_at,
-                actual_bytes=actual_bytes,
+                actual_bytes=0,
                 route_info=route_info,
             )
             return single_response

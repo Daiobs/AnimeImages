@@ -6,6 +6,7 @@ from django.core.cache import cache
 from django.db.models import Avg, Count, Sum
 from django.urls import NoReverseMatch, reverse
 from django.utils import timezone
+from .download_audit import operational_download_logs
 
 from djangoProject.health import get_runtime_readiness
 from download_console.models import DownloadRuntimeSetting
@@ -187,8 +188,8 @@ def build_core_metrics():
     start_today = day_start()
     start_24h = window_start(24)
     today_parse = ParseRequestLog.objects.filter(created_at__gte=start_today)
-    today_download = DownloadRequestLog.objects.filter(created_at__gte=start_today)
-    recent_download = DownloadRequestLog.objects.filter(created_at__gte=start_24h)
+    today_download = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=start_today))
+    recent_download = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=start_24h))
     recent_health = ProviderHealthTestRun.objects.filter(created_at__gte=start_24h)
     recent_healing = SelfHealingEvent.objects.filter(created_at__gte=start_24h)
     today_download_total = today_download.count()
@@ -238,10 +239,10 @@ def latest_health_for(test_keys):
 
 
 def provider_log_stats(provider_names):
-    logs = DownloadRequestLog.objects.filter(
+    logs = operational_download_logs(DownloadRequestLog.objects.filter(
         created_at__gte=window_start(24),
         provider__in=provider_names,
-    )
+    ))
     total = logs.count()
     success = logs.filter(status=ObservabilityStatus.SUCCESS).count()
     stats = logs.aggregate(avg_duration=Avg("duration_ms"))
@@ -321,7 +322,7 @@ def route_distribution_rows(queryset):
 
 def build_download_cost_status():
     start_today = day_start()
-    today_download = DownloadRequestLog.objects.filter(created_at__gte=start_today)
+    today_download = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=start_today))
     aggregates = today_download.aggregate(
         server_bytes=Sum("server_egress_estimated_bytes"),
         browser_bytes=Sum("browser_egress_estimated_bytes"),

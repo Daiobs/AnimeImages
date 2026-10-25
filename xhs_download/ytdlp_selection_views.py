@@ -27,6 +27,16 @@ def _response(data, status=200):
     return response
 
 
+def _audit_rejected_download(request, data, error_code):
+    if (not isinstance(data, dict) or not isinstance(data.get('action'), str)
+            or data['action'] not in {'download', 'legacy'}):
+        return
+    from .services.download_audit import record_transfer_audit
+    # Before authorization, no client-supplied resource identity is trusted.
+    record_transfer_audit(request, phase='failed', download_type='selected_preflight',
+                          error_code=error_code)
+
+
 def _admitted(request, record, *, provider=PROVIDER, service=False):
     # Same current admission conditions as the existing candidate information
     # endpoint; a cached parse never substitutes for current public access.
@@ -81,6 +91,7 @@ def _admitted(request, record, *, provider=PROVIDER, service=False):
 @require_POST
 @csrf_protect
 def ytdlp_selected_format_view(request, *, service=False):
+    data = None
     if service:
         from .services import service_format_selection as selection
         allowed_actions = {'download', 'preview', 'cover', 'link', 'open', 'legacy'}
@@ -100,8 +111,10 @@ def ytdlp_selected_format_view(request, *, service=False):
         if (service and provider not in selection.PROVIDERS) or not _admitted(request, record, provider=provider, service=service):
             raise ValueError()
     except (ValueError, KeyError, TypeError, UnicodeError, XhsParseError):
+        _audit_rejected_download(request, data, 'SELECTED_FORMAT_UNAUTHORIZED_OR_EXPIRED')
         return _response({'status': 'error', 'message': '格式信息已失效或当前无权使用，请重新解析。'}, 403)
     except Exception as error:
+        _audit_rejected_download(request, data, 'SELECTED_FORMAT_ADMISSION_UNAVAILABLE')
         logger.warning('ytdlp_selection_admission_failed exception_class=%s', type(error).__name__)
         return _response({'status': 'error', 'message': '格式授权服务暂时不可用，请稍后再试。'}, 503)
 
@@ -174,9 +187,11 @@ def ytdlp_selected_format_view(request, *, service=False):
         guard = views.check_download_cost_preflight(request, [item], views.get_download_runtime_setting())
         if guard:
             code, message, status = guard
+            _audit_rejected_download(request, data, code)
             return _response({'status': 'error', 'error_code': code, 'message': message}, status)
         _, limit_response = views.check_download_request_limits(request)
         if limit_response is not None:
+            _audit_rejected_download(request, data, 'SELECTED_FORMAT_RATE_LIMITED')
             limit_response['Cache-Control'] = 'private, no-store'
             return limit_response
         if data['action'] == 'preview':
@@ -189,19 +204,25 @@ def ytdlp_selected_format_view(request, *, service=False):
             # Do not renew the candidate or reuse a prior admission decision.
             current = resolve_candidate_record(data['resource_token'], data['candidate_id'])
             if not _admitted(request, current, provider=provider, service=service):
+                _audit_rejected_download(request, data, 'SELECTED_FORMAT_UNAUTHORIZED_OR_EXPIRED')
                 return _response({'status': 'error', 'message': '当前无权使用此格式。'}, 403)
             if item.get('selection_expires_at', 0) <= time() * 1000:
                 raise ValueError('selected_format_expired')
         # Issuing information is not proof that a file was downloaded or saved.
+        if data['action'] == 'download' and item.get('selection_delivery') != 'legacy_manifest':
+            from .services.download_audit import issue_browser_download_audit
+            item = issue_browser_download_audit(request, item)
         logger.info('ytdlp_selected_descriptor_issued action=%s candidate_id=%s', data['action'], record['candidate_id'])
         return _response({'status': 'success', 'item': item,
                           'server_media_relay': None if item.get('selection_delivery') == 'legacy_manifest' else False})
     except (ValueError, KeyError, TypeError, XhsParseError) as error:
+        _audit_rejected_download(request, data, 'SELECTED_FORMAT_UNAVAILABLE')
         message = ('视频链接已过期，请重新解析。' if data['action'] == 'open' and str(error) == 'selected_video_navigation_expired'
                    else '此格式暂不能在新标签页播放。' if data['action'] == 'open'
                    else '此格式暂不能直接保存；请查看格式限制或选择其他格式。')
         return _response({'status': 'error', 'message': message}, 409)
     except Exception as error:
+        _audit_rejected_download(request, data, 'SELECTED_FORMAT_PREPARATION_UNAVAILABLE')
         logger.warning('ytdlp_selected_descriptor_failed exception_class=%s', type(error).__name__)
         return _response({'status': 'error', 'message': '资源准备服务暂时不可用，请稍后再试。'}, 503)
 

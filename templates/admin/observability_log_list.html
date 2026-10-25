@@ -110,16 +110,38 @@
                 <a href="{{ request.path }}">清除</a>
             {% endif %}
         </form>
+        {% if nav_title == '下载日志' %}
+            <p>审计每阶段一行，同一 attempt 关联一次尝试。传输完成不等于磁盘保存；原生直链仅能确认移交。legacy 为旧口径，不计入新传输完成率。</p>
+        {% endif %}
         <div class="ops-table-wrap">
             <table class="ops-table">
                 <thead>
                 <tr>
+                    {% if nav_title == '下载日志' %}
+                        <th>时间</th><th>状态</th><th>阶段</th><th>实际方式</th><th>证据来源</th><th>attempt</th>
+                        <th>download_type</th><th>route_type</th><th>资源数</th><th>观测字节（非预计）</th>
+                        <th>Provider</th><th>来源</th><th>错误</th><th>request_id</th>
+                    {% else %}
                     {% for header in headers %}
                         <th>{{ header }}</th>
                     {% endfor %}
+                    {% endif %}
                 </tr>
                 </thead>
                 <tbody>
+                {% if nav_title == '下载日志' %}
+                    {% for item in page_obj %}
+                        <tr>
+                            <td>{{ item.audit_time_label }}</td><td>{{ item.get_status_display }}</td>
+                            <td>{{ item.audit_phase_label }}</td><td>{{ item.audit_transport_label }}</td><td>{{ item.audit_evidence_label }}</td>
+                            <td>{{ item.attempt_id|default:"legacy" }}</td><td>{{ item.download_type }}</td><td>{{ item.route_type }}</td>
+                            <td>{{ item.item_count }}</td><td>{{ item.actual_bytes }}{% if not item.phase %}（legacy，未复核）{% endif %}</td>
+                            <td>{{ item.provider }}</td><td>{{ item.source_platform }}</td><td>{{ item.error_code }} {{ item.error_type }}</td><td>{{ item.request_id }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="14">暂无记录</td></tr>
+                    {% endfor %}
+                {% else %}
                 {% for row in rows %}
                     <tr>
                         {% for _header, value in row.items %}
@@ -131,6 +153,7 @@
                         <td colspan="{{ headers|length }}">暂无记录</td>
                     </tr>
                 {% endfor %}
+                {% endif %}
                 </tbody>
             </table>
         </div>

@@ -1,6 +1,7 @@
 """Service-native results through normalizers, issuance, HTML and action checks."""
 import json
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 import shutil
 import subprocess
@@ -84,6 +85,81 @@ class ServiceFormatSelectionTests(SimpleTestCase):
                 soup = BeautifulSoup(html, 'html.parser')
                 self.assertEqual(len(soup.select('[data-picker-radio]')), 7)
                 self.assertEqual(soup.select_one('[data-ytdlp-picker]')['data-provider'], provider)
+
+    def test_thousand_signed_service_candidates_survive_normalizer_cache_and_actions(self):
+        from .services import upstream_candidates
+        self.gates()
+        for provider, key in (('tiantianjiexi_generic', 'streams'), ('kukutool_generic', 'video_fullinfo')):
+            with self.subTest(provider=provider):
+                cache.clear()
+                urls = [f'https://media.example/{i}.mp4?signature=' + 's' * 100 for i in range(1000)]
+                payload = {'title': 'Work', 'videos': [{key: [
+                    {'url': url, 'quality_label': '720P', 'format_id': str(i)}
+                    for i, url in enumerate(urls)
+                ]}]}
+                result = self.result(provider, payload)
+                rows = result.metadata['upstream_candidates']
+                self.assertEqual(len(rows), 1000)
+                self.assertEqual(result.metadata['candidate_retained_count'], 1000)
+                bundles = set()
+                for index, row in enumerate(rows):
+                    record = resolve_candidate_record(row['resource_token'], row['candidate_id'])
+                    self.assertEqual(record['url'], urls[index])
+                    self.assertEqual(record['public'], row)
+                    self.assertEqual(record['provider_id'], provider)
+                    self.assertEqual(row['resource_alias_key'], sha256(urls[index].encode()).hexdigest())
+                    self.assertEqual(row['filename_sequence'], index + 1)
+                    bundles.add(signing.loads(row['resource_token'], salt=upstream_candidates.SALT)['bundle'])
+                self.assertEqual(len(bundles), 1)
+                stored = cache.get('upstream:candidate-bundle:' + bundles.pop())
+                self.assertLessEqual(len(json.dumps(stored, ensure_ascii=True, separators=(',', ':')).encode()),
+                                     upstream_candidates.MAX_CANDIDATE_BUNDLE_BYTES)
+                for index in (0, 500, 999):
+                    row = rows[index]
+                    record = resolve_candidate_record(row['resource_token'], row['candidate_id'])
+                    for action in ('link', 'download'):
+                        response = self.post(row, action)
+                        self.assertEqual(response.status_code, 200, response.content)
+                        item = response.json()['item']
+                        self.assertEqual(item['url'], urls[index])
+                        self.assertEqual(item['candidate_id'], row['candidate_id'])
+                        self.assertEqual(item['selected_format_id'], str(index))
+                        self.assertEqual(item['provider'], provider)
+                        self.assertEqual(item['filename'], 'Work' + (f'_{index + 1}' if index else '') + '.mp4')
+                        if action == 'download':
+                            self.assertEqual(item['selection_expires_at'], int(record['expires_at'] * 1000))
+                self.assertEqual(self.post(rows[0], resource_token=rows[-1]['resource_token']).status_code, 403)
+
+    def test_old_service_bundle_and_single_record_tokens_keep_actions_and_expiry(self):
+        from .services import upstream_candidates
+        self.gates()
+        for provider in ('tiantianjiexi_generic', 'kukutool_generic'):
+            for bundled in (False, True):
+                with self.subTest(provider=provider, bundled=bundled):
+                    row = self.result(provider, {'title': 'Work', 'videos': [
+                        {'url': 'https://media.example/old.mp4', 'quality': '720P'},
+                    ]}).metadata['upstream_candidates'][0]
+                    record = resolve_candidate_record(row['resource_token'], row['candidate_id'])
+                    for field in ('resource_alias_key', 'filename_sequence'):
+                        record['public'].pop(field)
+                    payload = {'id': row['candidate_id']}
+                    if bundled:
+                        payload['bundle'] = 'old-service-layout'
+                    token = signing.dumps(payload, salt=upstream_candidates.SALT)
+                    record['public']['resource_token'] = token
+                    old_row = deepcopy(record['public'])
+                    cache_key = ('upstream:candidate-bundle:old-service-layout' if bundled else
+                                 'upstream:candidate:' + row['candidate_id'])
+                    cache.set(cache_key, {row['candidate_id']: record} if bundled else record,
+                              timeout=upstream_candidates.TTL)
+                    self.assertEqual(resolve_candidate_record(token, row['candidate_id']), record)
+                    response = self.post(old_row)
+                    self.assertEqual(response.status_code, 200, response.content)
+                    self.assertEqual(response.json()['item']['url'], record['url'])
+                    self.assertEqual(response.json()['item']['filename'], 'Work.mp4')
+                    self.assertEqual(response.json()['item']['selection_expires_at'], int(record['expires_at'] * 1000))
+                    with patch('django.core.signing.time.time', return_value=record['expires_at'] + 1):
+                        self.assertEqual(self.post(old_row).status_code, 403)
 
     def test_selected_descriptor_is_exact_and_copy_is_not_download_permission(self):
         self.gates()
@@ -419,6 +495,51 @@ class ServiceFormatSelectionTests(SimpleTestCase):
         soup = BeautifulSoup(render_to_string('partials/ytdlp_result_picker.html', {'ytdlp_picker': picker}), 'html.parser')
         self.assertEqual(len(soup.select('[data-picker-primary] [data-picker-radio]')), 2)
         self.assertFalse(soup.select('[data-picker-other], [data-ytdlp-action="copy"], [data-ytdlp-action="legacy"]'))
+
+    def test_case_only_quality_aliases_use_exact_resource_evidence_at_any_resolution(self):
+        self.allow_fixture_manifest()
+        for provider, key in (('tiantianjiexi_generic', 'streams'), ('kukutool_generic', 'video_fullinfo')):
+            for scheme in ('http', 'https'):
+                for label in ('720p', '1080p', '2160p', '1080p+', 'Source'):
+                    with self.subTest(provider=provider, scheme=scheme, label=label):
+                        rows = self.result(provider, payload={'title': 'Work', 'videos': [{key: [
+                            {'url': f'{scheme}://media.example/same.mp4', 'quality_label': label},
+                            {'url': f'{scheme}://media.example/same.mp4', 'quality_label': label.upper(),
+                             'size_bytes': 2048},
+                        ]}]}).metadata['upstream_candidates']
+                        before = deepcopy(rows)
+                        records = [deepcopy(resolve_candidate_record(r['resource_token'], r['candidate_id']))
+                                   for r in rows]
+                        videos = build_service_picker(rows)['videos']
+                        self.assertEqual(len(videos), 1)
+                        self.assertEqual(videos[0]['size_bytes'], 2048)
+                        self.assertEqual(set(videos[0]['alias_candidate_ids']), {r['candidate_id'] for r in rows})
+                        self.assertEqual(rows, before)
+                        for row, record in zip(rows, records):
+                            self.assertEqual(resolve_candidate_record(row['resource_token'], row['candidate_id']), record)
+
+    def test_alias_projection_keeps_distinct_unknown_and_conflicting_resources(self):
+        from .services.service_format_selection import project_bound_aliases
+        rows = self.result(payload={'videos': [{'video_fullinfo': [
+            {'url': 'https://media.example/a.mp4', 'type': '720p', 'size_bytes': 2048},
+            {'url': 'https://media.example/a.mp4', 'type': '720P', 'size_bytes': 2048},
+        ]}]}).metadata['upstream_candidates']
+        self.assertFalse(any(row['legacy_asset_id'] for row in rows))
+        self.assertEqual(len(project_bound_aliases(rows)), 1)
+        for difference in ({'size_bytes': 4096}, {'fps': 60}, {'vcodec': 'hevc'},
+                           {'language': 'en'}, {'dynamic_range': 'HDR'}, {'format_id': 'other'},
+                           {'protocol': 'm3u8'}, {'download_context_required': True}):
+            with self.subTest(difference=difference):
+                changed = [rows[0], {**rows[1], **difference}]
+                self.assertEqual(len(project_bound_aliases(changed)), 2)
+        unknown = [{k: v for k, v in row.items() if k not in {'resource_alias_key', 'legacy_asset_id'}}
+                   for row in rows]
+        self.assertEqual(len(project_bound_aliases(unknown)), 2)
+        different = self.result(payload={'videos': [{'video_fullinfo': [
+            {'url': 'https://media.example/a.mp4', 'type': '720p'},
+            {'url': 'https://media.example/b.mp4', 'type': '720P'},
+        ]}]}).metadata['upstream_candidates']
+        self.assertEqual(len(build_service_picker(different)['videos']), 2)
 
     def test_generic_native_default_is_independent_of_source_first_display_order(self):
         for provider, key in (('tiantianjiexi_generic', 'streams'), ('kukutool_generic', 'video_fullinfo')):

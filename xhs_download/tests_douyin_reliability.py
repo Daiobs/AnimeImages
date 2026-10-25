@@ -2890,11 +2890,10 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
             self.assertEqual(response.status_code, 200)
             mock_fetch.assert_called_once()
             mock_release.assert_not_called()
-            self.assertFalse(
-                DownloadRequestLog.objects.filter(
-                    download_type="single_stream"
-                ).exists()
-            )
+            handed_off = DownloadRequestLog.objects.get(download_type="single_stream")
+            self.assertEqual(handed_off.phase, "handed_off")
+            self.assertEqual(handed_off.status, "pending")
+            self.assertEqual(handed_off.actual_bytes, 0)
             status_before_body = load_download_status(
                 tokens.status_token,
                 client_identity=self.client_identity,
@@ -2930,7 +2929,7 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
         self.assertFalse(completed.recovered)
         self.assertEqual(completed.upstream_attempt_count, 1)
         request_log = DownloadRequestLog.objects.get(
-            download_type="single_stream"
+            download_type="single_stream", phase="transfer_completed"
         )
         self.assertEqual(request_log.status, ObservabilityStatus.SUCCESS)
         self.assertEqual(request_log.actual_bytes, len(b"first-last"))
@@ -2960,9 +2959,9 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
         self.assertEqual(failed.status, "failed")
         self.assertFalse(failed.stream_started)
         request_log = DownloadRequestLog.objects.get(
-            download_type="single_stream"
+            download_type="single_stream", phase="cancelled"
         )
-        self.assertEqual(request_log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(request_log.status, "cancelled")
         self.assertEqual(request_log.actual_bytes, 0)
         upstream.close.assert_called_once_with()
         mock_release.assert_called_once_with(
@@ -3058,9 +3057,9 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
         self.assertEqual(failed.status, "failed")
         self.assertTrue(failed.stream_started)
         request_log = DownloadRequestLog.objects.get(
-            download_type="single_stream"
+            download_type="single_stream", phase="cancelled"
         )
-        self.assertEqual(request_log.status, ObservabilityStatus.FAILED)
+        self.assertEqual(request_log.status, "cancelled")
         self.assertEqual(request_log.actual_bytes, len(b"first-"))
         failed_record = next(
             record
@@ -3409,7 +3408,7 @@ class DownloadSingleConnectionStreamTests(TransactionTestCase):
         self.assertEqual(failed.error_code, "UPSTREAM_CONNECTION_ERROR")
         self.assertTrue(failed.stream_started)
         request_log = DownloadRequestLog.objects.get(
-            download_type="single_stream"
+            download_type="single_stream", phase="failed"
         )
         self.assertEqual(request_log.status, ObservabilityStatus.FAILED)
         self.assertEqual(request_log.actual_bytes, len(b"first-"))

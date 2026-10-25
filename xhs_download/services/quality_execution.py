@@ -496,6 +496,11 @@ def execute_provider(provider_id, source_url, *, timeout_seconds=20.0, backend=N
                                        provider=provider, source_url=source, match=match)
     metadata = dict(result.metadata)
     if provider in SERVICE_VERSIONS:
+        from .platforms.tiantianjiexi_generic import TianTianJieXiResultNormalizer
+        # Preserve only response identity evidence, never infer it from the request.
+        identity_signals = TianTianJieXiResultNormalizer.collect_source_identity_signals(execution['_service_payload'])
+        if identity_signals:
+            metadata['_source_identity_signals'] = identity_signals
         omitted = execution['service_unexpanded_count']
         retained = len(metadata.get('upstream_candidates') or ())
         remaining = max(0, execution['service_declared_count'] - retained

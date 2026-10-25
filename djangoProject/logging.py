@@ -42,6 +42,12 @@ XHS_PREVIEW_EVENT_LOG_FIELDS = {
     ),
 }
 
+DOWNLOAD_STREAM_LOG_FIELDS = (
+    "final_status", "expected_bytes", "actual_yielded_bytes", "chunk_index",
+    "stream_elapsed_ms", "time_to_first_chunk_ms", "upstream_attempt_count",
+    "exception_type", "generator_close_reason", "upstream_response_closed", "error_code",
+)
+
 
 class RequestContextFormatter(logging.Formatter):
     default_extra = {
@@ -70,6 +76,8 @@ class RequestContextFormatter(logging.Formatter):
             )
             return f"{rendered} {provider_fields}"
         preview_fields = XHS_PREVIEW_EVENT_LOG_FIELDS.get(record.event)
+        if record.event in {"download_stream_streaming", "download_stream_completed", "download_stream_failed"}:
+            preview_fields = DOWNLOAD_STREAM_LOG_FIELDS
         if preview_fields:
             rendered_fields = " ".join(
                 f"{field}={getattr(record, field, '')}"

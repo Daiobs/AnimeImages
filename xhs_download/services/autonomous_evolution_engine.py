@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from django.utils import timezone
+from .download_audit import operational_download_logs
 
 from ..models import (
     DownloadRequestLog,
@@ -441,7 +442,7 @@ def build_autonomous_evolution_context(*, window_hours=24):
     window_hours = normalize_window_hours(window_hours)
     now = timezone.now()
     since = now - timezone.timedelta(hours=window_hours)
-    downloads = list(DownloadRequestLog.objects.filter(created_at__gte=since))
+    downloads = list(operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=since)))
     _control_records = list(PolicyControlRecord.objects.filter(created_at__gte=since))
     feedback = build_feedback(window_hours=window_hours)
     stability = build_stabilization_snapshot(window_hours=window_hours)

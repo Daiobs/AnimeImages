@@ -2,6 +2,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from ..models import DownloadRequestLog, ObservabilityStatus
+from ..services.download_audit import operational_download_logs
 from ..services.download_routing import ROUTE_DIRECT, ROUTE_PROXY, ROUTE_ZIP, safe_download_size
 from .learning import build_policy_learning_snapshot
 
@@ -37,7 +38,7 @@ def build_policy_feedback_summary(window_hours=24):
     now = timezone.now()
     since = now - timezone.timedelta(hours=window_hours)
     logs = list(
-        DownloadRequestLog.objects.filter(created_at__gte=since).exclude(
+        operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=since)).exclude(
             final_policy_route=""
         )
     )

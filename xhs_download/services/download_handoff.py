@@ -122,6 +122,7 @@ class DownloadHandoffTokens:
     stream_token: str
     status_token: str
     expires_in_seconds: int
+    ticket_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -401,6 +402,7 @@ def issue_download_handoff_tokens(
             salt=DOWNLOAD_STATUS_SALT,
         ),
         expires_in_seconds=DOWNLOAD_HANDOFF_TTL_SECONDS,
+        ticket_id=ticket_id,
     )
 
 

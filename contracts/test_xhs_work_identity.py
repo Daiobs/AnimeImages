@@ -427,11 +427,13 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                                              content_type="application/json")
                     self.assertEqual(first.status_code, 200, first.content)
                     item = first.json()["item"]
-                    suffix = candidate.get("format_id") or candidate["candidate_id"]
                     extension = media.rsplit(".", 1)[1]
-                    self.assertEqual(item["filename"], f"{WORK_TITLE}_{suffix}.{extension}")
+                    self.assertEqual(item["filename"], f"{WORK_TITLE}.{extension}")
+                    self.assertNotIn(candidate["candidate_id"], item["filename"])
+                    self.assertEqual(radio["data-token"], candidate["resource_token"])
                     self.assertEqual(item["url"], media)
                     self.assertEqual(item["candidate_id"], radio["value"])
+                    self.assertEqual(item["asset_id"], "upstream:selection:" + candidate["candidate_id"])
                     self.assertEqual(item["selected_format_id"], candidate.get("format_id") or "")
                     self.assertEqual(item["download_strategy"], "browser_streaming")
                     again = self.client.post(reverse("service_selected_format"), payload,
@@ -489,10 +491,12 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                         self.assertEqual(action.status_code, 200, action.content)
                         item = action.json()["item"]
                         with self.subTest(cached=cached, check="filename"):
-                            suffix = candidate.get("format_id") or candidate["candidate_id"]
-                            self.assertEqual(item["filename"], f"{title}_{suffix}.{media.rsplit('.', 1)[1]}")
+                            self.assertEqual(item["filename"], f"{title}.{media.rsplit('.', 1)[1]}")
+                            self.assertNotIn(candidate["candidate_id"], item["filename"])
+                        self.assertEqual(radio["data-token"], candidate["resource_token"])
                         self.assertEqual(item["url"], media)
                         self.assertEqual(item["candidate_id"], candidate["candidate_id"])
+                        self.assertEqual(item["asset_id"], "upstream:selection:" + candidate["candidate_id"])
                         self.assertEqual(item["selected_format_id"], candidate.get("format_id") or "")
                         self.assertEqual(item["download_strategy"], "browser_streaming")
                         if first_selection is None:
@@ -575,10 +579,13 @@ class XhsWorkIdentityHTTPContracts(TransactionTestCase):
                                                  content_type="application/json")
                         self.assertEqual(first.status_code, 200, first.content)
                         item = first.json()["item"]
-                        suffix = candidate.get("format_id") or candidate["candidate_id"]
-                        self.assertEqual(item["filename"], f"{expected}_{suffix}.{media.rsplit('.', 1)[1]}")
+                        self.assertEqual(item["filename"], f"{expected}.{media.rsplit('.', 1)[1]}")
+                        self.assertNotIn(candidate["candidate_id"], item["filename"])
+                        self.assertEqual(radio["data-token"], candidate["resource_token"])
                         self.assertEqual(item["url"], media)
                         self.assertEqual(item["candidate_id"], radio["value"])
+                        self.assertEqual(item["asset_id"], "upstream:selection:" + candidate["candidate_id"])
+                        self.assertEqual(item["selected_format_id"], candidate.get("format_id") or "")
                         self.assertEqual(item["download_strategy"], "browser_streaming")
                         again = self.client.post(reverse("service_selected_format"), payload,
                                                  content_type="application/json")

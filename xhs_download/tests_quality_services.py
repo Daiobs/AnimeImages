@@ -361,6 +361,10 @@ class SharedServiceExecutionTests(SimpleTestCase):
             result = execution.execute_provider('tiantian_existing', SOURCE, service_authorized=True)
         self.assertEqual(result.metadata['retained_count'], 1000)
         self.assertEqual(result.metadata['unexpanded_count'], 1)
+        for candidate in result.metadata['upstream_candidates']:
+            self.assertEqual(candidate['media_type'], 'image')
+            self.assertNotIn('resource_alias_key', candidate)
+            self.assertNotIn('filename_sequence', candidate)
         lab, resources = parse_result_to_lab(result, provider_id='tiantian_existing',
             user_id=7, request_id='service-many')
         self.assertEqual(len(lab['assets']), 1000)
@@ -369,4 +373,6 @@ class SharedServiceExecutionTests(SimpleTestCase):
         tail = result.metadata['upstream_candidates'][-1]
         record = resolve_candidate_record(tail['resource_token'], tail['candidate_id'])
         self.assertEqual(record['url'], f'{MEDIA}/999.jpg')
+        self.assertNotIn('resource_alias_key', record['public'])
+        self.assertNotIn('filename_sequence', record['public'])
         self.assertEqual(result.assets, ())

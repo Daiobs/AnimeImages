@@ -32,6 +32,36 @@ MEDIA = 'https://media.example/video'
 PROVIDERS = ('kukutool_generic', 'tiantianjiexi_generic')
 
 
+class WorkCaptionPresentationTests(SimpleTestCase):
+    def test_known_caption_derives_lead_independently_of_description(self):
+        from .services.work_caption import caption_presentation
+        body = '保留拍摄过程中的完整说明，记录光线和构图的选择。' * 3
+        caption = f'{TITLE} {body} #00后 #摄影'
+        for description, expected in (
+            (body, body),
+            ('额外的作品说明 #补充', body + '\n额外的作品说明'),
+            (caption.replace(' ', '  '), body),
+            (caption.replace(' ', '\n', 1), body),
+        ):
+            with self.subTest(description=description):
+                text = caption_presentation(caption, description)
+                self.assertEqual(text['title'], TITLE)
+                self.assertEqual(text['description'], expected)
+                self.assertEqual(text['caption'], caption + '\n' + description)
+                self.assertEqual(text['topics'], ['00后', '摄影'] + (['补充'] if '#补充' in description else []))
+
+    def test_explicit_title_keeps_hash_signs_with_and_without_body(self):
+        from .services.work_caption import work_caption_presentation
+        title = '#1 Release (2026) + C#'
+        for description in ('', 'Independent body #release'):
+            with self.subTest(description=description):
+                text = work_caption_presentation(title, description)
+                self.assertEqual(text['title'], title)
+                self.assertEqual(text['description'], description)
+                self.assertEqual(text['topics'], ['release'] if description else [])
+                self.assertEqual(text['caption'], '\n'.join(filter(None, (title, description))))
+
+
 @override_settings(
     CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
     THIRD_PARTY_PROVIDER_ENABLED=True, YTDLP_PROVIDER_ENABLED=True,
@@ -92,14 +122,53 @@ class SharedWorkTitleTests(SimpleTestCase):
         before = deepcopy(record)
         link = self.action(row, 'link')
         item = self.action(row)
-        suffix = row.get('format_id') or row['candidate_id']
-        self.assertEqual(item['filename'], f'{title}_{suffix}.{extension}')
+        sequence = row.get('filename_sequence') or row.get('ordinal', 1)
+        suffix = f'_{sequence}' if sequence > 1 else ''
+        self.assertEqual(item['filename'], f'{title}{suffix}.{extension}')
+        self.assertNotIn(row['candidate_id'], item['filename'])
         self.assertEqual(link['filename'], item['filename'])
         self.assertEqual(item['url'], record['url'])
         self.assertEqual(item['candidate_id'], row['candidate_id'])
         self.assertEqual(item['selected_format_id'], row.get('format_id') or '')
         self.assertEqual(item['selection_expires_at'], int(record['expires_at'] * 1000))
         self.assertEqual(resolve_candidate_record(row['resource_token'], row['candidate_id']), before)
+
+    def test_same_title_multiple_resources_use_readable_ordinals_in_actual_actions(self):
+        for provider in PROVIDERS:
+            with self.subTest(provider=provider):
+                normalizer = (KukutoolResultNormalizer() if provider == 'kukutool_generic'
+                              else TianTianJieXiResultNormalizer())
+                formats_key = 'video_fullinfo' if provider == 'kukutool_generic' else 'streams'
+                result = normalizer.normalize(rule=self.rule, platform_name='Fixture', source_url=SOURCE,
+                    payload={'title': TITLE, 'description': BODY + '\n#摄影 #作品', 'videos': [{formats_key: [
+                        {'url': MEDIA + '.mp4', 'quality': '720P'},
+                        {'url': MEDIA + '.webm', 'quality': '720P'},
+                    ]}]})
+                rows = result.metadata['upstream_candidates']
+                self.assertEqual(len(rows), 2)
+                for row, extension in zip(rows, ('mp4', 'webm')):
+                    self.assert_name_and_authority(row, TITLE, extension)
+                self.assertEqual(result.metadata['description'], BODY + '\n#摄影 #作品')
+                self.assertEqual([self.action(r, 'link')['filename'] for r in rows],
+                                 [TITLE + '.mp4', TITLE + '_2.webm'])
+
+    def test_case_aliases_of_one_file_do_not_invent_multiple_filename_sequences(self):
+        for provider in PROVIDERS:
+            with self.subTest(provider=provider):
+                normalizer = (KukutoolResultNormalizer() if provider == 'kukutool_generic'
+                              else TianTianJieXiResultNormalizer())
+                key = 'video_fullinfo' if provider == 'kukutool_generic' else 'streams'
+                result = normalizer.normalize(rule=self.rule, platform_name='Fixture', source_url=SOURCE,
+                    payload={'title': CAPTION, 'videos': [{key: [
+                        {'url': MEDIA + '.mp4', 'quality_label': '720p'},
+                        {'url': MEDIA + '.mp4', 'quality_label': '720P', 'size_bytes': 32},
+                    ]}]})
+                rows = result.metadata['upstream_candidates']
+                self.assertEqual(len(rows), 2)
+                self.assertNotEqual(rows[0]['ordinal'], rows[1]['ordinal'])
+                for row in rows:
+                    self.assert_name_and_authority(row, TITLE, 'mp4')
+                    self.assertEqual(self.action(row, 'link')['filename'], TITLE + '.mp4')
 
     def test_service_explicit_title_wins_and_description_survives(self):
         description = f'{TITLE}\n{BODY}\n#摄影 #作品'

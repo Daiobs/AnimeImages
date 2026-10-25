@@ -319,11 +319,14 @@ def selected_link_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):
     title = (record['filename_title'] if 'filename_title' in record else
              work_caption_presentation(public.get('work_label'))['title'])
     name = clean_filename(title or 'media').strip(' .')[:160] or 'media'
-    format_id = re.sub(r'[^A-Za-z0-9_-]', '_', str(public.get('format_id') or record['candidate_id']))[:80]
+    # Issued order is stable across actions/cache reads and distinguishes files
+    # without exposing opaque candidate or upstream format identities in names.
+    ordinal = number(public.get('filename_sequence')) or number(public.get('ordinal'))
+    suffix = f'_{int(ordinal)}' if ordinal and ordinal > 1 and ordinal == int(ordinal) else ''
     return {'selection_schema': schema, 'candidate_id': record['candidate_id'],
             'selected_format_id': public.get('format_id') or '', 'url': url,
             'type': public['media_type'], 'provider': provider,
-            'filename': f'{name}_{format_id}.{extension}'}
+            'filename': f'{name}{suffix}.{extension}'}
 
 
 def selected_open_descriptor(record, *, provider=PROVIDER, schema=SCHEMA):

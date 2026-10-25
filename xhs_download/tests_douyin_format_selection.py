@@ -168,7 +168,7 @@ class DouyinFormatSelectionTests(SimpleTestCase):
         result = self.result()
         row = result.metadata['upstream_candidates'][0]
         link = selected_link_descriptor(self.record(row))
-        self.assertTrue(link['filename'].startswith('media_'))
+        self.assertEqual(link['filename'], 'media.mp4')
         self.assertNotIn('#', link['filename'])
         record = deepcopy(self.record(row))
         record['service_legacy_item']['filename'] = '#摄影 #日常.mp4'
@@ -188,7 +188,9 @@ class DouyinFormatSelectionTests(SimpleTestCase):
                 record = self.record(row)
                 saved_record = deepcopy(record)
                 link = selected_link_descriptor(record)
-                self.assertTrue(link['filename'].startswith(CAPTION_TITLE + '_'))
+                suffix = f"_{row['ordinal']}" if row['ordinal'] > 1 else ''
+                self.assertEqual(link['filename'], CAPTION_TITLE + suffix + '.mp4')
+                self.assertNotIn(row['candidate_id'], link['filename'])
                 self.assertNotIn(CAPTION_DESCRIPTION[:10], link['filename'])
                 self.assertNotIn('#', link['filename'])
                 response = self.download_action(row)
@@ -204,6 +206,53 @@ class DouyinFormatSelectionTests(SimpleTestCase):
         self.assertEqual(result.metadata, original_metadata)
         self.session.post.assert_called_once()
         self.assertEqual(self.media_requests, [('HEAD', self.record(row)['url']) for row in rows[:2]])
+
+    def test_caption_with_description_matches_page_and_540p_download(self):
+        for title, description in (
+            (CAPTION, CAPTION_DESCRIPTION),
+            (CAPTION.replace(' ', '  ', 1), CAPTION),
+            (CAPTION.replace(' ', '\n', 1), CAPTION),
+            (CAPTION.replace(' ', '  ', 1), CAPTION.replace(' ', '  ', 1)),
+            (CAPTION.replace(' ', '\n', 1), CAPTION.replace(' ', '\n', 1)),
+        ):
+            with self.subTest(title=title, description=description):
+                cache.clear()
+                payload = self.session.post.return_value.json.return_value['data']
+                payload.update(title=title, description=description)
+                payload['videos'][0]['streams'] = [
+                    {'url': BASE + label + '.mp4', 'qualityLabel': label, 'sizeInBytes': size}
+                    for label, size in [('1080P', 4000), ('720P', 3000), ('600P', 2000), ('540P', 1000)]]
+                result = self.result()
+                before_metadata = deepcopy(result.metadata)
+                context = build_result_display_context(result, probe_missing_video_sizes=False)
+                self.assertEqual(context['display_title'], CAPTION_TITLE)
+                self.assertEqual(context['display_description'], CAPTION_DESCRIPTION)
+                self.assertEqual(context['display_topics'], ['明日方舟', '摄影调色', '糕速出片指南'])
+                self.assertEqual(result.metadata['caption'], title if title == description else title + '\n' + description)
+                rows = result.metadata['upstream_candidates']
+                row = next(row for row in rows if row['format_label'] == '540P')
+                before = deepcopy(self.record(row))
+                response = self.download_action(row)
+                self.assertEqual(response.status_code, 200, response.content)
+                item = response.json()['item']
+                self.assertEqual(item['filename'], CAPTION_TITLE + '_4.mp4')
+                self.assertEqual(item['download_strategy'], 'browser_streaming')
+                self.assertEqual(item['url'], before['url'])
+                self.assertEqual(item['candidate_id'], row['candidate_id'])
+                self.assertEqual(item['provider_manifest_token'], before['service_legacy_item']['provider_manifest_token'])
+                self.assertEqual(item['selection_expires_at'], int(before['expires_at'] * 1000))
+                for template, data in (
+                    ('partials/xhs_results_region.html', context),
+                    ('partials/batch_result_card.html', {'row': {**context, 'status': 'success'}}),
+                ):
+                    soup = BeautifulSoup(render_to_string(template, data), 'html.parser')
+                    heading = soup.select_one('.result-title, .batch-result-title').get_text(strip=True)
+                    self.assertIn(CAPTION_TITLE, heading)
+                    self.assertNotIn(CAPTION_DESCRIPTION[:10], heading)
+                    self.assertEqual(len(soup.select('[data-picker-radio]')), 4)
+                    self.assertTrue(soup.select_one('[data-picker-cover]')['src'])
+                self.assertEqual(self.record(row), before)
+                self.assertEqual(result.metadata, before_metadata)
 
     def bridge_result(self, provider, candidates, *, payload=None, missing_manifest=False):
         context = DouyinParseContext(url=f'https://www.douyin.com/video/{AWEME}', aweme_id=AWEME)

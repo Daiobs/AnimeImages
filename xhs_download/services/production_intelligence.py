@@ -7,6 +7,7 @@ from django.db.models.functions import TruncHour
 from django.utils import timezone
 
 from ..models import DownloadRequestLog, ObservabilityStatus, PolicyRuntimeSetting
+from .download_audit import operational_download_logs
 from ..policy.adaptive import build_adaptive_weight_recommendation
 from ..policy.engine import policy_weight_diagnostics
 from .download_routing import (
@@ -527,7 +528,7 @@ def build_observability_v2_context(*, window_hours=OBSERVABILITY_V2_WINDOW_HOURS
     window_hours = normalize_window_hours(window_hours)
     now = timezone.now()
     since = now - timezone.timedelta(hours=window_hours)
-    download_queryset = DownloadRequestLog.objects.filter(created_at__gte=since)
+    download_queryset = operational_download_logs(DownloadRequestLog.objects.filter(created_at__gte=since))
     downloads = list(download_queryset)
     runtime_setting = PolicyRuntimeSetting.load()
 

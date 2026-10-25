@@ -1,8 +1,10 @@
 """Offline retention regressions: display limits must not erase parse evidence."""
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
+from django.core import signing
 from django.core.cache import cache
 
 from .services import upstream_candidates, upstream_delivery, quality_execution
@@ -102,3 +104,46 @@ class CandidateRetentionTests(SimpleTestCase):
         candidate = meta['upstream_candidates'][0]
         record = upstream_candidates.resolve_candidate_record(candidate['resource_token'], candidate['candidate_id'])
         self.assertEqual(record['url'], exact)
+
+    def test_shared_service_work_counts_toward_exact_cache_budget(self):
+        specs = [dict(url=f'https://media.example/{i}.mp4', metadata={
+            'work_id': 'one', '_service_picker_issued': True,
+        }, ordinal=i + 1, provider='kukutool_generic', source_url=self.source,
+            media_type='video', state='candidate_only') for i in range(3)]
+        work = {'title': 'Work', 'author': 'Author', 'cover_url': 'https://media.example/cover.jpg'}
+
+        def issue(count, budget):
+            with patch.object(upstream_candidates, 'MAX_CANDIDATE_BUNDLE_BYTES', budget), \
+                    patch.object(upstream_candidates.time, 'time', return_value=1700000000):
+                with patch.object(cache, 'set', wraps=cache.set) as writes:
+                    rows = upstream_candidates.issue_candidates(specs[:count], work=work)
+                if rows:
+                    self.assertEqual(writes.call_count, 1)
+                    self.assertEqual(writes.call_args.kwargs['timeout'], upstream_candidates.TTL)
+                    stored = writes.call_args.args[1]
+                    size = len(json.dumps(stored, ensure_ascii=True, separators=(',', ':')).encode())
+                    self.assertLessEqual(size, budget)
+                    return rows, size
+                writes.assert_not_called()
+                return rows, 0
+
+        _, one_size = issue(1, upstream_candidates.MAX_CANDIDATE_BUNDLE_BYTES)
+        _, two_size = issue(2, upstream_candidates.MAX_CANDIDATE_BUNDLE_BYTES)
+        self.assertEqual(len(issue(3, one_size - 1)[0]), 0)
+        self.assertEqual(len(issue(3, one_size)[0]), 1)
+        self.assertEqual(len(issue(3, two_size - 1)[0]), 1)
+        self.assertEqual(len(issue(3, two_size)[0]), 2)
+
+    def test_missing_shared_work_rejects_instead_of_borrowing_another_record(self):
+        from .services.common import XhsParseError
+        row = upstream_candidates.issue_candidates([dict(url='https://media.example/one.mp4',
+            metadata={'work_id': 'one', '_service_picker_issued': True}, ordinal=1,
+            provider='kukutool_generic', source_url=self.source, media_type='video', state='candidate_only')],
+            work={'title': 'Work'})[0]
+        payload = signing.loads(row['resource_token'], salt=upstream_candidates.SALT)
+        key = 'upstream:candidate-bundle:' + payload['bundle']
+        stored = cache.get(key)
+        stored.pop('_shared_work')
+        cache.set(key, stored, timeout=upstream_candidates.TTL)
+        with self.assertRaises(XhsParseError):
+            upstream_candidates.resolve_candidate_record(row['resource_token'], row['candidate_id'])
