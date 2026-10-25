@@ -164,13 +164,13 @@
 
         <section class="control-grid">
             <div class="control-card"><strong>今日解析次数</strong><span>{{ core_metrics.today_parse_count|default:"暂无数据" }}</span></div>
-            <div class="control-card"><strong>今日下载次数</strong><span>{{ core_metrics.today_download_count|default:"暂无数据" }}</span></div>
-            <div class="control-card"><strong>今日下载成功率</strong><span>{{ core_metrics.today_download_success_rate|default:0 }}%</span></div>
-            <div class="control-card"><strong>今日下载实际流量</strong><span>{{ core_metrics.today_actual_bytes_label|default:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>今日 legacy 业务样本</strong><span>{{ core_metrics.today_download_count|default_if_none:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>legacy 业务成功率</strong><span>{% if core_metrics.today_download_count %}{{ core_metrics.today_download_success_rate }}%{% else %}未知（样本不足）{% endif %}</span></div>
+            <div class="control-card"><strong>今日 legacy 记录流量</strong><span>{{ core_metrics.today_actual_bytes_label|default:"暂无数据" }}</span></div>
             <div class="control-card"><strong>今日 blocked / 限流</strong><span>{{ core_metrics.today_blocked_count|default:"暂无数据" }}</span></div>
             <div class="control-card"><strong>24h Provider 失败</strong><span>{{ core_metrics.provider_failed_24h|default:"暂无数据" }}</span></div>
-            <div class="control-card"><strong>24h fallback</strong><span>{{ core_metrics.fallback_count_24h|default:"暂无数据" }}</span></div>
-            <div class="control-card"><strong>全站流量使用率</strong><span>{{ core_metrics.global_daily_bytes_usage_label|default:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>24h fallback（legacy）</strong><span>{{ core_metrics.fallback_count_24h|default:"暂无数据" }}</span></div>
+            <div class="control-card"><strong>legacy 记录流量占比</strong><span>{{ core_metrics.global_daily_bytes_usage_label|default:"暂无数据" }}</span></div>
         </section>
 
         <section class="control-panel">
@@ -192,7 +192,7 @@
             <h2>Provider 状态</h2>
             <div class="control-table-wrap">
                 <table class="control-table">
-                    <thead><tr><th>Provider</th><th>Runtime</th><th>Capability</th><th>最近健康</th><th>24h 成功率</th><th>平均耗时</th><th>最近失败</th><th>入口</th></tr></thead>
+                    <thead><tr><th>Provider</th><th>Runtime</th><th>Capability</th><th>最近健康</th><th>24h legacy 业务成功率</th><th>平均耗时</th><th>最近失败</th><th>入口</th></tr></thead>
                     <tbody>
                     {% for row in provider_status.rows %}
                         <tr>
@@ -200,7 +200,7 @@
                             <td>{{ row.runtime_label }} / {{ row.rollout_percent }}%</td>
                             <td>{% if row.hard_enabled %}<span class="badge badge-success">enabled</span>{% else %}<span class="badge badge-warning">disabled</span>{% endif %}</td>
                             <td><span class="badge badge-{{ row.last_health_status|default:'skipped' }}">{{ row.last_health_status_label }}</span><br><span class="control-muted">{{ row.last_health_at|default:"暂无数据" }}</span>{% if row.health_details %}<br><span class="control-muted">{{ row.health_details }}</span>{% endif %}</td>
-                            <td>{{ row.success_rate_24h }}%</td>
+                            <td>{% if row.success_rate_24h != None %}{{ row.success_rate_24h }}%{% else %}未知（样本不足）{% endif %}</td>
                             <td>{{ row.average_duration_ms_24h }}ms</td>
                             <td>{{ row.recent_failure }}</td>
                             <td>

@@ -182,6 +182,35 @@ class DownloadAuditTests(TestCase):
         self.assertFalse(DownloadRequestLog.objects.exists())
         self.assertEqual(DownloadAuditEvent.objects.count(), 2)
 
+    def test_trusted_prepare_and_handoff_share_one_dispatch_feedback(self):
+        for phase, transport in (("prepared", ""), ("handed_off", "server_attachment")):
+            event = record_transfer_audit(
+                self.request, phase=phase, transport=transport, attempt_id="same-dispatch",
+                media_items=(self.item,), route_type="proxy", final_policy_route="proxy",
+                status="success", dispatch_feedback=True,
+            )
+            self.assertIsNotNone(event)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 2)
+        self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertEqual(RoutingDecisionLog.objects.count(), 1)
+        self.assertEqual(PolicyControlRecord.objects.count(), 1)
+        self.assertFalse(operational_download_logs(DownloadRequestLog.objects.all()).exists())
+        self.assertEqual(download_attempts(DownloadAuditEvent.objects.all()).count(), 1)
+        self.assertFalse(DownloadAuditEvent.objects.filter(phase="transfer_completed").exists())
+
+    def test_dispatch_business_failure_preserves_audit_and_does_not_retry(self):
+        with patch.object(DownloadRequestLog.objects, "create", side_effect=RuntimeError("business offline")) as write:
+            event = record_transfer_audit(
+                self.request, phase="prepared", attempt_id="business-offline",
+                media_items=(self.item,), route_type="direct", dispatch_feedback=True,
+            )
+        self.assertIsNotNone(event)
+        self.assertEqual(DownloadAuditEvent.objects.count(), 1)
+        self.assertIsNone(event.legacy_log_id)
+        self.assertEqual(write.call_count, 1)
+        self.assertFalse(RoutingDecisionLog.objects.exists())
+        self.assertFalse(PolicyControlRecord.objects.exists())
+
     def test_missing_identity_does_not_issue_portable_receipt(self):
         with patch("xhs_download.services.download_audit.request_privacy_fields", return_value={
             "client_identity_hash": "", "ip_hash": "", "user_agent_hash": "", "is_staff": False,
@@ -493,6 +522,27 @@ class DownloadAuditTests(TestCase):
                 self.assertFalse(registered.has_change_permission(request))
                 self.assertIn("audit_phase", registered.list_display)
 
+    def test_log_center_counts_audit_attempts_not_dispatch_or_phase_rows(self):
+        user = get_user_model().objects.create_superuser(username="audit-center", password="test-only-password")
+        self.client.force_login(user)
+        prepared = record_transfer_audit(
+            self.request, phase="prepared", attempt_id="center-dispatch", route_type="direct",
+            dispatch_feedback=True, media_items=(self.item,),
+        )
+        receipt = issue_browser_download_audit(self.request, self.item, prepared_log=prepared)["download_audit"]
+        for phase in ("handed_off", "transfer_started", "failed"):
+            record_browser_download_audit(self.request, self.event(
+                receipt, phase=phase, transport="browser_streaming", actual_bytes=512,
+            ))
+        record_download_request_log(self.request, status="success", download_type="legacy-only")
+        response = self.client.get("/admin/logs/")
+        self.assertEqual(response.status_code, 200)
+        card = next(row for row in response.context["cards"] if row["title"] == "下载日志")
+        self.assertEqual((card["count"], card["warning_count"]), (1, 1))
+        from .views import safe_recent_count
+        from django.utils import timezone
+        self.assertEqual(safe_recent_count(DownloadRequestLog, timezone.now() - timezone.timedelta(days=1)), 1)
+
     def test_audit_log_search_applies_request_provider_and_error_filters(self):
         user = get_user_model().objects.create_superuser(username="audit-search", password="test-only-password")
         self.client.force_login(user)
@@ -504,6 +554,19 @@ class DownloadAuditTests(TestCase):
             with self.subTest(query=query):
                 response = self.client.get(reverse("download_logs"), {"q": query})
                 self.assertEqual([row.pk for row in response.context["page_obj"]], [wanted.pk])
+
+    def test_legacy_panels_label_missing_samples_as_unknown(self):
+        control = render_to_string("admin/control_plane.html", {
+            "core_metrics": {"today_download_count": 0, "today_download_success_rate": 0},
+            "provider_status": {"rows": [{"name": "legacy provider", "success_rate_24h": None}]},
+        })
+        self.assertIn("今日 legacy 业务样本", control)
+        self.assertIn("legacy 业务成功率", control)
+        self.assertEqual(control.count("未知（样本不足）"), 2)
+        self.assertNotIn("今日下载成功率", control)
+        policy = render_to_string("admin/policy_engine.html", {"feedback": {"success_rate": None}})
+        self.assertIn("legacy 业务成功率", policy)
+        self.assertIn("未知（样本不足）", policy)
 
 
 class DownloadAuditMigrationTests(TransactionTestCase):
@@ -681,21 +744,21 @@ class DownloadAuditOperationalIsolationTests(TestCase):
             created_at=timezone.now() - timezone.timedelta(seconds=1),
         )
 
-    def test_defensive_filter_retains_legacy_and_server_terminal_only(self):
+    def test_defensive_filter_retains_only_unmigrated_legacy_business_rows(self):
         self.add_noise()
         self.assertSetEqual(
             set(operational_download_logs(DownloadRequestLog.objects.all()).values_list("pk", flat=True)),
-            {self.legacy.pk, self.completed.pk},
+            {self.legacy.pk},
         )
         self.assertEqual(DownloadRequestLog.objects.count(), 15)
 
-    def test_defensive_legacy_terminal_filter_deduplicates_and_excludes_cancellation(self):
-        failed = DownloadRequestLog.objects.create(
+    def test_defensive_filter_does_not_reconstruct_audit_stages_in_legacy_table(self):
+        DownloadRequestLog.objects.create(
             attempt_id=self.completed.attempt_id, phase="failed", transport="server_attachment",
             evidence_source="server_observed", status="failed", actual_bytes=200,
         )
         records = operational_download_logs(DownloadRequestLog.objects.all())
-        self.assertSetEqual(set(records.values_list("pk", flat=True)), {self.legacy.pk, failed.pk})
+        self.assertSetEqual(set(records.values_list("pk", flat=True)), {self.legacy.pk})
         DownloadRequestLog.objects.create(
             attempt_id=self.completed.attempt_id, phase="cancelled", transport="server_attachment",
             evidence_source="server_observed", status="cancelled", actual_bytes=200,
@@ -718,7 +781,7 @@ class DownloadAuditOperationalIsolationTests(TestCase):
         self.assertEqual(list(DownloadRequestLog.objects.order_by("pk").values()), legacy_rows)
         self.assertEqual(DownloadRequestLog.objects.count(), 2)
         self.assertEqual(DownloadAuditEvent.objects.count(), 14)
-        self.assertEqual(operational_download_logs(DownloadRequestLog.objects.all()).count(), 2)
+        self.assertEqual(operational_download_logs(DownloadRequestLog.objects.all()).count(), 1)
         for key in ("routing_summary", "system_stability", "failure_top", "blocked_rows"):
             with self.subTest(panel=key):
                 self.assertEqual(after[key], before[key])

@@ -293,7 +293,7 @@ def build_provider_status(request):
             "last_health_status_label": last_run.get_status_display() if last_run else "暂无数据",
             "last_health_at": timezone.localtime(last_run.created_at).strftime("%Y-%m-%d %H:%M:%S") if last_run else "",
             "health_details": health_details,
-            "success_rate_24h": stats["success_rate"],
+            "success_rate_24h": stats["success_rate"] if stats["count"] else None,
             "average_duration_ms_24h": stats["average_duration_ms"],
             "recent_failure": stats["recent_failure"] or "暂无数据",
             "settings_url": url_or_empty("provider_settings"),

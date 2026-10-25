@@ -89,7 +89,7 @@ def build_policy_feedback_summary(window_hours=24):
         "policy_feedback_count": total,
         "policy_active_count": active,
         "recommendation_match_rate": safe_ratio(matched, total),
-        "success_rate": safe_ratio(success, total),
+        "success_rate": safe_ratio(success, total) if total else None,
         "average_duration_ms": safe_ratio(total_duration, total),
         "average_server_bytes": safe_ratio(total_server_bytes, total),
         "by_recommended_route": rows_by_recommended,

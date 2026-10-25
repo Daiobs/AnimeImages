@@ -26,7 +26,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from download_console.models import DownloadRuntimeSetting
 from djangoProject.health import get_runtime_readiness
-from .services.download_audit import operational_download_logs
+from .services.download_audit import download_attempts, operational_download_logs
 
 from .models import (
     DownloadAuditEvent,
@@ -2102,7 +2102,12 @@ def policy_center_required(request):
 
 def safe_recent_count(model, since, **filters):
     try:
-        return model.objects.filter(created_at__gte=since, **filters).count()
+        queryset = model.objects.filter(created_at__gte=since)
+        if model is DownloadAuditEvent:
+            queryset = download_attempts(queryset)
+        elif model is DownloadRequestLog:
+            queryset = operational_download_logs(queryset)
+        return queryset.filter(**filters).count()
     except Exception:
         logger.exception("admin_center_count_failed", extra={"model": getattr(model, "__name__", "")})
         return None
@@ -2128,10 +2133,10 @@ def logs_center_view(request):
         },
         {
             "title": "下载日志",
-            "description": "查看下载路由、服务端流量、失败类型和恢复情况。",
+            "description": "按尝试查看下载阶段、传输方式与观测结果；移交不等于完成。",
             "url_name": "download_logs",
-            "count": safe_recent_count(DownloadRequestLog, since),
-            "warning_count": safe_recent_count(DownloadRequestLog, since, status=ObservabilityStatus.FAILED),
+            "count": safe_recent_count(DownloadAuditEvent, since),
+            "warning_count": safe_recent_count(DownloadAuditEvent, since, phase="failed"),
             "warning_label": "失败",
         },
         {
@@ -2199,7 +2204,7 @@ def policy_center_view(request):
         },
         {
             "title": "Feedback Loop",
-            "description": "查看 Observation → Feedback → Insight → Suggestion 的闭环入口。",
+            "description": "查看 Observation → Feedback → Insight → Suggestion；计数为未迁移的 legacy 业务样本。",
             "url_name": "feedback_loop",
             "count": safe_recent_count(DownloadRequestLog, since),
         },
@@ -2652,7 +2657,6 @@ def log_download_request_event(
     attempt_id="",
     evidence_source="",
     dispatch_feedback=False,
-    legacy_log=False,
 ):
     duration_ms = (time.monotonic() - started_at) * 1000 if started_at else 0
     route_info = route_info or {}
@@ -2683,7 +2687,6 @@ def log_download_request_event(
         attempt_id=attempt_id or (uuid4().hex if phase else ""),
         evidence_source=evidence_source or ("server_observed" if phase else ""),
         dispatch_feedback=dispatch_feedback,
-        legacy_log=legacy_log,
         estimated_bytes=route_info.get("estimated_bytes"),
         actual_bytes=actual_bytes,
         route_type=route_info.get("route_type", ""),
@@ -6179,7 +6182,6 @@ def download_stream_view(request, token):
                 download_type="single_stream",
                 phase=("transfer_completed" if status == "completed" else
                        "cancelled" if error_code == "DOWNLOAD_CONNECTION_CLOSED" else "failed"),
-                legacy_log=True,
                 transport="server_attachment",
                 attempt_id=handoff.ticket_id,
                 media_items=media_items,

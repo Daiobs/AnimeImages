@@ -286,12 +286,8 @@ def record_download_request_log(request, **fields):
                 fields.get("dispatch_feedback") is True
                 and payload["phase"] in {"prepared", "handed_off"}
             )
-            terminal = (
-                fields.get("legacy_log") is True
-                and payload["phase"] in {"transfer_completed", "failed", "cancelled"}
-            )
-            # Event idempotency also protects the original business record. Browser
-            # observations and additional phases never enter the old business table.
+            # Keep a single trusted dispatch record for the existing policy/control
+            # consumers, not a legacy success sample for each transfer phase.
             with transaction.atomic():
                 log, created = DownloadAuditEvent.objects.get_or_create(
                     attempt_id=payload["attempt_id"],
@@ -299,15 +295,29 @@ def record_download_request_log(request, **fields):
                     transport=payload["transport"],
                     defaults=payload,
                 )
-                if (created and payload["evidence_source"] == "server_observed"
-                        and (dispatch or terminal)):
+                if (created and dispatch and payload["route_type"]
+                        and payload["evidence_source"] == "server_observed"):
+                    # The server creates the attempt before clients receive its ID.
+                    # Lock its first event to serialize later dispatch observations.
+                    anchor = DownloadAuditEvent.objects.select_for_update().filter(
+                        attempt_id=payload["attempt_id"],
+                    ).order_by("pk").first()
+                    already_dispatched = DownloadAuditEvent.objects.filter(
+                        attempt_id=anchor.attempt_id, legacy_log_id__isnull=False,
+                    ).exists()
                     business_payload = {
                         **payload, "status": business_status,
                         "attempt_id": "", "phase": "", "transport": "", "evidence_source": "",
                     }
-                    business_log = DownloadRequestLog.objects.create(**business_payload)
-                    log.legacy_log_id = business_log.pk
-                    log.save(update_fields=("legacy_log_id",))
+                    if not already_dispatched:
+                        try:
+                            with transaction.atomic():
+                                business_log = DownloadRequestLog.objects.create(**business_payload)
+                                DownloadAuditEvent.objects.filter(pk=log.pk).update(legacy_log_id=business_log.pk)
+                            log.legacy_log_id = business_log.pk
+                        except Exception:
+                            business_log = None
+                            logger.exception("download_dispatch_log_write_failed")
             if business_log is not None and dispatch and payload["route_type"]:
                 record_download_business_feedback(business_log, business_payload)
             return log

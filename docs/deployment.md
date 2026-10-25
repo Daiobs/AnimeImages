@@ -520,6 +520,11 @@ explicitly refused. Returning to the fixed code reads the retained events again.
 The optional business-log ID is a historical correlation without a foreign key,
 so old-code pruning can delete its business rows without blocking or deleting
 the separate observations.
+Phase events do not mirror terminal success, failure or cancellation into the
+business table. At most one trusted dispatch row per attempt remains for routing
+and control-execution feedback; current legacy statistics and policy learning
+exclude rows linked by `legacy_log_id`. Download counts, observed completion and
+transfer bytes come from `DownloadAuditEvent`, not dispatch success.
 Both log tables use the existing `prune_observability_logs --days` retention
 window; Provider administration audit retention is unchanged. This compatibility
 note does not authorize a release or rollback.
