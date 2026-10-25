@@ -32,6 +32,36 @@ MEDIA = 'https://media.example/video'
 PROVIDERS = ('kukutool_generic', 'tiantianjiexi_generic')
 
 
+class WorkCaptionPresentationTests(SimpleTestCase):
+    def test_known_caption_derives_lead_independently_of_description(self):
+        from .services.work_caption import caption_presentation
+        body = '保留拍摄过程中的完整说明，记录光线和构图的选择。' * 3
+        caption = f'{TITLE} {body} #00后 #摄影'
+        for description, expected in (
+            (body, body),
+            ('额外的作品说明 #补充', body + '\n额外的作品说明'),
+            (caption.replace(' ', '  '), body),
+            (caption.replace(' ', '\n', 1), body),
+        ):
+            with self.subTest(description=description):
+                text = caption_presentation(caption, description)
+                self.assertEqual(text['title'], TITLE)
+                self.assertEqual(text['description'], expected)
+                self.assertEqual(text['caption'], caption + '\n' + description)
+                self.assertEqual(text['topics'], ['00后', '摄影'] + (['补充'] if '#补充' in description else []))
+
+    def test_explicit_title_keeps_hash_signs_with_and_without_body(self):
+        from .services.work_caption import work_caption_presentation
+        title = '#1 Release (2026) + C#'
+        for description in ('', 'Independent body #release'):
+            with self.subTest(description=description):
+                text = work_caption_presentation(title, description)
+                self.assertEqual(text['title'], title)
+                self.assertEqual(text['description'], description)
+                self.assertEqual(text['topics'], ['release'] if description else [])
+                self.assertEqual(text['caption'], '\n'.join(filter(None, (title, description))))
+
+
 @override_settings(
     CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
     THIRD_PARTY_PROVIDER_ENABLED=True, YTDLP_PROVIDER_ENABLED=True,

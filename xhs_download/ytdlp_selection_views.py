@@ -28,7 +28,8 @@ def _response(data, status=200):
 
 
 def _audit_rejected_download(request, data, error_code):
-    if not isinstance(data, dict) or data.get('action') not in {'download', 'legacy'}:
+    if (not isinstance(data, dict) or not isinstance(data.get('action'), str)
+            or data['action'] not in {'download', 'legacy'}):
         return
     from .services.download_audit import record_transfer_audit
     # Before authorization, no client-supplied resource identity is trusted.

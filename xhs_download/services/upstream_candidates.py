@@ -175,11 +175,25 @@ def issue_candidates(specs, *, work=None):
             record['work'] = dict(work)
         key = public['candidate_id']
         public['resource_token'] = signing.dumps({'id':key,'bundle':bundle_id}, salt=SALT)
+        shared_work = None
+        shared_bytes = 0
+        if work and public['provider_id'] in {'tiantianjiexi_generic', 'kukutool_generic', 'tiantianjiexi', 'kukutool'}:
+            # Keep the public projection intact; only the cache representation
+            # shares repeated work metadata, never per-candidate authority.
+            shared_work = {'work': record['work'], 'public_work': public['work']}
+            record = {**record, 'public': dict(public), 'shared_work': True}
+            record.pop('work')
+            record['public'].pop('work')
+            if '_shared_work' not in records:
+                shared_bytes = len(json.dumps({'_shared_work': shared_work},
+                    ensure_ascii=True, separators=(',', ':')).encode()) - 2 + bool(records)
         entry_bytes = len(json.dumps({key:record}, ensure_ascii=True, separators=(',', ':')).encode()) - 2
-        added_bytes = entry_bytes + bool(records)
+        added_bytes = entry_bytes + bool(records or shared_bytes) + shared_bytes
         if encoded_bytes + added_bytes > MAX_CANDIDATE_BUNDLE_BYTES:
             break
         encoded_bytes += added_bytes
+        if shared_bytes:
+            records['_shared_work'] = shared_work
         records[key] = record
         candidates.append(public)
     if records:
@@ -201,6 +215,15 @@ def resolve_issued_candidate_record(token, candidate_id, *, display_only=False):
         if set(payload) == {'id','bundle'} and isinstance(payload['bundle'],str):
             records = cache.get('upstream:candidate-bundle:' + payload['bundle'])
             record = records.get(str(candidate_id)) if isinstance(records,dict) else None
+            if isinstance(record, dict) and record.get('shared_work') is True:
+                shared = records.get('_shared_work')
+                if (not isinstance(shared, dict) or not isinstance(shared.get('work'), dict)
+                        or not isinstance(shared.get('public_work'), dict)
+                        or not isinstance(record.get('public'), dict)):
+                    raise ValueError()
+                record = {**record, 'work': dict(shared['work']),
+                          'public': {**record['public'], 'work': dict(shared['public_work'])}}
+                record.pop('shared_work')
         elif payload == {'id':str(candidate_id)}:
             record = cache.get('upstream:candidate:' + str(candidate_id))
         else:

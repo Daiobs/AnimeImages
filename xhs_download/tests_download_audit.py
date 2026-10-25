@@ -69,6 +69,19 @@ class DownloadAuditTests(TestCase):
         for secret in (self.item["url"], "private-media-authorization", "tiantianjiexi", "203.0.113.10"):
             self.assertNotIn(secret, str(receipt))
 
+    def test_invalid_selected_action_keeps_rejection_without_audit_exception(self):
+        client = Client(raise_request_exception=False)
+        with patch('requests.sessions.Session.request', side_effect=AssertionError('Invalid actions must not fetch')):
+            for endpoint in ('/media/ytdlp-selected-format/', '/media/service-selected-format/'):
+                for action, expected in (([], 403), ({}, 403), (None, 400), (1, 400), ('invalid', 400)):
+                    with self.subTest(endpoint=endpoint, action=action):
+                        response = client.post(endpoint, data=json.dumps({
+                            'action': action, 'candidate_id': 'untrusted', 'resource_token': 'invalid',
+                        }), content_type='application/json')
+                        self.assertEqual(response.status_code, expected, response.content[:200])
+                        self.assertEqual(response.json()['status'], 'error')
+        self.assertFalse(DownloadRequestLog.objects.exists())
+
     def test_issue_fail_open_returns_original(self):
         with patch("xhs_download.services.download_audit.record_transfer_audit", return_value=None):
             self.assertIs(issue_browser_download_audit(self.request, self.item), self.item)

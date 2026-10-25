@@ -47,21 +47,22 @@ def caption_presentation(title, description=""):
     if joined:
         display_title, remainder = joined[0], _TOPIC.sub("", joined[1]).strip()
         derived = True
-    elif (not extra and repeated and _chinese_lead(repeated['lead'])
+    elif (repeated and _chinese_lead(repeated['lead'])
             and all(re.fullmatch(r"[@＠#＃][^\s]+", token) for token in repeated['tail'].split())):
         # Old cached labels can contain the title twice followed by social tags.
         display_title, remainder, derived = repeated['lead'], body, True
     elif len(lines) > 1 and len(lines[0]) <= 80:
         display_title, remainder = lines[0], "\n".join(lines[1:])
         derived = True
-    elif not extra and _TOPIC.search(caption) and len(display_title) > 60:
+    elif _TOPIC.search(caption) and len(display_title) > 60:
         lead, separator, tail = display_title.partition(" ")
         if separator and 4 <= len(lead) <= 60 and len(tail) >= 20 and _chinese_lead(lead):
             display_title, remainder, derived = lead, tail.strip(), True
     details = [remainder]
     if extra:
         extra_body = _TOPIC.sub("", extra).strip()
-        if extra_body != body and extra_body != remainder:
+        # Compare presentation whitespace without rewriting either source field.
+        if extra_body.split() not in (body.split(), remainder.split()):
             details.append(extra_body)
     if len(display_title) > 200 and not remainder:
         details.insert(0, body)

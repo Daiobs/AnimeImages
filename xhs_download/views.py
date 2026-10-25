@@ -6675,17 +6675,19 @@ def download_images_api(request):
         return response
 
     if route_only and download_mode in routed_download_modes:
-        log_download_request_event(
-            request,
-            download_type=route_info.get("route_type", "auto"),
-            phase="prepared",
-            dispatch_feedback=True,
-            media_items=media_items,
-            status=ObservabilityStatus.SUCCESS,
-            started_at=started_at,
-            actual_bytes=0,
-            route_info=route_info,
-        )
+        # Single attachments acquire their one audit identity with the prepare ticket.
+        if route_info.get("download_strategy") != "server_single_attachment":
+            log_download_request_event(
+                request,
+                download_type=route_info.get("route_type", "auto"),
+                phase="prepared",
+                dispatch_feedback=True,
+                media_items=media_items,
+                status=ObservabilityStatus.SUCCESS,
+                started_at=started_at,
+                actual_bytes=0,
+                route_info=route_info,
+            )
         return JsonResponse(
             {
                 "status": "routed",
