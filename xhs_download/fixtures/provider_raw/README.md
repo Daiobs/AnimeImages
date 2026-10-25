@@ -60,16 +60,17 @@ Known secret shapes include JWT, private keys, Basic/Bearer credentials, and
 common prefixed API keys. This is not proof that arbitrary unlabelled strings
 cannot be secrets: review the sanitized diff and provenance before staging.
 
-JSON strings and JSON object/array script bodies are parsed as strict JSON before
-redaction, rejecting duplicate keys, NaN, Infinity, and numeric overflow. Embedded
-double-quoted values use JSON escape rules. Header arrays of `[name, value]` pairs retain their names,
+Valid JSON strings and JSON object/array script bodies are parsed as strict JSON
+before redaction, rejecting duplicate keys, NaN, Infinity, and numeric overflow.
+Plain bracketed or quoted titles remain text. Embedded double-quoted assignment
+values use JSON escape rules. Header arrays of `[name, value]` pairs retain their names,
 order, duplicates, and array structure; only sensitive values are masked.
 Nested URL values are decoded and re-encoded one layer at a time, retaining
 encoded path separators. Canonically entity-escaped attribute values keep their
 HTML entity layer rather than inserting literal quotes into the attribute.
 
 Unsupported forms are rejected, not partially sanitized: quoted or backslash-
-escaped Cookie/Set-Cookie text, non-JSON or malformed quoted values, and escaped
+escaped Cookie/Set-Cookie text, malformed quoted assignment values, and escaped
 single-quoted values return `UNSUPPORTED_QUOTING`. Encoding layers that need
 redaction but cannot round-trip exactly return `UNSUPPORTED_ENCODING`; malformed
 header pair arrays return `UNSUPPORTED_HEADER_SHAPE`. These constant errors never

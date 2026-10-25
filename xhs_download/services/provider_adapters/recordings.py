@@ -179,8 +179,9 @@ def _text(value, checking, *, depth=0):
         try:
             parsed = _load_json(stripped)
         except json.JSONDecodeError:
-            if html.unescape(value) == value and unquote(value, errors="strict") == value:
-                raise RecordingError("UNSUPPORTED_QUOTING") from None
+            # Brackets and quotes also occur in ordinary upstream titles.
+            # Scan those as text; malformed quoted assignments still fail below.
+            pass
         else:
             _json_tree(parsed)
             cleaned = _walk(parsed, checking)

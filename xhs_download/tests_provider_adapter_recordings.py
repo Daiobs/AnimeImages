@@ -35,6 +35,14 @@ def recording(raw=None, **changes):
 
 
 class RecordingTests(unittest.TestCase):
+    def test_bracketed_and_quoted_plain_titles_are_not_required_to_be_json(self):
+        for title in ('[Official] Sample title', '{Live} Sample title',
+                      '"Quoted title" - Episode 1'):
+            with self.subTest(title=title):
+                original = recording({"title": title})
+                self.assertEqual(recordings.sanitize(original), original)
+                recordings.check(original)
+
     def test_preserves_raw_structure_order_types_and_does_not_mutate(self):
         raw = {"items": [{"id": str(i), "height": 1080, "tracks": "unknown"}
                          for i in range(130)],
