@@ -6,6 +6,7 @@ adapters read raw upstream output.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+import re
 from types import MappingProxyType
 from typing import Mapping
 
@@ -17,6 +18,9 @@ class Kind(str, Enum):
 
 
 class Tracks(str, Enum):
+    # Not stated by the upstream or the platform: delivered as a complete file,
+    # never merged. Images keep it; tracks only matter for video and audio.
+    UNKNOWN = "unknown"
     AV = "av"
     VIDEO_ONLY = "video_only"
     AUDIO_ONLY = "audio_only"
@@ -42,13 +46,25 @@ PLACEHOLDER_LABELS = frozenset({
 })
 PLACEHOLDER_TITLES = PLACEHOLDER_LABELS | frozenset({"untitled", "无标题", "作品"})
 
+# A Provider's own resolution label such as 1080P, 2160P or 1080P+.
+_RESOLUTION_LABEL = re.compile(r"\s*(\d{3,4})[pP](?![A-Za-z])")
+
+
+def height_from_label(label):
+    """Height a Provider declared in its label; None for 原画, 高清, 4K and the like."""
+    match = _RESOLUTION_LABEL.match(label or "")
+    if not match:
+        return None
+    height = int(match.group(1))
+    return height if 144 <= height <= 4320 else None
+
 
 @dataclass(frozen=True)
 class Variant:
     variant_id: str
     url: str
     container: str = ""
-    tracks: Tracks = Tracks.AV
+    tracks: Tracks = Tracks.UNKNOWN
     height: int | None = None
     width: int | None = None
     fps: float | None = None
@@ -208,6 +224,18 @@ def validate_work(work, *, platform_names=()):
                 violations.append("item_in_two_groups")
             grouped.add(item_id)
     return tuple(dict.fromkeys(violations))
+
+
+def fact_gaps(work):
+    """Safe codes for facts the result does not state; health tests count them."""
+    gaps = []
+    if any(
+        item.kind is not Kind.IMAGE and item.default_variant is not None
+        and item.default_variant.tracks is Tracks.UNKNOWN
+        for item in work.items
+    ):
+        gaps.append("TRACKS_UNKNOWN")
+    return tuple(gaps)
 
 
 COVERAGE_FIELDS = ("title", "cover", "quality", "size")

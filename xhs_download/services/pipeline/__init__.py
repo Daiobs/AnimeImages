@@ -35,6 +35,8 @@ from .model import (
     Tracks,
     Variant,
     Work,
+    fact_gaps,
     field_coverage,
+    height_from_label,
     validate_work,
 )

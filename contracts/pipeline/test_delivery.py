@@ -99,6 +99,19 @@ class DeliveryRuleContract(TestCase):
         self.assertEqual((delivery.rule, delivery.method, delivery.reason),
                          (7, Method.NONE, "BROWSER_CANNOT_READ"))
 
+    def test_unknown_tracks_are_delivered_as_complete_files(self):
+        cases = [
+            (dict(fetchable=T), (4, Method.BROWSER_STREAMING)),
+            (dict(fetchable=U), (6, Method.BROWSER_STREAMING)),
+            (dict(fetchable=F), (7, Method.NONE)),
+            (dict(fetchable=T, required_headers=("Referer",)), (2, Method.SERVER_ATTACHMENT)),
+            (dict(fetchable=T, merge_with="a1"), (4, Method.BROWSER_STREAMING)),
+        ]
+        for facts, expected in cases:
+            with self.subTest(facts=facts):
+                delivery = decide_delivery(Kind.VIDEO, variant(tracks=Tracks.UNKNOWN, **facts))
+                self.assertEqual((delivery.rule, delivery.method), expected)
+
     def test_rules_apply_in_table_order(self):
         both = variant(tracks=Tracks.VIDEO_ONLY, merge_with="a", required_headers=("Referer",))
         self.assertEqual(decide_delivery(Kind.VIDEO, both).rule, 1)

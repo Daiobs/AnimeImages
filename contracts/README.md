@@ -120,7 +120,8 @@ must reach the kernel instead of an old path.
 
 - Routing: both policies, admin order, the five failure kinds, unmappable results,
   and bounded cooldown that expires without admin action.
-- Model: default variant, placeholders, split tracks, field coverage.
+- Model: default variant, placeholders, split tracks, unknown tracks and the
+  `TRACKS_UNKNOWN` gap, Provider resolution labels, field coverage.
 - Delivery: one case per table rule, plus Provider, platform and resource-ID
   counter-cases that must not change the outcome.
 - Filenames: short title, numbering, live-photo pairs, real extensions.
@@ -135,7 +136,12 @@ adapter's platform kept; unbounded cooldown; no cooldown after `unavailable`;
 server fallback ignoring the admin switch; server-side archive for readable
 images; description used as the name; `.bin` fallback; live-photo pairs numbered
 apart; placeholder quality accepted; a leftover floor setting dropping a
-`first_success` Provider. Run them with `PYTHONDONTWRITEBYTECODE=1`:
+`first_success` Provider. The D-01 amendment (unknown tracks, label heights)
+adds eight more, each also caught: default tracks back to `av`; unknown tracks
+barred from the default; unknown tracks merged on the server; a label without
+`P`, a `P` followed by letters, or an out-of-range number giving a height;
+unknown tracks not counted; images counted as unknown tracks.
+Run them with `PYTHONDONTWRITEBYTECODE=1`:
 a same-size edit restored within a second can otherwise reuse stale bytecode.
 
 ## Recorded Counterchecks

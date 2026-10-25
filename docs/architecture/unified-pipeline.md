@@ -1,6 +1,6 @@
 # 统一管线契约 v1
 
-Human 于 2026-10-25 确认。修改本文件属于 L2；Agent 只能引用，不得自行增删改。
+Human 于 2026-10-25 确认，同日确认 D-01 修订（第 9 节）。修改本文件属于 L2；Agent 只能引用，不得自行增删改。
 
 - **基线：** `baseline/2026-10-25`，即 `834d331`。基线之后冻结补丁 PR，只修复相对基线的回归，而且必须附上失败的冒烟测试或契约测试作为证据（规则见 `AGENTS.md`）。
 - **内核：** `xhs_download/services/pipeline/` 实现本契约的模型、路由策略、交付规则和文件名，暂未接入任何请求路径。
@@ -73,11 +73,11 @@ Human 于 2026-10-25 确认。修改本文件属于 L2；Agent 只能引用，�
 | `variant_id` | 编号 |
 | `url` | 资源地址 |
 | `container` | `mp4`、`webm`、`jpg`、`webp`、`m4a` 等，是真实扩展名的来源 |
-| `height`、`width`、`fps`、`bitrate` | 可以为空 |
+| `height`、`width`、`fps`、`bitrate` | 可以为空。Provider 明确给出的分辨率标签（例如 `1080P`、`2160P`、`1080P+`）可以把 `height` 设为标签里的数字；`原画`、`高清`、`4K` 之类不可以 |
 | `quality_label` | 显示名，例如 `1080p`、`原画`。没有时按高度生成；高度也没有时显示“默认清晰度” |
 | `is_original` | 是否为原画/源文件，默认变体按它优先 |
 | `size_bytes`、`size_exact` | 大小，以及它是精确值还是估计值 |
-| `tracks` | `av`（音视频完整）、`video_only` 或 `audio_only` |
+| `tracks` | `unknown`（默认）、`av`（音视频完整）、`video_only` 或 `audio_only`。上游或平台没有说明时就是 `unknown`；图片不适用，保持默认值 |
 | `merge_with` | `video_only` 时要合并的音频变体，必须是同一作品里的 `audio_only` 变体 |
 | `required_headers` | 下载时必须带的请求头名称，例如 Referer、Cookie。值只保存在服务端，不下发给浏览器 |
 | `browser_fetchable` | `true`、`false` 或 `unknown`：浏览器能否不带特殊请求头直接读取（包括 CORS） |
@@ -89,7 +89,7 @@ Human 于 2026-10-25 确认。修改本文件属于 L2；Agent 只能引用，�
 1. 每个作品至少有一个内容项，每个内容项至少有一个变体，`default_variant` 必须是其中之一。
 2. 默认变体选质量最高的：原画/源文件优先，其次比高度，再比码率，最后比大小；完全相同时按适配器给出的顺序（INV-03）。用户可以改选。
 3. 缺失的字段就记为缺失：不能用 `video`、`原始文件` 之类的占位值当清晰度，不能用平台名或“视频”之类的词当标题，大小不能是 0。
-4. `video_only` 的变体必须有 `merge_with`，否则不能作为默认变体；视频内容项的默认变体也不能是 `audio_only`。
+4. `video_only` 的变体必须有 `merge_with`，否则不能作为默认变体；视频内容项的默认变体也不能是 `audio_only`。`tracks = unknown` 的变体可以作为默认变体。
 5. 适配器以外的代码，不得读取 Provider 的原始返回。
 
 不满足 1～4 的结果，路由按 `invalid_result` 处理，并记下第一条违反项作为诊断码。
@@ -166,6 +166,7 @@ parse(source_url, budget) → Work | Failure
   2. 检查统一结果的不变式；
   3. 取默认变体的前 1KB（沿用已有的每日冒烟）。
 - 工作台按统一结果显示字段覆盖：标题、封面、清晰度、大小各由谁提供。
+- 统一结果缺少的事实按安全代码计数：视频或音频内容项的默认变体 `tracks = unknown` 时，记 `TRACKS_UNKNOWN`。
 
 ---
 
@@ -184,6 +185,7 @@ parse(source_url, budget) → Work | Failure
 | 7 | 其他情况 | 不提供下载，显示原因 |
 
 - 规则里不出现平台名、Provider 名或资源 ID 前缀。
+- `tracks = unknown` 按完整文件处理：不命中第 1 条，按第 2～7 条交付。这与现状一致，只有明确分轨的资源才在服务端合并。
 - 现有的例外都由事实推出：B 站需要 Referer，命中第 2 条；YouTube 高清音视频分离，命中第 1 条。
 - `server_attachment` 和 `server_merge` 计入现有的下载额度。
 - 一起保存时（决定 2）：
@@ -223,7 +225,7 @@ parse(source_url, budget) → Work | Failure
   - 后台改顺序后行为跟着变；
   - 五种失败各自的链路行为，以及无法映射的结果；
   - 冷却时间有上限、到期自动恢复、只有 `unavailable` 触发冷却。
-- **模型不变式：** 默认变体、占位值、分轨、字段覆盖。
+- **模型不变式：** 默认变体、占位值、分轨、轨道未知、分辨率标签、字段覆盖。
 - **交付：**
   - 第 3 节每一行一个用例；
   - 再加反例：同样的事实，换一个 Provider 名、平台或资源 ID 前缀，交付方式必须不变。
@@ -259,3 +261,15 @@ parse(source_url, budget) → Work | Failure
 5. 文件名长度上限 80 个字符。
 
 实现时为落实以上条文补充了四个字段：`work_id`（第 4 节的“作品ID”）、`is_original`（1.4 第 2 条的“原画/源文件”）、`upgrade_window_seconds`（2.3 中晚到结果的截止时间）、`platform_names`（1.4 第 3 条的“平台名”）。它们不改变已确认的行为。
+
+---
+
+## 9. 已确认的修订
+
+### D-01 轨道未知（Human，2026-10-25）
+
+第 2 步盘点发现：天天、KuKuTool 的真实返回只有地址、大小和清晰度标签，没有音轨事实，而模型原先没有“未知”可写。Human 的决定：
+
+> 批准 D-01 修订：tracks 增加 unknown 并作为默认值，按完整文件交付、计数 TRACKS_UNKNOWN；明确的 P 清晰度标签可以设 height。
+
+据此修改了 1.3 的 `tracks` 和 `height`、1.4 第 4 条、2.4 和第 3 节的说明。适配器在上游或平台说明了轨道时，仍然必须写 `av`、`video_only` 或 `audio_only`。
