@@ -5,15 +5,15 @@ import re
 from uuid import uuid4
 
 from django.core import signing
-from django.db.models import Case, IntegerField, Max, OuterRef, Q, Subquery, Value, When
+from django.db.models import Case, IntegerField, Max, OuterRef, Subquery, Value, When
 from django.urls import reverse
 from django.utils.crypto import constant_time_compare
 
 from ..models import (
+    DownloadAuditEvent,
     DownloadAuditEvidence,
     DownloadAuditPhase,
     DownloadAuditTransport,
-    DownloadRequestLog,
 )
 from .observability import record_download_request_log, request_privacy_fields
 
@@ -94,7 +94,7 @@ def issue_browser_download_audit(request, item, *, prepared_log=None):
         trusted_item["provider"] = item.get("provider") or item.get("provider_id") or ""
         prepared = prepared_log
         if prepared is not None:
-            if (not isinstance(prepared, DownloadRequestLog) or not prepared.pk
+            if (not isinstance(prepared, DownloadAuditEvent) or not prepared.pk
                     or prepared.phase != DownloadAuditPhase.PREPARED or prepared.transport
                     or prepared.evidence_source != DownloadAuditEvidence.SERVER_OBSERVED
                     or any(getattr(prepared, key) != identity[key]
@@ -158,7 +158,7 @@ def record_browser_download_audit(request, payload):
             or isinstance(prepared_id, bool) or not isinstance(prepared_id, int)):
         raise ValueError("Invalid download audit receipt")
     try:
-        prepared = DownloadRequestLog.objects.filter(
+        prepared = DownloadAuditEvent.objects.filter(
             pk=prepared_id, attempt_id=attempt_id, phase=DownloadAuditPhase.PREPARED,
             transport="", evidence_source=DownloadAuditEvidence.SERVER_OBSERVED,
             client_identity_hash=identity["client_identity_hash"], ip_hash=identity["ip_hash"],
@@ -200,21 +200,17 @@ def download_attempts(queryset):
 
 
 def legacy_download_logs(queryset):
-    """Explicit old, phase-less rows; not proof of a completed transfer."""
-    return queryset.filter(phase="", attempt_id="")
+    """Unmigrated business rows, excluding audit-linked dispatch compatibility."""
+    linked_logs = DownloadAuditEvent.objects.using(queryset.db).filter(
+        legacy_log_id__isnull=False,
+    ).values("legacy_log_id")
+    return queryset.filter(phase="", attempt_id="").exclude(pk__in=Subquery(linked_logs))
 
 
 def operational_download_logs(queryset):
-    """Keep historical inputs and observed server outcomes, never client audit feedback."""
-    server_events = queryset.model._default_manager.using(queryset.db).filter(
-        evidence_source=DownloadAuditEvidence.SERVER_OBSERVED,
-        transport__in=("server_attachment", "server_zip", "server_merge"),
-        phase__in=(DownloadAuditPhase.TRANSFER_COMPLETED, DownloadAuditPhase.FAILED, DownloadAuditPhase.CANCELLED),
-    ).exclude(attempt_id="")
-    latest = server_events.filter(attempt_id=OuterRef("attempt_id")).order_by("-created_at", "-pk").values("pk")[:1]
-    server_outcomes = server_events.filter(
-        pk=Subquery(latest), phase__in=(DownloadAuditPhase.TRANSFER_COMPLETED, DownloadAuditPhase.FAILED),
-    )
-    return queryset.exclude(evidence_source=DownloadAuditEvidence.CLIENT_OBSERVED).filter(
-        Q(phase="") | Q(pk__in=Subquery(server_outcomes.values("pk"))),
+    """Keep old business outcomes, never audit-linked dispatch or client feedback."""
+    return legacy_download_logs(queryset).exclude(
+        evidence_source=DownloadAuditEvidence.CLIENT_OBSERVED,
+    ).exclude(
+        status__in=("pending", "cancelled", "unknown"),
     )

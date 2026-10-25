@@ -16,7 +16,7 @@ import requests
 
 from contracts.network import offline_requests
 from xhs_download.models import ProviderAccessMode, ProviderRuntimeSetting
-from xhs_download.models import DownloadRequestLog
+from xhs_download.models import DownloadAuditEvent, DownloadRequestLog
 
 
 SOURCE = 'https://www.instagram.com/p/contract-video/'
@@ -194,7 +194,7 @@ if (item.download_strategy === 'browser_streaming') {
         radio = self.parse()[1]
         item = self.action(radio).json()['item']
         audit = item['download_audit']
-        prepared = DownloadRequestLog.objects.get(attempt_id=audit['attempt_id'])
+        prepared = DownloadAuditEvent.objects.get(attempt_id=audit['attempt_id'])
         self.assertEqual((prepared.phase, prepared.status, prepared.actual_bytes), ('prepared', 'pending', 0))
         self.assertEqual(prepared.provider, 'tiantianjiexi_generic')
         calls_before = list(self.media_requests)
@@ -203,8 +203,9 @@ if (item.download_strategy === 'browser_streaming') {
         for _ in range(2):
             response = self.client.post(audit['endpoint'], event, content_type='application/json')
             self.assertEqual(response.status_code, 204, response.content)
-        self.assertEqual(DownloadRequestLog.objects.filter(attempt_id=audit['attempt_id']).count(), 2)
-        self.assertFalse(DownloadRequestLog.objects.filter(attempt_id=audit['attempt_id'], status='success').exists())
+        self.assertEqual(DownloadAuditEvent.objects.filter(attempt_id=audit['attempt_id']).count(), 2)
+        self.assertFalse(DownloadAuditEvent.objects.filter(attempt_id=audit['attempt_id'], status='success').exists())
+        self.assertFalse(DownloadRequestLog.objects.exists())
         self.assertEqual(self.client.post(audit['endpoint'], {**event, 'phase': 'transfer_completed'},
                                          content_type='application/json').status_code, 400)
         self.assertEqual(self.media_requests, calls_before)
@@ -224,6 +225,6 @@ if (item.download_strategy === 'browser_streaming') {
                 transport='browser_streaming', actual_bytes=12345 if phase == 'transfer_completed' else 0),
                 content_type='application/json')
             self.assertEqual(response.status_code, 204, response.content)
-        done = DownloadRequestLog.objects.get(attempt_id=audit['attempt_id'], phase='transfer_completed')
+        done = DownloadAuditEvent.objects.get(attempt_id=audit['attempt_id'], phase='transfer_completed')
         self.assertEqual(done.evidence_source, 'client_observed')
         self.assertEqual(done.actual_bytes, 12345)

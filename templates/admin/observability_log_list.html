@@ -102,16 +102,27 @@
         </div>
         <form class="ops-filter" method="get">
             <input type="search" name="q" value="{{ request.GET.q }}" placeholder="{{ search_placeholder }}">
+            {% if nav_title == '下载日志' %}
+                <input type="hidden" name="records" value="{{ download_log_records|default:'audit' }}">
+            {% endif %}
             {% for field in filter_fields %}
                 <input type="text" name="{{ field }}" value="{{ request.GET|get_item:field }}" placeholder="{{ field }}">
             {% endfor %}
             <button type="submit">筛选</button>
             {% if request.GET %}
-                <a href="{{ request.path }}">清除</a>
+                <a href="{{ request.path }}{% if nav_title == '下载日志' %}?records={{ download_log_records|default:'audit' }}{% endif %}">清除</a>
             {% endif %}
         </form>
         {% if nav_title == '下载日志' %}
-            <p>审计每阶段一行，同一 attempt 关联一次尝试。传输完成不等于磁盘保存；原生直链仅能确认移交。legacy 为旧口径，不计入新传输完成率。</p>
+            <nav aria-label="下载日志类型">
+                <a href="{% url 'download_logs' %}"{% if download_log_records != 'legacy' %} aria-current="page"{% endif %}>阶段审计</a>
+                <a href="{% url 'download_logs' %}?records=legacy"{% if download_log_records == 'legacy' %} aria-current="page"{% endif %}>业务日志（legacy）</a>
+            </nav>
+            {% if download_log_records == 'legacy' %}
+                <p>业务日志（legacy，旧口径）独立统计，不计入新传输完成率。</p>
+            {% else %}
+                <p>审计每阶段一行，同一 attempt 关联一次尝试。传输完成不等于磁盘保存；原生直链仅能确认移交。</p>
+            {% endif %}
         {% endif %}
         <div class="ops-table-wrap">
             <table class="ops-table">

@@ -242,7 +242,7 @@
             <div class="policy-card"><strong>反馈样本</strong><span>{{ feedback.policy_feedback_count }}</span></div>
             <div class="policy-card"><strong>Policy 接管次数</strong><span>{{ feedback.policy_active_count }}</span></div>
             <div class="policy-card"><strong>推荐命中率</strong><span>{{ feedback.recommendation_match_rate }}</span></div>
-            <div class="policy-card"><strong>成功率</strong><span>{{ feedback.success_rate }}</span></div>
+            <div class="policy-card"><strong>legacy 业务成功率</strong><span>{{ feedback.success_rate|default_if_none:"未知（样本不足）" }}</span></div>
         </section>
 
         <section class="policy-panels">

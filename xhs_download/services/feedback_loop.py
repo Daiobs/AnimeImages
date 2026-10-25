@@ -135,13 +135,13 @@ def build_route_signals(downloads, routing_logs):
         count = row["download_count"]
         routing_count = row["routing_count"]
         avg_duration = round(row["duration_ms"] / max(1, count + routing_count), 1)
-        success_rate = safe_ratio(row["download_success"], count)
+        success_rate = safe_ratio(row["download_success"], count) if count else None
         routing_success_rate = safe_ratio(row["routing_success"], routing_count)
         fallback_rate = safe_ratio(row["fallback_count"], count)
         normalized[route] = {
             **row,
             "success_rate": success_rate,
-            "success_rate_label": percent_label(success_rate),
+            "success_rate_label": percent_label(success_rate) if count else "未知（legacy 样本不足）",
             "routing_success_rate": routing_success_rate,
             "routing_success_rate_label": percent_label(routing_success_rate),
             "fallback_rate": fallback_rate,
@@ -383,7 +383,7 @@ def build_feedback(*, window_hours=DEFAULT_FEEDBACK_WINDOW_HOURS):
             "health_count": current["health_count"],
             "routing_count": current["routing_count"],
             "failure_rate": current["failure_rate"],
-            "failure_rate_label": percent_label(current["failure_rate"]),
+            "failure_rate_label": percent_label(current["failure_rate"]) if current["total_events"] else "未知（样本不足）",
             "failure_rate_previous": previous["failure_rate"],
             "failure_rate_delta": trend_delta(current["failure_rate"], previous["failure_rate"]),
             "server_egress_bytes": current["server_egress_bytes"],
@@ -414,6 +414,11 @@ def insight(level, kind, title, body, signals=None):
 
 def build_insights(feedback):
     signals = feedback.get("signals") or {}
+    if all(signals.get(key) == 0 for key in ("download_count", "parse_count", "health_count")):
+        return {"insights": [insight(
+            "neutral", "insufficient_data", "样本不足",
+            "当前没有可用于反馈的业务结果；路由派发不等于下载完成。",
+        )]}
     insights = []
     failure_delta = float(signals.get("failure_rate_delta") or 0)
     failure_rate = float(signals.get("failure_rate") or 0)

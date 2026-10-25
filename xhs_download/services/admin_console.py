@@ -7,6 +7,7 @@ from django.utils import timezone
 from download_console.models import DownloadRuntimeSetting
 
 from ..models import (
+    DownloadAuditEvent,
     DownloadRequestLog,
     ObservabilityStatus,
     ParseRequestLog,
@@ -17,7 +18,7 @@ from ..models import (
     SelfHealingEvent,
 )
 from .routing_policy_adjuster import build_routing_policy_recommendations
-from .download_audit import download_attempts, legacy_download_logs
+from .download_audit import download_attempts, legacy_download_logs, operational_download_logs
 from .routing_v3 import build_routing_intelligence_snapshot
 from .recovery_engine import provider_stability_score, provider_stability_status
 
@@ -244,8 +245,8 @@ def build_provider_stability_rows(download_queryset):
 
 def build_system_stability_panel(download_24h, download_7d):
     # Existing policy/stability panels retain their explicitly historical population.
-    download_24h = legacy_download_logs(download_24h)
-    download_7d = legacy_download_logs(download_7d)
+    download_24h = operational_download_logs(download_24h)
+    download_7d = operational_download_logs(download_7d)
     total_24h = download_24h.count()
     failed_24h = download_24h.exclude(status=ObservabilityStatus.SUCCESS).count()
     routing_failures = download_24h.filter(failure_type="routing_failed").count()
@@ -259,11 +260,11 @@ def build_system_stability_panel(download_24h, download_7d):
     provider_rows = build_provider_stability_rows(download_7d)
     return {
         "summary": (
-            {"label": "24h legacy 失败率（旧口径）", "value": f"{percent(failed_24h, total_24h)}%"},
-            {"label": "24h routing_failure_rate", "value": f"{percent(routing_failures, total_24h)}%"},
-            {"label": "24h provider_failure_rate", "value": f"{percent(provider_failures, total_24h)}%"},
-            {"label": "24h recovery_count", "value": recovery_count},
-            {"label": "24h fallback_count", "value": fallback_count},
+            {"label": "24h legacy 失败率（旧口径）", "value": f"{percent(failed_24h, total_24h)}%" if total_24h else "未知"},
+            {"label": "24h routing_failure_rate（legacy）", "value": f"{percent(routing_failures, total_24h)}%" if total_24h else "未知"},
+            {"label": "24h provider_failure_rate（legacy）", "value": f"{percent(provider_failures, total_24h)}%" if total_24h else "未知"},
+            {"label": "24h recovery_count（legacy）", "value": recovery_count},
+            {"label": "24h fallback_count（legacy）", "value": fallback_count},
         ),
         "top_error_types": top_values(download_24h.exclude(failure_type=""), "failure_type", limit=8),
         "provider_rows": provider_rows,
@@ -316,14 +317,14 @@ def build_admin_console_context():
     recent_7d_start = now - timezone.timedelta(days=7)
 
     today_parse = ParseRequestLog.objects.filter(created_at__gte=today_start)
-    today_download = DownloadRequestLog.objects.filter(created_at__gte=today_start)
-    recent_24h_download = DownloadRequestLog.objects.filter(created_at__gte=recent_24h_start)
-    recent_7d_download = DownloadRequestLog.objects.filter(created_at__gte=recent_7d_start)
+    today_download = legacy_download_logs(DownloadRequestLog.objects.filter(created_at__gte=today_start))
+    recent_24h_download = legacy_download_logs(DownloadRequestLog.objects.filter(created_at__gte=recent_24h_start))
+    recent_7d_download = legacy_download_logs(DownloadRequestLog.objects.filter(created_at__gte=recent_7d_start))
 
-    today_attempts = download_attempts(today_download)
-    recent_24h_attempts = download_attempts(recent_24h_download)
-    recent_7d_attempts = download_attempts(recent_7d_download)
-    today_legacy = legacy_download_logs(today_download)
+    today_attempts = download_attempts(DownloadAuditEvent.objects.filter(created_at__gte=today_start))
+    recent_24h_attempts = download_attempts(DownloadAuditEvent.objects.filter(created_at__gte=recent_24h_start))
+    recent_7d_attempts = download_attempts(DownloadAuditEvent.objects.filter(created_at__gte=recent_7d_start))
+    today_legacy = today_download
     today_download_count = today_attempts.count()
     today_download_success = today_attempts.filter(phase="transfer_completed").count()
     today_download_failed = today_attempts.filter(phase="failed").count()

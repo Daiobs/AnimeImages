@@ -26,9 +26,10 @@ from django.views.decorators.http import require_GET, require_POST
 
 from download_console.models import DownloadRuntimeSetting
 from djangoProject.health import get_runtime_readiness
-from .services.download_audit import operational_download_logs
+from .services.download_audit import download_attempts, operational_download_logs
 
 from .models import (
+    DownloadAuditEvent,
     DownloadRequestLog,
     KukuToolDownloadDeliveryMode,
     ObservabilityStatus,
@@ -2057,7 +2058,7 @@ def filtered_log_queryset(model, request, filter_fields):
             | Q(query_host__icontains=search)
             | Q(error_type__icontains=search)
         )
-    elif search and model is DownloadRequestLog:
+    elif search and model in (DownloadRequestLog, DownloadAuditEvent):
         queryset = queryset.filter(
             Q(request_id__icontains=search)
             | Q(provider__icontains=search)
@@ -2101,7 +2102,12 @@ def policy_center_required(request):
 
 def safe_recent_count(model, since, **filters):
     try:
-        return model.objects.filter(created_at__gte=since, **filters).count()
+        queryset = model.objects.filter(created_at__gte=since)
+        if model is DownloadAuditEvent:
+            queryset = download_attempts(queryset)
+        elif model is DownloadRequestLog:
+            queryset = operational_download_logs(queryset)
+        return queryset.filter(**filters).count()
     except Exception:
         logger.exception("admin_center_count_failed", extra={"model": getattr(model, "__name__", "")})
         return None
@@ -2127,10 +2133,10 @@ def logs_center_view(request):
         },
         {
             "title": "下载日志",
-            "description": "查看下载路由、服务端流量、失败类型和恢复情况。",
+            "description": "按尝试查看下载阶段、传输方式与观测结果；移交不等于完成。",
             "url_name": "download_logs",
-            "count": safe_recent_count(DownloadRequestLog, since),
-            "warning_count": safe_recent_count(DownloadRequestLog, since, status=ObservabilityStatus.FAILED),
+            "count": safe_recent_count(DownloadAuditEvent, since),
+            "warning_count": safe_recent_count(DownloadAuditEvent, since, phase="failed"),
             "warning_label": "失败",
         },
         {
@@ -2198,7 +2204,7 @@ def policy_center_view(request):
         },
         {
             "title": "Feedback Loop",
-            "description": "查看 Observation → Feedback → Insight → Suggestion 的闭环入口。",
+            "description": "查看 Observation → Feedback → Insight → Suggestion；计数为未迁移的 legacy 业务样本。",
             "url_name": "feedback_loop",
             "count": safe_recent_count(DownloadRequestLog, since),
         },
@@ -2312,7 +2318,9 @@ def download_logs_view(request):
     if not observability_access_allowed(request, "xhs_download.view_downloadrequestlog"):
         return JsonResponse({"detail": "Not found."}, status=404)
     filter_fields = ("status", "download_type", "route_type", "provider", "source_platform", "error_type")
-    queryset = filtered_log_queryset(DownloadRequestLog, request, filter_fields)
+    records = "legacy" if request.GET.get("records") == "legacy" else "audit"
+    model = DownloadRequestLog if records == "legacy" else DownloadAuditEvent
+    queryset = filtered_log_queryset(model, request, filter_fields)
     page_obj, page_querystring = paginate_admin_queryset(request, queryset)
     return render(
         request,
@@ -2320,6 +2328,7 @@ def download_logs_view(request):
         {
             "title": "下载日志",
             "nav_title": "下载日志",
+            "download_log_records": records,
             "search_placeholder": "搜索 request_id / provider / error_type",
             "filter_fields": filter_fields,
             "filter_values": filter_values_for_request(request, filter_fields),

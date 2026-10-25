@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from ...models import DownloadRequestLog, ParseRequestLog
+from ...models import DownloadAuditEvent, DownloadRequestLog, ParseRequestLog
 
 
 class Command(BaseCommand):
@@ -18,6 +18,7 @@ class Command(BaseCommand):
         models = (
             ("parse", ParseRequestLog),
             ("download", DownloadRequestLog),
+            ("download_audit", DownloadAuditEvent),
         )
         totals = {}
         for label, model in models:
@@ -30,7 +31,7 @@ class Command(BaseCommand):
             "dry_run": dry_run,
             "days": days,
             "cutoff": cutoff.isoformat(),
-            "deleted": totals if not dry_run else {"parse": 0, "download": 0},
+            "deleted": totals if not dry_run else dict.fromkeys(totals, 0),
             "matched": totals,
             "provider_audit_retained": True,
         }

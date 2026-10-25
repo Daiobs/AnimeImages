@@ -13,6 +13,7 @@ from .admin_batch_runtime import (
 )
 from .models import (
     BatchParseRuntimeSetting,
+    DownloadAuditEvent,
     DownloadRequestLog,
     ParseRequestLog,
     PolicyControlRecord,
@@ -423,6 +424,11 @@ class DownloadRequestLogAdmin(ReadOnlyLogAdmin):
     @admin.display(description="证据来源", ordering="evidence_source")
     def audit_evidence(self, obj):
         return obj.audit_evidence_label
+
+
+@admin.register(DownloadAuditEvent)
+class DownloadAuditEventAdmin(DownloadRequestLogAdmin):
+    list_display = (*DownloadRequestLogAdmin.list_display, "legacy_log_id")
 
 
 @admin.register(RoutingDecisionLog)

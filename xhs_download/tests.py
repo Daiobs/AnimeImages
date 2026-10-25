@@ -168,6 +168,7 @@ from .services.provider_access import (
     third_party_public_access_summary,
 )
 from .models import (
+    DownloadAuditEvent,
     DownloadRequestLog,
     KukuToolDownloadDeliveryMode,
     ObservabilityStatus,
@@ -7596,12 +7597,12 @@ class XhsDownloadViewTests(TestCase):
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
         self.assertEqual(mock_fetch.call_count, 1)
-        log = DownloadRequestLog.objects.get(phase="transfer_completed")
+        log = DownloadAuditEvent.objects.get(phase="transfer_completed")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 654)
         self.assertEqual(log.browser_egress_estimated_bytes, 0)
         self.assertEqual(log.actual_bytes, len(b"video-content"))
-        self.assertTrue(DownloadRequestLog.objects.filter(
+        self.assertTrue(DownloadAuditEvent.objects.filter(
             attempt_id=log.attempt_id, phase="handed_off", status="pending",
         ).exists())
 
@@ -7629,7 +7630,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response["Content-Type"], "video/mp4")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
-        log = DownloadRequestLog.objects.get(phase="transfer_completed")
+        log = DownloadAuditEvent.objects.get(phase="transfer_completed")
         self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 654)
@@ -7913,7 +7914,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response["Content-Type"], "video/mp4")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"video-content")
-        log = DownloadRequestLog.objects.get(phase="transfer_completed")
+        log = DownloadAuditEvent.objects.get(phase="transfer_completed")
         self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 654)
@@ -7942,7 +7943,7 @@ class XhsDownloadViewTests(TestCase):
         self.assertEqual(response["Content-Type"], "image/jpeg")
         self.assertIn("attachment", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"image-content")
-        log = DownloadRequestLog.objects.get(phase="transfer_completed")
+        log = DownloadAuditEvent.objects.get(phase="transfer_completed")
         self.assertEqual(log.download_type, "single_file")
         self.assertEqual(log.route_type, ROUTE_PROXY)
         self.assertEqual(log.server_egress_estimated_bytes, 321)
@@ -14103,7 +14104,7 @@ class AdminObservabilityMvpTests(TestCase):
         client.force_login(self.staff)
         self.grant_xhs_view_permission(self.staff, "view_downloadrequestlog")
 
-        response = client.get("/admin/download-logs/", {"route_type": "direct"})
+        response = client.get("/admin/download-logs/", {"route_type": "direct", "records": "legacy"})
 
         self.assertContains(response, "route_type")
         self.assertContains(response, "direct")
@@ -14629,7 +14630,7 @@ class AdminObservabilityMvpTests(TestCase):
         client.force_login(self.superuser)
 
         parse_response = client.get("/admin/parse-logs/")
-        download_response = client.get("/admin/download-logs/")
+        download_response = client.get("/admin/download-logs/", {"records": "legacy"})
         audit_response = client.get("/admin/provider-audit-logs/")
 
         self.assertEqual(parse_response.context["page_obj"].paginator.count, 55)
@@ -14731,6 +14732,10 @@ class AdminObservabilityMvpTests(TestCase):
     def test_prune_observability_logs_dry_run_and_delete_keeps_audit_logs(self):
         parse_log = ParseRequestLog.objects.create(request_id="old-parse")
         download_log = DownloadRequestLog.objects.create(request_id="old-download")
+        download_event = DownloadAuditEvent.objects.create(
+            request_id="old-download", attempt_id="old-attempt", phase="prepared",
+            legacy_log_id=download_log.pk,
+        )
         audit_log = ProviderAdminAuditLog.objects.create(
             request_id="old-audit",
             action="provider_runtime_update",
@@ -14738,15 +14743,18 @@ class AdminObservabilityMvpTests(TestCase):
         old_time = timezone.now() - timezone.timedelta(days=45)
         ParseRequestLog.objects.filter(pk=parse_log.pk).update(created_at=old_time)
         DownloadRequestLog.objects.filter(pk=download_log.pk).update(created_at=old_time)
+        DownloadAuditEvent.objects.filter(pk=download_event.pk).update(created_at=old_time)
         ProviderAdminAuditLog.objects.filter(pk=audit_log.pk).update(created_at=old_time)
 
         out = StringIO()
         call_command("prune_observability_logs", "--days", "30", "--dry-run", stdout=out)
         self.assertEqual(ParseRequestLog.objects.count(), 1)
         self.assertEqual(DownloadRequestLog.objects.count(), 1)
+        self.assertTrue(DownloadAuditEvent.objects.filter(pk=download_event.pk).exists())
 
         call_command("prune_observability_logs", "--days", "30", stdout=StringIO())
 
         self.assertEqual(ParseRequestLog.objects.count(), 0)
         self.assertEqual(DownloadRequestLog.objects.count(), 0)
+        self.assertFalse(DownloadAuditEvent.objects.filter(pk=download_event.pk).exists())
         self.assertEqual(ProviderAdminAuditLog.objects.count(), 1)
