@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "provider": "videodl",
+  "platform": "synthetic",
+  "source_url": "https://www.tiktok.com/@demo/video/123",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": [
+    {
+      "_class": "VideoInfo",
+      "fields": {
+        "source": "SyntheticNativeClient",
+        "identifier": "123",
+        "title": "Synthetic encrypted stream",
+        "download_url": "https://cdn.example/manifest.mpd",
+        "ext": "mp4",
+        "download_with_ffmpeg": false,
+        "enable_nm3u8dlre": true,
+        "nm3u8dlre_settings": {"decryption_engine": "MP4DECRYPT"},
+        "err_msg": ""
+      }
+    }
+  ]
+}

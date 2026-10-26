@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "provider": "videodl",
+  "platform": "synthetic",
+  "source_url": "https://www.tiktok.com/@demo/video/123",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": [
+    {
+      "_class": "VideoInfo",
+      "fields": {
+        "source": "SyntheticNativeClient",
+        "identifier": "backend-local-identifier",
+        "title": "Synthetic video #demo",
+        "description": "Synthetic description #demo",
+        "cover_url": "https://cdn.example/cover.jpg",
+        "download_url": "https://cdn.example/video.mp4",
+        "ext": "mp4",
+        "quality": "1080P+",
+        "size_bytes": 8192,
+        "default_download_headers": {"Referer": "https://source.example/", "Origin": "https://source.example"},
+        "default_download_cookies": {},
+        "required_headers": ["Referer", "Origin"],
+        "audio_download_url": "https://cdn.example/audio.m4a",
+        "audio_ext": "m4a",
+        "audio_size_bytes": 1024,
+        "default_audio_download_headers": {"Cookie": "REDACTED"},
+        "default_audio_download_cookies": {},
+        "download_with_ffmpeg": false,
+        "enable_nm3u8dlre": null,
+        "err_msg": "",
+        "raw_data": {"password": "REDACTED", "opaque": "do-not-project"},
+        "save_path": "/synthetic/private/output.mp4"
+      }
+    }
+  ]
+}

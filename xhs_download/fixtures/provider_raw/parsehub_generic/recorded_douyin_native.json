@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "provider": "parsehub_generic",
+  "platform": "douyin",
+  "source_url": "https://www.douyin.com/video/6961737553342991651",
+  "provenance": {
+    "kind": "recorded",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "_class": "DouyinVideoParseResult",
+    "fields": {
+      "raw_url": "https://www.douyin.com/video/6961737553342991651",
+      "title": "#\u6768\u8d85\u8d8a  \u5c0f\u5c0f\u6c34\u624b\u5e26\u4f60\u53bb\u8fdc\u822a\u2764\ufe0f",
+      "content": "",
+      "media": {
+        "_class": "VideoRef",
+        "fields": {
+          "url": "https://v5-se-jltc-colds.douyinvod.com/8686862e52b21cddbc8079336f0a69ce/6acdc9f0/video/tos/cn/tos-cn-ve-15/02ddc92624ed43e68531ecad7cf56025/?a=1128&ch=26&cr=13&dr=0&lr=all&cd=0%7C0%7C0%7C&cv=1&br=1451&bt=1451&cs=0&ds=6&ft=3G9Lr_JERR0s~hC32D12Nc.xBiGNbLCOz1RU_4H09189Nv7TGW&mime_type=video_mp4&qs=0&rc=M2Q3OWY6aTQ2O2g5PDtlNEBpMzozcXBucnRqNTMzNGkzM0AwNl4vXy0wNjExMjVhYF41YSNscmxkYnNxcWJgLS1kLTBzcw%3D%3D&btag=c0010e00090008&cquery=109X_100b_104i_103Q_103R&dy_q=1791867853&l=202610131304139EC12A9B298B7109F637",
+          "ext": "mp4",
+          "thumb_url": "https://p5-ex-gddgtc-sign.douyinpic.com/tos-cn-p-0015/2a3ded06efe84d6da415420a9f6f3f72~tplv-dy-resize-walign-adapt-aq:540:q75.jpeg?lk3s=138a59ce&x-expires=1793077200&x-signature=REDACTED&from=327834062&s=PackSourceEnum_AWEME_DETAIL&se=false&sc=cover&biz_tag=aweme_video&l=202610131304139EC12A9B298B7109F637",
+          "width": 576,
+          "height": 1024,
+          "duration": 19782
+        }
+      },
+      "platform": {
+        "_class": "Platform",
+        "fields": {
+          "id": "douyin",
+          "display_name": "\u6296\u97f3"
+        }
+      },
+      "name": "\u6768\u8d85\u8d8a-\u5c0f\u5c0f\u6c34\u624b\u5e26\u4f60\u53bb\u8fdc\u822a"
+    }
+  }
+}
