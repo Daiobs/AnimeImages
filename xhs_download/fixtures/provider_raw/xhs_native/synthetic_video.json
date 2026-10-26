@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "provider": "xhs_native",
+  "platform": "xiaohongshu",
+  "source_url": "https://www.xiaohongshu.com/explore/64a1b2c3d4e5f6789012abcd",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "page_url": "https://www.xiaohongshu.com/explore/64a1b2c3d4e5f6789012abcd",
+    "http_status": 200,
+    "request_headers": {"Cookie": "REDACTED", "User-Agent": "Synthetic API client"},
+    "page_state": {
+      "note": {
+        "noteDetailMap": {
+          "64a1b2c3d4e5f6789012abcd": {
+            "note": {
+              "noteId": "64a1b2c3d4e5f6789012abcd",
+              "type": "video",
+              "title": "Native video",
+              "desc": "Video body",
+              "imageList": [{"urlDefault": "http://sns-webpic-qc.xhscdn.com/cover.webp", "width": 640, "height": 360}],
+              "video": {
+                "width": 9999,
+                "height": 8888,
+                "duration": 12000,
+                "media": {"stream": {
+                  "h264": [
+                    {"masterUrl": "http://sns-video-bd.xhscdn.com/low.mp4", "backupUrls": [], "width": 1280, "height": 720, "size": 4000},
+                    {"masterUrl": "https://sns-video-bd.xhscdn.com/high.mp4", "backupUrls": [], "quality_label": "1080P", "size": 8000}
+                  ],
+                  "h265": [{"masterUrl": "https://sns-video-bd.xhscdn.com/unknown.mp4", "backupUrls": [], "videoBitrate": 2000}]
+                }}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
