@@ -24,10 +24,11 @@ class DownloadAuditMigrationCompatibilityTests(TransactionTestCase):
     def setUp(self):
         super().setUp()
         executor = MigrationExecutor(connection)
+        initial_leaf_nodes = executor.loader.graph.leaf_nodes()
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(initial_leaf_nodes))
         self.old_log = executor.loader.project_state(
             [("xhs_download", BEFORE)]
         ).apps.get_model("xhs_download", "DownloadRequestLog")
-        self.addCleanup(self.migrate, LATEST)
 
     def migrate(self, name):
         executor = MigrationExecutor(connection)

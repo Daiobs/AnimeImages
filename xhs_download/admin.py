@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin, messages
 from django.http import FileResponse, Http404
 from django.shortcuts import redirect
@@ -16,12 +17,14 @@ from .models import (
     DownloadAuditEvent,
     DownloadRequestLog,
     ParseRequestLog,
+    PipelineShadowDailyCount,
     PolicyControlRecord,
     PolicyLearningRun,
     PolicyOptimizationProposal,
     PolicyRuntimeSetting,
     ProviderAdminAuditLog,
     ProviderHealthTestRun,
+    ProviderHealthTestSetting,
     ProviderRuntimeSetting,
     ProviderValidationSuiteRun,
     ReleaseDeployJob,
@@ -224,6 +227,75 @@ class ReadOnlyLogAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return bool(getattr(request.user, "is_superuser", False))
+
+
+class _ProviderShadowSettingForm(forms.ModelForm):
+    class Meta:
+        model = ProviderHealthTestSetting
+        fields = ("public_shadow_enabled",)
+
+    def _post_clean(self):
+        # Only the Boolean form field is editable here. ModelForm's usual
+        # model.clean() also validates hidden legacy configuration fields.
+        if "public_shadow_enabled" in self.cleaned_data:
+            self.instance.public_shadow_enabled = self.cleaned_data["public_shadow_enabled"]
+
+
+@admin.register(ProviderHealthTestSetting)
+class ProviderHealthTestSettingAdmin(admin.ModelAdmin):
+    form = _ProviderShadowSettingForm
+    fields = ("public_shadow_enabled", "updated_at")
+    readonly_fields = ("updated_at",)
+    list_display = ("public_shadow_enabled", "updated_at")
+    actions = None
+
+    def has_add_permission(self, request):
+        return self.has_change_permission(request) and not self.model.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        request._skip_batch_runtime_visibility_load = True
+        return super().changelist_view(request, extra_context)
+
+    def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
+        request._skip_batch_runtime_visibility_load = True
+        return super().changeform_view(request, object_id, form_url, extra_context)
+
+    def history_view(self, request, object_id, extra_context=None):
+        request._skip_batch_runtime_visibility_load = True
+        return super().history_view(request, object_id, extra_context)
+
+    def save_model(self, request, obj, form, change):
+        if change:
+            obj.save(update_fields=("public_shadow_enabled", "updated_at"))
+        else:
+            obj.singleton_key = 1
+            obj.save(force_insert=True)
+
+
+@admin.register(PipelineShadowDailyCount)
+class PipelineShadowDailyCountAdmin(ReadOnlyLogAdmin):
+    fields = ("date", "platform", "provider", "difference_code", "count")
+    readonly_fields = fields
+    list_display = fields
+    list_filter = ("date", "platform", "provider", "difference_code")
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        request._skip_batch_runtime_visibility_load = True
+        return super().changelist_view(request, extra_context)
+
+    def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
+        request._skip_batch_runtime_visibility_load = True
+        return super().changeform_view(request, object_id, form_url, extra_context)
+
+    def history_view(self, request, object_id, extra_context=None):
+        request._skip_batch_runtime_visibility_load = True
+        return super().history_view(request, object_id, extra_context)
 
 
 @admin.register(UserFeedback)
@@ -563,6 +635,7 @@ class ProviderAdminAuditLogAdmin(ReadOnlyLogAdmin):
 
 @admin.register(ProviderHealthTestRun)
 class ProviderHealthTestRunAdmin(ReadOnlyLogAdmin):
+    readonly_fields = ("shadow_details",)
     list_display = (
         "created_at",
         "test_key",

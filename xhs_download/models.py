@@ -984,6 +984,7 @@ class ProviderHealthTestRun(models.Model):
     )
     notified_at = models.DateTimeField(null=True, blank=True)
     download_smoke_details = models.JSONField(null=True, blank=True, default=None)
+    shadow_details = models.JSONField(null=True, blank=True, default=None)
 
     class Meta:
         ordering = ("-created_at",)
@@ -1018,6 +1019,7 @@ class ProviderHealthTestSetting(models.Model):
     videodl_url = models.TextField(blank=True, default="")
     videodl_backend_id = models.CharField(max_length=80, blank=True, default="")
     daily_enabled = models.BooleanField(default=False)
+    public_shadow_enabled = models.BooleanField(default=False, db_default=False)
     daily_test_keys = models.JSONField(
         default=default_provider_daily_test_keys,
         validators=(validate_provider_daily_test_keys,),
@@ -1063,6 +1065,25 @@ class ProviderHealthTestSetting(models.Model):
             raise ValidationError(
                 {"videodl_backend_id": "只允许 exact-pin policy 中明确 allowed 的 Dedicated backend。"}
             )
+
+
+class PipelineShadowDailyCount(models.Model):
+    date = models.DateField()
+    platform = models.CharField(max_length=64)
+    provider = models.CharField(max_length=80)
+    difference_code = models.CharField(max_length=120)
+    count = models.PositiveBigIntegerField(default=0)
+
+    class Meta:
+        ordering = ("-date",)
+        constraints = (
+            models.UniqueConstraint(
+                fields=("date", "platform", "provider", "difference_code"),
+                name="pipeline_shadow_daily_unique",
+            ),
+        )
+        verbose_name = "管线影子每日计数"
+        verbose_name_plural = "管线影子每日计数"
 
 
 class MailChannelSetting(models.Model):
