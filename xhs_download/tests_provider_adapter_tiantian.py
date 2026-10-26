@@ -97,9 +97,8 @@ class TianTianMappingBoundaryTests(TestCase):
         self.assertNotIn("DO_NOT_PROJECT", repr(item))
         self.assertEqual(item.variants[-1].merge_with, "")
 
-    def test_ordinary_headers_do_not_force_bilibili_delivery(self):
+    def test_ordinary_header_values_do_not_force_bilibili_delivery(self):
         self.raw["data"]["headers"] = {"User-Agent": "UA", "Accept": "*/*", "Referer": "https://www.bilibili.com/", "Origin": "https://www.bilibili.com"}
-        self.raw["data"]["required_headers"] = ["Referer"]
         work = self.map(source="https://www.bilibili.com/video/BV13x41117TL/")
         self.assertTrue(all(v.required_headers == () for v in work.items[0].variants))
 

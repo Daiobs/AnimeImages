@@ -4,7 +4,7 @@ import math
 import re
 from urllib.parse import parse_qs, urlsplit
 
-from ..pipeline import Tracks
+from ..pipeline import Fetchable, Tracks
 from ..platforms.douyin import DOUYIN_MEDIA_HOST_SUFFIXES
 from ..platforms.bilibili import BILIBILI_MEDIA_HOST_SUFFIXES
 from ..platforms.third_party import THIRD_PARTY_PLATFORM_RULES
@@ -128,13 +128,22 @@ def _required_headers(sources):
     names = context.get("required_headers") or ()
     if not isinstance(names, (list, tuple)) or any(not isinstance(name, str) for name in names):
         raise ValueError("INVALID_HEADERS")
-    required = {name.lower() for name in names if name.lower() not in _DEFAULT_MEDIA_HEADERS}
+    required = {name.lower() for name in names}
     for source in sources:
         required.update(name.lower() for name, value in inherit_request_context(source)["headers"].items()
                         if value not in (None, "") and name.lower() not in _DEFAULT_MEDIA_HEADERS)
     if any(source.get("requires_cookie") is True or source.get("cookies") for source in sources):
         required.add("cookie")
     return tuple(sorted(required))
+
+
+def _browser_fetchable(sources):
+    context = inherit_request_context(*sources)
+    if (context.get("ip_bound") or context.get("requires_context")
+            or context.get("headers_present") and not any(
+                value not in (None, "") for value in context["headers"].values())):
+        return Fetchable.FALSE
+    return Fetchable.UNKNOWN
 
 
 def _expiry(row, media_url):

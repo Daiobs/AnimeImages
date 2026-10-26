@@ -16,7 +16,7 @@ from .base import Adapter
 from .failures import failure_for_code, failure_for_http
 from .service_facts import (
     _URL_KEYS, _expiry, _first, _host_policy, _media_url, _number,
-    _required_headers, _size, _source_id, _text, _tracks, _url,
+    _browser_fetchable, _required_headers, _size, _source_id, _text, _tracks, _url,
 )
 
 
@@ -109,7 +109,7 @@ def _variant(row, variant_id, source_url, context, aliases):
         bitrate=_number(row.get("bitrate"), integer=True), quality_label=label,
         is_original=row.get("is_original") is True or label.casefold() in {"原画", "original", "source"},
         size_bytes=size, size_exact=exact, required_headers=_required_headers((*scoped_context, *aliases)),
-        browser_fetchable=Fetchable.UNKNOWN,
+        browser_fetchable=_browser_fetchable((*scoped_context, *aliases)),
         drm=any(source.get("drm") is True or source.get("has_drm") is True for source in aliases),
         segmented=(any(source.get("segmented") is True or bool(source.get("fragments"))
                    or any(token in _text(source.get("protocol")).lower() for token in ("m3u8", "dash", "hls")) for source in aliases)
@@ -219,7 +219,8 @@ def _map(raw, source_url):
                     origin = "adapter:resource_identity"
                 elif field == "host_policy":
                     origin = host_source
-                elif field == "browser_fetchable" or field == "tracks" and value is Tracks.UNKNOWN:
+                elif (field == "browser_fetchable" and value is Fetchable.UNKNOWN
+                      or field == "tracks" and value is Tracks.UNKNOWN):
                     origin = "contract:unknown"
                 elif field == "request_method" and value == "GET" and not row.get("request_method") and not row.get("method"):
                     origin = "contract:default"

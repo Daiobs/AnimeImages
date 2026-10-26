@@ -16,7 +16,7 @@ from ..work_caption import _TOPIC, work_caption_presentation
 from .base import Adapter
 from .failures import failure_for_code, failure_for_http
 from .service_facts import (
-    _expiry, _first, _host_policy, _media_url, _number, _required_headers,
+    _browser_fetchable, _expiry, _first, _host_policy, _media_url, _number, _required_headers,
     _size, _source_id, _text, _tracks, _url,
 )
 
@@ -125,7 +125,8 @@ def _variant(row, aliases, context, source_url, variant_id):
         bitrate=_number(_first(row, ("bitrate", "bit_rate", "bitRate")), integer=True),
         quality_label=label, is_original=row.get("is_original") is True or label.casefold() in {"原画", "original", "source"},
         size_bytes=size, size_exact=exact,
-        required_headers=_required_headers((*scoped, *aliases)), browser_fetchable=Fetchable.UNKNOWN,
+        required_headers=_required_headers((*scoped, *aliases)),
+        browser_fetchable=_browser_fetchable((*scoped, *aliases)),
         drm=any(a.get("drm") is True or a.get("has_drm") is True for a in aliases),
         segmented=any(a.get("segmented") is True or bool(a.get("fragments"))
                       or any(t in _text(a.get("protocol")).lower() for t in ("hls", "dash", "m3u8")) for a in aliases)
@@ -178,7 +179,8 @@ def _map(raw, source_url):
                     origin = policy_source
                 elif field == "container":
                     origin = container_source
-                elif field == "browser_fetchable" or field == "tracks" and value is Tracks.UNKNOWN:
+                elif (field == "browser_fetchable" and value is Fetchable.UNKNOWN
+                      or field == "tracks" and value is Tracks.UNKNOWN):
                     origin = "contract:unknown"
                 elif field == "request_method" and value == "GET" and not any(a.get("method") or a.get("request_method") for a in aliases):
                     origin = "contract:default"
