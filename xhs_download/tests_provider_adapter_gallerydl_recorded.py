@@ -44,7 +44,10 @@ class GalleryDlRecordedTests(TestCase):
                 self.assertEqual((variant.quality_label, variant.merge_with), ("", ""))
                 self.assertEqual((variant.is_original, variant.size_exact, variant.drm,
                                   variant.segmented), (False,) * 4)
-                self.assertEqual((variant.required_headers, variant.host_policy), ((), ("itaku.ee",)))
+                self.assertEqual((variant.required_headers, variant.host_policy), ((), ()))
+                self.assertEqual(result.field_sources[
+                    f"items.{item.item_id}.variants.{variant.variant_id}.host_policy"],
+                    "contract:empty_list:any_public_https_host_passing_per_hop_checks")
                 self.assertIs(variant.tracks, Tracks.UNKNOWN)
                 self.assertIs(variant.browser_fetchable, Fetchable.UNKNOWN)
                 self.assertEqual(variant.request_method, "GET")

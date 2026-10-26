@@ -109,7 +109,7 @@ class KukutoolRecordedMappingTests(TestCase):
         self.assertEqual(variant.request_method, "GET")
         self.assertIsNone(variant.expires_at)
         self.assertEqual(variant.host_policy, tuple(DOUYIN_MEDIA_HOST_SUFFIXES)
-                         if douyin else (urlsplit(url).hostname,))
+                         if douyin else ())
         prefix = f"items.{item.item_id}.variants.{variant.variant_id}"
         for field in Variant.__dataclass_fields__:
             self.assertIn(f"{prefix}.{field}", work.field_sources)
@@ -126,7 +126,8 @@ class KukutoolRecordedMappingTests(TestCase):
         self.assertEqual(work.field_sources[f"{prefix}.container"],
                          "adapter:url_extension" if container else "contract:default")
         self.assertEqual(work.field_sources[f"{prefix}.host_policy"],
-                         "existing:DOUYIN_MEDIA_HOST_SUFFIXES" if douyin else "adapter:exact_url_host")
+                         "existing:DOUYIN_MEDIA_HOST_SUFFIXES" if douyin else
+                         "contract:empty_list:any_public_https_host_passing_per_hop_checks")
         self.assertEqual(work.field_sources[f"{prefix}.request_method"], "contract:default")
 
     def test_recorded_acfun_preserves_all_seven_quality_variants_and_still(self):

@@ -51,7 +51,7 @@ def variant_fields(url, **changes):
         "size_exact": False, "merge_with": "", "required_headers": (),
         "browser_fetchable": Fetchable.UNKNOWN, "drm": False,
         "segmented": False, "request_method": "GET", "expires_at": None,
-        "host_policy": (urlsplit(url).hostname,), **changes,
+        "host_policy": (), **changes,
     }
 
 
@@ -104,8 +104,10 @@ class GalleryDlMappingTests(TestCase):
             for variant in item.variants:
                 self.assertTrue(variant.variant_id)
                 self.assertIs(variant.browser_fetchable, Fetchable.UNKNOWN)
-                self.assertEqual(variant.host_policy, (urlsplit(variant.url).hostname,))
+                self.assertEqual(variant.host_policy, ())
                 prefix = f"items.{item.item_id}.variants.{variant.variant_id}."
+                self.assertEqual(work.field_sources[prefix + "host_policy"],
+                                 "contract:empty_list:any_public_https_host_passing_per_hop_checks")
                 for field in fields(Variant):
                     self.assertTrue(work.field_sources.get(prefix + field.name), prefix + field.name)
         return work
@@ -564,7 +566,7 @@ class GalleryDlMappingTests(TestCase):
         variant = self.map_work(stream((url, metadata))).items[0].default_variant
         self.assertIsNone(variant.expires_at)
         self.assertIs(variant.browser_fetchable, Fetchable.UNKNOWN)
-        self.assertEqual(variant.host_policy, ("shard.cdn.example",))
+        self.assertEqual(variant.host_policy, ())
 
     def test_unexpanded_queue_invalidates_even_otherwise_valid_media(self):
         queue = [6, "https://source.example/delegated", {"post_id": "synthetic-work"}]

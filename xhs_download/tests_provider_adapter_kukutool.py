@@ -138,7 +138,11 @@ class KukutoolMappingBoundaryTests(TestCase):
         self.raw["id"] = "other"
         self.assertIs(self.map().kind, FailureKind.INVALID_RESULT)
         work = self.map(source="https://source.example/opaque")
-        self.assertEqual(work.items[0].variants[0].host_policy, ("cdn.example",))
+        item = work.items[0]
+        variant = item.variants[0]
+        self.assertEqual(variant.host_policy, ())
+        self.assertEqual(work.field_sources[f"items.{item.item_id}.variants.{variant.variant_id}.host_policy"],
+                         "contract:empty_list:any_public_https_host_passing_per_hop_checks")
         self.assertEqual(work.field_sources["work_id"], "kukutool_generic")
 
     def test_no_id_does_not_use_url_hash_or_old_normalized_identity(self):

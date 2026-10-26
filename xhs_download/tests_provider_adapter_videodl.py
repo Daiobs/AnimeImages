@@ -417,7 +417,7 @@ class VideodlMappingTests(SimpleTestCase):
         self.assertEqual([item.index for item in work.items], [1, 2])
         self.assertEqual([len(item.variants) for item in work.items], [1, 1])
 
-    def test_existing_platform_host_policy_and_exact_unknown_host(self):
+    def test_existing_platform_host_policy_and_empty_unknown_host(self):
         for source in (SOURCE, "https://www.douyin.com/video/123",
                        "https://www.bilibili.com/video/BV13x41117TL/", "https://source.example/work/1"):
             with self.subTest(source=source):

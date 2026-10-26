@@ -41,7 +41,10 @@ class YtdlpRecordedMappingTests(TestCase):
             self.assertEqual(variant.required_headers, ())
             self.assertIs(variant.browser_fetchable, Fetchable.UNKNOWN)
             self.assertIsNone(variant.expires_at)
-            self.assertEqual(variant.host_policy, ('framatube.org',))
+            self.assertEqual(variant.host_policy, ())
+            self.assertEqual(result.field_sources[
+                f'items.{item.item_id}.variants.{variant.variant_id}.host_policy'],
+                'contract:empty_list:any_public_https_host_passing_per_hop_checks')
             if fmt['protocol'] == 'https':
                 self.assertIs(variant.tracks, Tracks.UNKNOWN)
                 self.assertFalse(variant.segmented)
