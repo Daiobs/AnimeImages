@@ -34,7 +34,8 @@ def variant_fields(url, **changes):
         "quality_label": "", "is_original": False, "size_bytes": None,
         "size_exact": False, "merge_with": "", "required_headers": (),
         "browser_fetchable": Fetchable.UNKNOWN, "drm": False,
-        "segmented": False, "expires_at": None, "host_policy": ("cdn.example",),
+        "segmented": False, "request_method": "GET", "expires_at": None,
+        "host_policy": ("cdn.example",),
     }
     return {**expected, **changes}
 

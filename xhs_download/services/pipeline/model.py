@@ -50,6 +50,8 @@ PLACEHOLDER_TITLES = PLACEHOLDER_LABELS | frozenset({"untitled", "无标题", "�
 # Manifests and segments; a variant at such a path must say it is segmented.
 SEGMENTED_PATH_SUFFIXES = (".m3u8", ".mpd", ".m4s")
 
+_REQUEST_METHOD = re.compile(r"[A-Z]{3,10}")
+
 # A Provider's own resolution label such as 1080P, 2160P or 1080P+.
 _RESOLUTION_LABEL = re.compile(r"\s*(\d{3,4})[pP](?![A-Za-z])")
 
@@ -82,6 +84,7 @@ class Variant:
     browser_fetchable: Fetchable = Fetchable.UNKNOWN
     drm: bool = False
     segmented: bool = False
+    request_method: str = "GET"
     expires_at: datetime | None = None
     host_policy: tuple[str, ...] = ()
 
@@ -95,8 +98,11 @@ class Variant:
 
     @property
     def deliverable(self):
-        """DRM and segmented streams are listed but never downloaded (D-02)."""
-        return not (self.drm or self.segmented)
+        """Listed but never downloaded: DRM, segmented, non-GET, unpaired video (D-02~04)."""
+        return not (
+            self.drm or self.segmented or self.request_method != "GET"
+            or (self.tracks is Tracks.VIDEO_ONLY and not self.merge_with)
+        )
 
     def rank_key(self):
         """Higher is better: deliverable, original, height, bitrate, size (INV-03)."""
@@ -229,6 +235,8 @@ def validate_work(work, *, platform_names=()):
                 violations.append("placeholder_size")
             if not variant.segmented and _segmented_path(variant.url):
                 violations.append("segmented_url_not_marked")
+            if not _REQUEST_METHOD.fullmatch(variant.request_method or ""):
+                violations.append("invalid_request_method")
 
     for item in work.items:
         for variant in item.variants:

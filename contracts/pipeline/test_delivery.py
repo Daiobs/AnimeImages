@@ -129,9 +129,38 @@ class DeliveryRuleContract(TestCase):
                                      (0, Method.NONE, reason))
                     self.assertFalse(delivery.counts_against_quota)
 
+    def test_rule_0_non_get_and_unpaired_video_are_listed_but_not_downloaded(self):
+        cases = [
+            ("post", Kind.VIDEO, dict(request_method="POST", fetchable=T), "UNSUPPORTED_REQUEST"),
+            ("post image", Kind.IMAGE, dict(request_method="POST", fetchable=T), "UNSUPPORTED_REQUEST"),
+            ("post with headers", Kind.VIDEO, dict(request_method="POST", required_headers=("Referer",)),
+             "UNSUPPORTED_REQUEST"),
+            ("unpaired readable", Kind.VIDEO, dict(tracks=Tracks.VIDEO_ONLY, fetchable=T), "NEEDS_AUDIO_MERGE"),
+            ("unpaired unknown", Kind.VIDEO, dict(tracks=Tracks.VIDEO_ONLY, fetchable=U), "NEEDS_AUDIO_MERGE"),
+        ]
+        for name, kind, facts, reason in cases:
+            with self.subTest(name):
+                delivery = decide_delivery(kind, variant(**facts))
+                self.assertEqual((delivery.rule, delivery.method, delivery.reason), (0, Method.NONE, reason))
+        paired = decide_delivery(Kind.VIDEO, variant(tracks=Tracks.VIDEO_ONLY, merge_with="a1"))
+        self.assertEqual(paired.method, Method.SERVER_MERGE)
+
+    def test_rule_0_reasons_follow_the_table_order(self):
+        cases = [
+            (dict(drm=True, segmented=True, request_method="POST", tracks=Tracks.VIDEO_ONLY), "DRM_PROTECTED"),
+            (dict(segmented=True, request_method="POST", tracks=Tracks.VIDEO_ONLY), "SEGMENTED_STREAM"),
+            (dict(request_method="POST", tracks=Tracks.VIDEO_ONLY), "UNSUPPORTED_REQUEST"),
+            (dict(tracks=Tracks.VIDEO_ONLY), "NEEDS_AUDIO_MERGE"),
+        ]
+        for facts, reason in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(decide_delivery(Kind.VIDEO, variant(**facts)).reason, reason)
+
     def test_rule_0_an_undeliverable_item_is_never_packed(self):
         for facts, reason in ((dict(drm=True), "DRM_PROTECTED"),
-                              (dict(segmented=True), "SEGMENTED_STREAM")):
+                              (dict(segmented=True), "SEGMENTED_STREAM"),
+                              (dict(request_method="POST"), "UNSUPPORTED_REQUEST"),
+                              (dict(tracks=Tracks.VIDEO_ONLY), "NEEDS_AUDIO_MERGE")):
             with self.subTest(reason=reason):
                 entries = [(Kind.IMAGE, variant("p1", fetchable=T)),
                            (Kind.VIDEO, variant("m1", fetchable=T, **facts))]

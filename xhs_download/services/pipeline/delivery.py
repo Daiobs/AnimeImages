@@ -43,7 +43,13 @@ class Delivery:
 
 
 def _undeliverable_reason(variant):
-    return "DRM_PROTECTED" if variant.drm else "SEGMENTED_STREAM"
+    if variant.drm:
+        return "DRM_PROTECTED"
+    if variant.segmented:
+        return "SEGMENTED_STREAM"
+    if variant.request_method != "GET":
+        return "UNSUPPORTED_REQUEST"
+    return "NEEDS_AUDIO_MERGE"
 
 
 def _needs_merge(variant):
