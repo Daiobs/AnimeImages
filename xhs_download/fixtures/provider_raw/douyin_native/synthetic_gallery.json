@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "provider": "douyin_native",
+  "platform": "douyin",
+  "source_url": "https://www.douyin.com/note/7641197695256245190",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "aweme_id": "7641197695256245190",
+    "desc": "Gallery caption #photo",
+    "author": {"nickname": "Creator"},
+    "images": [
+      {"url_list": ["https://p3-sign.douyinpic.com/image-1.webp", "https://p3-sign.douyinpic.com/image-1.jpeg"], "width": 1200, "height": 1600},
+      {"url_list": ["https://p26-sign.douyinpic.com/image-2.webp"]}
+    ],
+    "video": {"play_addr": {"url_list": [
+      "https://v3-music.douyinstatic.com/video/tos/cn/path/?mime_type=audio_mp4",
+      "https://api-play.amemv.com/aweme/v1/play/music/?video_id=audio",
+      "https://lf26-music-east.douyinstatic.com/obj/ies-music-hj/audio.mp3"
+    ]}},
+    "music": {"duration": 23},
+    "upstream_only": {"retained": true}
+  }
+}
