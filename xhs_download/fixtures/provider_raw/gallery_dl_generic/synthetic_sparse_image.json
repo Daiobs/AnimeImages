@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "provider": "gallery_dl_generic",
+  "platform": "synthetic",
+  "source_url": "https://source.example/images/synthetic-image",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": [
+    [2, "", {
+      "id": "synthetic-image", "title": "Synthetic illustration",
+      "description": "An image with no measured download facts.",
+      "tags": ["illustration", "synthetic"],
+      "owner_username": "synthetic_creator", "owner_displayname": "Synthetic Creator",
+      "image": "https://images.example/preview.png",
+      "image_xl": "https://images.example/preview-xl.png",
+      "uncompressed_filesize": 8000000
+    }],
+    [3, "https://cdn.example/images/original.png", {
+      "id": "synthetic-image", "title": "Synthetic illustration",
+      "description": "An image with no measured download facts.",
+      "tags": ["illustration", "synthetic"],
+      "owner_username": "synthetic_creator", "owner_displayname": "Synthetic Creator",
+      "image": "https://images.example/preview.png",
+      "image_xl": "https://images.example/preview-xl.png",
+      "uncompressed_filesize": 8000000, "extension": "png"
+    }]
+  ]
+}

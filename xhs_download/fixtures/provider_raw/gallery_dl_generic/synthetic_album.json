@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "provider": "gallery_dl_generic",
+  "platform": "synthetic",
+  "source_url": "https://source.example/a/synthetic-album",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": [
+    [2, "", {
+      "id": "image-one",
+      "title": "First image title",
+      "num": 1,
+      "album": {"id": "synthetic-album", "title": "Synthetic album"},
+      "_http_headers": {"Authorization": "REDACTED"}
+    }],
+    [3, "https://cdn.example/album/first.jpg", {
+      "id": "image-one", "num": 1,
+      "album": {"id": "synthetic-album", "title": "Synthetic album"},
+      "extension": "jpg", "width": 1600, "height": 1200, "filesize": 123456,
+      "_fallback": ["https://fallback.example/not-emitted.jpg"],
+      "thumbnails": [{"url": "https://images.example/not-emitted.jpg"}],
+      "user": {"avatar": "https://images.example/avatar.jpg"}
+    }],
+    [2, {
+      "id": "image-two",
+      "title": "Second image title",
+      "num": 2,
+      "album": {"id": "synthetic-album", "title": "Synthetic album"}
+    }],
+    [3, "https://cdn.example/album/second.webp", {
+      "id": "image-two", "num": 2,
+      "album": {"id": "synthetic-album", "title": "Synthetic album"},
+      "extension": "webp", "width": 800, "height": 600, "filesize": 65432
+    }]
+  ]
+}
