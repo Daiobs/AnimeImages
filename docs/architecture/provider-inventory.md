@@ -1,6 +1,6 @@
 # Provider 盘点（统一管线第 2 步 P1）
 
-核对基线：`26bf3c1271e214c1a979ad39e7fc12db5c9dfcde`（#134），2026-10-25。
+初始核对基线：`26bf3c1271e214c1a979ad39e7fc12db5c9dfcde`（#134），2026-10-25；后续勘误在对应阶段注明。
 [目标原文](../goals/unified-pipeline-step2.md)和[统一管线契约](unified-pipeline.md)是规格；
 本文件只是代码及现有证据的清单，不修改契约，不宣告任何平台已经切换。
 
@@ -19,6 +19,11 @@ videodl 的五份既有缩减录制不冒充完整录制；实际 backend 由调
 两份富文本与固定 Worker 的离线提取结果一致；小红书同项配对和委托 yt-dlp 以受控构造覆盖。
 videodl 同一 VideoInfo 内的独立音频 URL 按原生下载器的明确配对语义填写，
 不跨对象猜配；5 份缩减录制与 2 份合成录制的证据范围分别标注。
+
+**P8 入口勘误（2026-10-26，`70aa6632`）：** B站 Native 的正式解析器只接通普通视频。
+初始表内的 `bilibili_dynamic.py` 并不存在；`bilibili_dynamic_normalizer.py` 是未注册到
+正式网络入口的研究映射，不能据此声称动态已生产可达。P8 不新增动态网络入口。
+普通视频的 `view/playurl` 原始数据在旧函数内部取得，没有现成观察点，fetch/捕获留 P12。
 
 ## P1 历史结论与暂停点
 
@@ -77,7 +82,7 @@ videodl 同一 VideoInfo 内的独立音频 URL 按原生下载器的明确配�
 | --- | --- | --- | --- | --- | --- |
 | native | 小红书图文、视频、Live Photo、富文本 | 正式首入口；既有生产记录有 Native 失败及服务接替，不能据此判为禁用；健康项 xhs_*_current | platforms/xiaohongshu.py:parse_url:799，847 取得 HTML；xhs_page_state.py:extract_xhs_page_state:741 内有 note 原对象 | xiaohongshu.py:parse_html:435，592/665 构造结果；图片分支还有探测/增强，不能直接作为纯 map | P10 |
 | native | 抖音图文、视频、原声 | 条件可达；正式普通解析和超清保底；健康项 douyin_native_parse | platforms/douyin.py:fetch_mobile_feed_aweme:767 / fetch_mobile_share_aweme:817；返回 aweme 原始子树 | douyin.py:parse_aweme:684 | P9 |
-| native | B站普通视频、动态 | 已见：生产匿名普通视频成功；动态是代码可达，未新验收；健康项 bilibili_native_parse | platforms/bilibili.py:api_get_json:335 返回 API data；_parse_url:648 收集 view/playurl；动态另走 bilibili_dynamic.py | bilibili.py:_parse_url:704；bilibili_dynamic_normalizer.py | P8 |
+| native | B站普通视频 | 已见：生产匿名普通视频成功；健康项 bilibili_native_parse；动态只有未接通网络的研究映射，不属正式入口 | platforms/bilibili.py:api_get_json:335 返回 API data；_parse_url:648 收集 view/playurl | bilibili.py:_parse_url:704 | P8 |
 | tiantianjiexi | 抖音超清/图文 | 已见：生产匿名超清由天天成功；受 ULTRA_HD_PROVIDER_ENABLED、天天能力及 douyin_ultra 准入；健康项 douyin_tiantianjiexi_ultra | platforms/douyin_providers.py:DouyinTianTianJieXiProvider.parse:1178 → 天天共用 client，原始 JSON 见 R-TT | douyin_providers.py:result_from_payload:1376 / build_external_parse_result:905 | P5 |
 | kukutool | 抖音超清 | 条件可达：KUKUTOOL_PROVIDER_ENABLED、ULTRA_HD_PROVIDER_ENABLED、后台超清模式/顺序；健康项 douyin_kukutool_ultra；本轮未确认运行开关 | platforms/douyin_kukutool.py:run_kukutool_helper:858 返回解密业务对象；run_kukutool_sidecar:1007 在 1030 取得 JSON 后转换 | douyin_kukutool.py:build_result:2043 → douyin_providers.py:build_external_parse_result:905 | P6 |
 | tikhub | 抖音 | 停用：INV-01 明确 TikHub 已停用；保留代码不等于已启用 | douyin_providers.py:fetch_high_quality_data:2359 在 2413 读 JSON，并返回完整对象 | DouyinTikHubProvider.parse:2722 → build_external_parse_result | 不做；停用，不新增清单外 PR |
@@ -271,3 +276,10 @@ ytdlp_result_picker/ordinary_media_download 前端。表达式：
 - 57 项现有 pipeline 内核契约通过；未修改契约、内核、Worker 或产品路径。
 - 日常 8000 保持原进程/原版本 `834d331`，不因文档 PR 切换。
 - 待 Human 决定 D-01；其他未核实项保持待核实，不以猜测补齐。生产影子仍未实现/未启用。
+
+## P8 补充（2026-10-26）
+
+- `provider_adapters/bilibili.py:BilibiliMapper` 仅映射普通视频原始 view/playurl JSON 和实际 page/cid 请求选择；不消费旧结果、候选或授权，不新增网络调用。原始捕获和 fetch 留 P12。
+- 当前只有明确标注的受控 API 夹具，没有声称取得完整 Native 真实录制。多段夹具保留两段全部字段，不截断为第一段。三类不完整媒体按 Human 决定返回 `unsupported`，由真实 `ChainRun` 验证继续下一 Provider 且不进入冷却。
+- 完整 durl 与 DASH 共存时，完整文件默认；分轨、镜像 URL 和音频格式均保留，音频格式属于同一个内容项，不虚构配对。媒体请求上下文不从 API Cookie/Referer 推断。
+- 其他平台合法但没有可下载默认项的结果是否继续路由，留第 3 步决定并纳入 P14；P8 不修改通用内核和旧路径。

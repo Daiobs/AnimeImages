@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "provider": "bilibili_native",
+  "platform": "bilibili",
+  "source_url": "https://www.bilibili.com/video/BV1J4JX6PEMV/",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "view": {"code": 0, "data": {
+      "bvid": "BV1J4JX6PEMV", "aid": 123, "cid": 111,
+      "title": "Unpaired track formats", "pages": [{"page": 1, "cid": 111}]
+    }},
+    "playurl": {"code": 0, "data": {
+      "quality": 80, "timelength": 24000, "durl": [],
+      "dash": {
+        "duration": 24,
+        "video": [{
+          "id": 80, "baseUrl": "https://media.bilivideo.com/video-80.m4s",
+          "backupUrl": ["https://mirror.bilivideo.com/video-80.m4s"],
+          "mimeType": "video/mp4", "codecs": "avc1.640028", "width": 1920, "height": 1080,
+          "frameRate": "30000/1001", "bandwidth": 1200000,
+          "SegmentBase": {"Initialization": "0-999", "indexRange": "1000-1999"}
+        }],
+        "audio": [
+          {"id": 30280, "baseUrl": "https://media.bilivideo.com/audio-high.m4s", "mimeType": "audio/mp4", "bandwidth": 192000},
+          {"id": 30216, "base_url": "https://media.bilivideo.com/audio-low.m4s", "mime_type": "audio/mp4", "bandwidth": 64000}
+        ],
+        "dolby": {"type": 2, "audio": [{"id": 30250, "baseUrl": "https://media.bilivideo.com/audio-dolby.m4s", "mimeType": "audio/mp4"}]},
+        "flac": {"display": true, "audio": {"id": 30251, "baseUrl": "https://media.bilivideo.com/audio-flac.flac", "mimeType": "audio/flac"}}
+      }
+    }},
+    "selection": {"page": 1, "playurl_params": {"avid": 123, "cid": 111, "fnval": 16}}
+  }
+}
