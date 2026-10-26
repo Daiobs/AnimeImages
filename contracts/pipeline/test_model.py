@@ -1,4 +1,5 @@
 """Unified pipeline §1.4: result model invariants (A2, INV-03)."""
+from dataclasses import replace
 from unittest import TestCase
 
 from xhs_download.services.pipeline import (
@@ -166,3 +167,41 @@ class ResolutionLabelContract(TestCase):
         for label in ("原画", "高清", "4K", "1080", "HD", "1080Pro", "100P", "9999P", "", None):
             with self.subTest(label=label):
                 self.assertIsNone(height_from_label(label))
+
+
+class DeliverabilityContract(TestCase):
+    """D-02: DRM and segmented streams stay listed but lose the default to files."""
+
+    def test_drm_and_segmented_default_to_false(self):
+        plain = Variant(variant_id="v", url="https://media.example.test/v.mp4")
+        self.assertEqual((plain.drm, plain.segmented, plain.deliverable), (False, False, True))
+
+    def test_a_downloadable_variant_wins_the_default(self):
+        cases = [
+            ("segmented taller", variant("hls", height=1080, segmented=True), variant("file", height=720)),
+            ("drm original", variant("drm", height=2160, drm=True, is_original=True),
+             variant("file", height=480)),
+        ]
+        for name, blocked, deliverable in cases:
+            with self.subTest(name):
+                self.assertEqual(item(blocked, deliverable).default_variant.variant_id, "file")
+
+    def test_an_item_with_only_undeliverable_variants_stays_valid_and_visible(self):
+        hls = replace(variant("hls", height=1080, segmented=True),
+                      url="https://media.example.test/master.m3u8")
+        drm = variant("drm", height=720, drm=True)
+        work = video_work(variants=(drm, hls))
+        self.assertEqual(validate_work(work), ())
+        self.assertEqual(work.items[0].default_variant.variant_id, "hls")
+
+    def test_a_manifest_or_segment_url_must_be_marked_segmented(self):
+        for path in ("master.m3u8", "manifest.MPD", "seg-1.m4s", "index.m3u8?sig=REDACTED"):
+            with self.subTest(path=path):
+                unmarked = replace(variant("v"), url=f"https://media.example.test/{path}")
+                self.assertIn("segmented_url_not_marked", validate_work(video_work(variants=(unmarked,))))
+                marked = replace(unmarked, segmented=True)
+                self.assertNotIn("segmented_url_not_marked", validate_work(video_work(variants=(marked,))))
+        for url in ("https://media.example.test/m3u8/video.mp4",
+                    "https://media.example.test/video.mp4?list=a.m3u8"):
+            with self.subTest(url=url):
+                self.assertEqual(validate_work(video_work(variants=(replace(variant("v"), url=url),))), ())

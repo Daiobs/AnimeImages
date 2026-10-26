@@ -121,7 +121,8 @@ must reach the kernel instead of an old path.
 - Routing: both policies, admin order, the five failure kinds, unmappable results,
   and bounded cooldown that expires without admin action.
 - Model: default variant, placeholders, split tracks, unknown tracks and the
-  `TRACKS_UNKNOWN` gap, Provider resolution labels, field coverage.
+  `TRACKS_UNKNOWN` gap, Provider resolution labels, DRM and segmented streams,
+  field coverage.
 - Delivery: one case per table rule, plus Provider, platform and resource-ID
   counter-cases that must not change the outcome.
 - Filenames: short title, numbering, live-photo pairs, real extensions.
@@ -140,7 +141,12 @@ apart; placeholder quality accepted; a leftover floor setting dropping a
 adds eight more, each also caught: default tracks back to `av`; unknown tracks
 barred from the default; unknown tracks merged on the server; a label without
 `P`, a `P` followed by letters, or an out-of-range number giving a height;
-unknown tracks not counted; images counted as unknown tracks.
+unknown tracks not counted; images counted as unknown tracks. The D-02 amendment
+(DRM and segmented streams) adds ten, each also caught: DRM reported as a segmented
+stream; undeliverable variants delivered; segmented or DRM counted deliverable;
+downloadable variants not preferred; an unmarked manifest URL accepted; the URL
+check case-sensitive, reading the query, or missing `.m4s`; an archive packing an
+undeliverable item.
 Run them with `PYTHONDONTWRITEBYTECODE=1`:
 a same-size edit restored within a second can otherwise reuse stale bytecode.
 

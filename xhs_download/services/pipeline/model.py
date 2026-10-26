@@ -9,6 +9,7 @@ from enum import Enum
 import re
 from types import MappingProxyType
 from typing import Mapping
+from urllib.parse import urlsplit
 
 
 class Kind(str, Enum):
@@ -46,6 +47,9 @@ PLACEHOLDER_LABELS = frozenset({
 })
 PLACEHOLDER_TITLES = PLACEHOLDER_LABELS | frozenset({"untitled", "无标题", "作品"})
 
+# Manifests and segments; a variant at such a path must say it is segmented.
+SEGMENTED_PATH_SUFFIXES = (".m3u8", ".mpd", ".m4s")
+
 # A Provider's own resolution label such as 1080P, 2160P or 1080P+.
 _RESOLUTION_LABEL = re.compile(r"\s*(\d{3,4})[pP](?![A-Za-z])")
 
@@ -76,6 +80,8 @@ class Variant:
     merge_with: str = ""
     required_headers: tuple[str, ...] = ()
     browser_fetchable: Fetchable = Fetchable.UNKNOWN
+    drm: bool = False
+    segmented: bool = False
     expires_at: datetime | None = None
     host_policy: tuple[str, ...] = ()
 
@@ -87,9 +93,15 @@ class Variant:
             return f"{self.height}p"
         return DEFAULT_QUALITY_LABEL
 
+    @property
+    def deliverable(self):
+        """DRM and segmented streams are listed but never downloaded (D-02)."""
+        return not (self.drm or self.segmented)
+
     def rank_key(self):
-        """Higher is better: original, then height, bitrate, size (INV-03)."""
+        """Higher is better: deliverable, original, height, bitrate, size (INV-03)."""
         return (
+            1 if self.deliverable else 0,
             1 if self.is_original else 0,
             self.height or 0,
             self.bitrate or 0,
@@ -165,11 +177,19 @@ class Work:
     def rank_key(self):
         """Quality of the best default variant; used to decide upgrades."""
         keys = [item.default_variant.rank_key() for item in self.items if item.default_variant]
-        return max(keys, default=(0, 0, 0, 0))
+        return max(keys, default=(0, 0, 0, 0, 0))
 
 
 def _is_placeholder(value, placeholders):
     return value.strip().casefold() in placeholders
+
+
+def _segmented_path(url):
+    try:
+        path = urlsplit(url or "").path
+    except ValueError:
+        return False
+    return path.lower().endswith(SEGMENTED_PATH_SUFFIXES)
 
 
 def validate_work(work, *, platform_names=()):
@@ -207,6 +227,8 @@ def validate_work(work, *, platform_names=()):
                 violations.append("placeholder_quality_label")
             if variant.size_bytes is not None and variant.size_bytes <= 0:
                 violations.append("placeholder_size")
+            if not variant.segmented and _segmented_path(variant.url):
+                violations.append("segmented_url_not_marked")
 
     for item in work.items:
         for variant in item.variants:
