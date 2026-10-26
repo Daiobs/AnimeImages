@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "provider": "gallery_dl_generic",
+  "platform": "itaku",
+  "source_url": "https://itaku.ee/images/1348332",
+  "provenance": {
+    "kind": "recorded",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": [
+    [
+      2,
+      "",
+      {
+        "id": 1348332,
+        "liked_by_you": false,
+        "num_likes": 2,
+        "too_mature": false,
+        "blacklisted": {
+          "is_blacklisted": false,
+          "blacklisted_tags": []
+        },
+        "bookmarked_by_you": false,
+        "owner_avatar": "https://itaku.ee/api/media_2/profile_pics/bern_wink_U8MTyd0/sm.png",
+        "already_pinned": null,
+        "reshared_by_you": false,
+        "can_reshare": true,
+        "num_reshares": 0,
+        "owner_displayname": "bernad",
+        "owner_username": "bernad",
+        "sections": [
+          "Speedpaint"
+        ],
+        "uncompressed_filesize": "2.02",
+        "video": null,
+        "tags": [
+          "bird",
+          "landscape",
+          "art",
+          "sunset",
+          "lemur",
+          "lake",
+          "speedpaint",
+          "digital_art",
+          "river",
+          "bernad"
+        ],
+        "num_comments": 0,
+        "title": "Landscape Speedpaint",
+        "description": "Watching the sun set.",
+        "content_warning": "",
+        "image": "https://itaku.ee/api/media_3/gallery_imgs/landscape_speedpaint33_9utrthx.png",
+        "date_added": "2026-08-04T16:41:36.391778Z",
+        "date_edited": null,
+        "maturity_rating": "SFW",
+        "source_image_changed": false,
+        "visibility": "PUBLIC",
+        "hotness_score": 14485.0,
+        "animated": false,
+        "storage": "media_3",
+        "owner": 86024,
+        "obj_tags": 1825842,
+        "image_xl": "https://itaku.ee/api/media_3/gallery_imgs/landscape_speedpaint33_9utrthx/landscape_speedpaint33_9utrthx_xl.png",
+        "date": "2026-08-04T16:41:36",
+        "tags_artist": [
+          "bernad"
+        ],
+        "tags_species": [
+          "bird",
+          "lemur"
+        ],
+        "tags_general": [
+          "landscape",
+          "sunset",
+          "lake",
+          "river"
+        ],
+        "tags_meta": [
+          "art",
+          "speedpaint",
+          "digital_art"
+        ]
+      }
+    ],
+    [
+      3,
+      "https://itaku.ee/api/media_3/gallery_imgs/landscape_speedpaint33_9utrthx.png",
+      {
+        "id": 1348332,
+        "liked_by_you": false,
+        "num_likes": 2,
+        "too_mature": false,
+        "blacklisted": {
+          "is_blacklisted": false,
+          "blacklisted_tags": []
+        },
+        "bookmarked_by_you": false,
+        "owner_avatar": "https://itaku.ee/api/media_2/profile_pics/bern_wink_U8MTyd0/sm.png",
+        "already_pinned": null,
+        "reshared_by_you": false,
+        "can_reshare": true,
+        "num_reshares": 0,
+        "owner_displayname": "bernad",
+        "owner_username": "bernad",
+        "sections": [
+          "Speedpaint"
+        ],
+        "uncompressed_filesize": "2.02",
+        "video": null,
+        "tags": [
+          "bird",
+          "landscape",
+          "art",
+          "sunset",
+          "lemur",
+          "lake",
+          "speedpaint",
+          "digital_art",
+          "river",
+          "bernad"
+        ],
+        "num_comments": 0,
+        "title": "Landscape Speedpaint",
+        "description": "Watching the sun set.",
+        "content_warning": "",
+        "image": "https://itaku.ee/api/media_3/gallery_imgs/landscape_speedpaint33_9utrthx.png",
+        "date_added": "2026-08-04T16:41:36.391778Z",
+        "date_edited": null,
+        "maturity_rating": "SFW",
+        "source_image_changed": false,
+        "visibility": "PUBLIC",
+        "hotness_score": 14485.0,
+        "animated": false,
+        "storage": "media_3",
+        "owner": 86024,
+        "obj_tags": 1825842,
+        "image_xl": "https://itaku.ee/api/media_3/gallery_imgs/landscape_speedpaint33_9utrthx/landscape_speedpaint33_9utrthx_xl.png",
+        "date": "2026-08-04T16:41:36",
+        "tags_artist": [
+          "bernad"
+        ],
+        "tags_species": [
+          "bird",
+          "lemur"
+        ],
+        "tags_general": [
+          "landscape",
+          "sunset",
+          "lake",
+          "river"
+        ],
+        "tags_meta": [
+          "art",
+          "speedpaint",
+          "digital_art"
+        ],
+        "filename": "landscape_speedpaint33_9utrthx",
+        "extension": "png"
+      }
+    ]
+  ]
+}

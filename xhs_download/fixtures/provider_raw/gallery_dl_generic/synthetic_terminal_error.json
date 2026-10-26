@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "provider": "gallery_dl_generic",
+  "platform": "synthetic",
+  "source_url": "https://source.example/posts/synthetic-partial",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": [
+    [2, {"post_id": "synthetic-partial", "title": "Incomplete upstream run"}],
+    [3, "https://cdn.example/partial/first.jpg", {
+      "post_id": "synthetic-partial", "num": 1, "extension": "jpg"
+    }],
+    [-1, {
+      "error": "HttpError",
+      "message": "HTTP Error 429 at https://source.example/private?token=REDACTED Cookie: REDACTED"
+    }]
+  ]
+}

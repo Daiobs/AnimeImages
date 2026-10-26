@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "provider": "gallery_dl_generic",
+  "platform": "itaku",
+  "source_url": "https://itaku.ee/images/1243386",
+  "provenance": {
+    "kind": "recorded",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": [
+    [
+      2,
+      "",
+      {
+        "id": 1243386,
+        "liked_by_you": false,
+        "num_likes": 1,
+        "too_mature": false,
+        "blacklisted": {
+          "is_blacklisted": false,
+          "blacklisted_tags": []
+        },
+        "bookmarked_by_you": false,
+        "owner_avatar": "https://itaku.ee/api/media_2/profile_pics/Infernape_Halloween_AJterzk/Infernape_Halloween_AJterzk_sm.png",
+        "already_pinned": null,
+        "reshared_by_you": false,
+        "can_reshare": true,
+        "num_reshares": 0,
+        "owner_displayname": "The-Albino-Infernape",
+        "owner_username": "the-albino-infernape",
+        "sections": [],
+        "uncompressed_filesize": "6.83",
+        "video": null,
+        "tags": [
+          "illustration",
+          "photography",
+          "digital_art",
+          "chile",
+          "lakes",
+          "lakeside",
+          "megalophobia"
+        ],
+        "num_comments": 0,
+        "title": "Lago Villarica - Painting",
+        "description": "I tried digital painting for the first time to get my mind off things and I'm really proud of what came out of it.\n\nThis painting is actually directly referenced off a photo I took of Lago Villarica in Chile when visiting my friend.",
+        "content_warning": "",
+        "image": "https://itaku.ee/api/media_3/gallery_imgs/Late_P7fy03o.png",
+        "date_added": "2026-01-13T11:37:01.363471Z",
+        "date_edited": null,
+        "maturity_rating": "SFW",
+        "source_image_changed": false,
+        "visibility": "PUBLIC",
+        "hotness_score": 14095.0,
+        "animated": false,
+        "storage": "media_3",
+        "owner": 113022,
+        "obj_tags": 1680930,
+        "image_xl": "https://itaku.ee/api/media_3/gallery_imgs/Late_P7fy03o/Late_P7fy03o_xl.png",
+        "date": "2026-01-13T11:37:01",
+        "tags_general": [
+          "chile",
+          "lakes",
+          "lakeside",
+          "megalophobia"
+        ],
+        "tags_meta": [
+          "illustration",
+          "photography",
+          "digital_art"
+        ]
+      }
+    ],
+    [
+      3,
+      "https://itaku.ee/api/media_3/gallery_imgs/Late_P7fy03o.png",
+      {
+        "id": 1243386,
+        "liked_by_you": false,
+        "num_likes": 1,
+        "too_mature": false,
+        "blacklisted": {
+          "is_blacklisted": false,
+          "blacklisted_tags": []
+        },
+        "bookmarked_by_you": false,
+        "owner_avatar": "https://itaku.ee/api/media_2/profile_pics/Infernape_Halloween_AJterzk/Infernape_Halloween_AJterzk_sm.png",
+        "already_pinned": null,
+        "reshared_by_you": false,
+        "can_reshare": true,
+        "num_reshares": 0,
+        "owner_displayname": "The-Albino-Infernape",
+        "owner_username": "the-albino-infernape",
+        "sections": [],
+        "uncompressed_filesize": "6.83",
+        "video": null,
+        "tags": [
+          "illustration",
+          "photography",
+          "digital_art",
+          "chile",
+          "lakes",
+          "lakeside",
+          "megalophobia"
+        ],
+        "num_comments": 0,
+        "title": "Lago Villarica - Painting",
+        "description": "I tried digital painting for the first time to get my mind off things and I'm really proud of what came out of it.\n\nThis painting is actually directly referenced off a photo I took of Lago Villarica in Chile when visiting my friend.",
+        "content_warning": "",
+        "image": "https://itaku.ee/api/media_3/gallery_imgs/Late_P7fy03o.png",
+        "date_added": "2026-01-13T11:37:01.363471Z",
+        "date_edited": null,
+        "maturity_rating": "SFW",
+        "source_image_changed": false,
+        "visibility": "PUBLIC",
+        "hotness_score": 14095.0,
+        "animated": false,
+        "storage": "media_3",
+        "owner": 113022,
+        "obj_tags": 1680930,
+        "image_xl": "https://itaku.ee/api/media_3/gallery_imgs/Late_P7fy03o/Late_P7fy03o_xl.png",
+        "date": "2026-01-13T11:37:01",
+        "tags_general": [
+          "chile",
+          "lakes",
+          "lakeside",
+          "megalophobia"
+        ],
+        "tags_meta": [
+          "illustration",
+          "photography",
+          "digital_art"
+        ],
+        "filename": "Late_P7fy03o",
+        "extension": "png"
+      }
+    ]
+  ]
+}

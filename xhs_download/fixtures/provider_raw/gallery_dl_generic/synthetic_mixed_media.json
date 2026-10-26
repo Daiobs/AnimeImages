@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "provider": "gallery_dl_generic",
+  "platform": "synthetic",
+  "source_url": "https://source.example/posts/synthetic-mixed",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": [
+    [2, {
+      "post_id": "synthetic-mixed",
+      "post_shortcode": "synthetic-shortcode",
+      "title": "Synthetic mixed media",
+      "description": "Explicitly supplied metadata.",
+      "tags": ["mixed", "synthetic"],
+      "author": "Synthetic creator",
+      "thumbnail": "https://images.example/mixed/cover.jpg",
+      "duration": 12.5
+    }],
+    [3, "https://cdn.example/mixed/photo.jpg", {
+      "post_id": "synthetic-mixed", "media_id": "photo", "num": 1,
+      "extension": "jpg", "width": 1600, "height": 1200,
+      "filesize": 240000
+    }],
+    [3, "https://cdn.example/mixed/video.mp4", {
+      "post_id": "synthetic-mixed", "media_id": "clip", "num": 2,
+      "extension": "mp4", "quality": "1080P+", "width": 1920,
+      "fps": 30, "bitrate": 2500000, "filesize": 3750000,
+      "vcodec": "h264", "acodec": "aac",
+      "_http_headers": {
+        "Referer": "https://source.example/private-context",
+        "User-Agent": "REDACTED",
+        "Accept": "video/*",
+        "Cookie": "REDACTED",
+        "X-Remove": null
+      }
+    }],
+    [3, "https://cdn.example/mixed/audio", {
+      "post_id": "synthetic-mixed", "media_id": "sound", "num": 3,
+      "content_type": "audio/mpeg", "filesize_approx": 200000,
+      "vcodec": null, "acodec": null
+    }]
+  ]
+}

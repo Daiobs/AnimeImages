@@ -21,7 +21,9 @@ under [the contract](../../../docs/architecture/unified-pipeline.md) sections 2.
 For raw data available only inside a subprocess, P3-P10 may provide a RawMapper
 and fixture tests only. Do not invent a fetch that returns old candidates or
 re-executes an upstream for shadow use. Raw transport/capture belongs to P12.
-videodl is excluded from this step until production reachability is confirmed.
+Human subsequently included videodl in P7: map the Worker's observed VideoInfo
+using the five existing reduced recordings, without new requests. Its explicit
+backend is provenance, not an adapter fallback; production admission is separate.
 
 Map receives only upstream facts, never ParseResult, MediaAsset, candidates,
 manifests or tokens. It must not use network, database, cache or time, nor mutate
@@ -97,3 +99,68 @@ do not claim real YouTube success. This round's single YouTube metadata attempt
 was refused by its login/bot check; no credentials or retry were used. Both
 recording calls disabled format test-downloads; there was no full media save.
 Worker raw transport remains P12, and no old parsed result substitutes for raw.
+
+## P4: gallery-dl
+
+`gallerydl.GalleryDlMapper` accepts complete extractor messages: Directory (2)
+provides work context; each Url (3) is an emitted media resource. Queue (6) is
+an unresolved extractor, not media, and is rejected. There is no recursive scan
+for URLs in avatars, thumbnails, recommendations or nested fallback data.
+
+This is map-only under the Human-approved P3-P10 boundary. The current `-J` CLI
+filters private metadata by default, including per-file `_http_headers`; it is
+not used as a supposedly complete fetch. The existing Worker's `observe`
+position sees extractor messages before descriptor compaction, but capturing
+and exporting them belongs to P12. A capture must copy each message immediately
+because extractors reuse mutable metadata. Neither old path is changed here.
+
+- Work identity comes from native album/post/entry identifiers, not a hash or
+  old candidate. A common album ID supports per-image Directory messages;
+  conflicting file/Directory album IDs and incomplete/unexpanded collections
+  are rejected. Known Itaku image/post URLs must match the emitted work ID.
+  An album's missing title is not filled from its first child's title.
+- Explicit per-file identity (`media_id`, `file.id`, or `num`) groups variants.
+  Files without such an identity remain separate ordered items. Equal URLs or
+  heights alone do not merge items. Video and image preview sharing one native
+  `num` remain separate items. No Live Photo relation is inferred.
+- Dimensions, byte size, labels and codecs come from the Url message. Nested
+  file facts require its URL to match; uncompressed size is not transfer size.
+  P labels use the kernel helper; missing tracks stay unknown. DRM and segmented
+  variants remain present for kernel rule 0, not dropped or downloaded.
+  Native `ytdl:` media explicitly marked `_ytdl_manifest=hls/dash` are unwrapped
+  to their HTTP media URL and retained as segmented; arbitrary delegated pages
+  remain unexpanded failures. No extractor or manifest request is made by map.
+- `_http_method` is normalized to uppercase `request_method`; an absent method
+  uses the contract's GET default. Non-GET resources remain visible and the kernel
+  returns `UNSUPPORTED_REQUEST`. Request bodies/values do not enter Work, nor do
+  methods/headers from nested metadata replace the Url's request instructions.
+  Unpaired `video_only` variants keep `merge_with` empty and the kernel returns
+  `NEEDS_AUDIO_MERGE`; no audio selection is invented (D-03/D-04).
+- `browser_fetchable` is unknown: no CORS test, browser observation or metadata
+  probe is performed. `_http_headers` names are explicit file instructions,
+  including Referer/User-Agent; None deletes a header rather than requiring it.
+  Directory headers are not inherited. Generic header facts use the existing
+  request-context conventions. Header values never enter Work. An extractor's
+  shared Session cookies are not captured by these messages; absence here is
+  not evidence that the Session has no context. P12 must preserve the raw
+  request-context boundary, not claim the legacy CLI export is complete.
+- `host_policy` contains the emitted URL's exact host, following the existing
+  dynamic-host family. This is not admission or a grant. `is_original` requires
+  an explicit upstream flag. Missing expiry remains unknown, never renewed.
+- Expected error messages (-1) map explicit not-found/unsupported/timeout types
+  and HTTP status via P2's table, including native quoted `'404 Not Found' for ...`
+  messages. Other upstream errors are unavailable; malformed
+  messages, unknown media kind and invalid Works are invalid_result. A failure
+  after some Url messages still fails, rather than claiming a complete success.
+  Diagnostics never include upstream text or credentials.
+
+The two `recorded_itaku_*.json` files reuse complete extractor observations from
+2026-10-13 (ItakuImageExtractor, one Directory and one Url each). Their original
+captures were not truncated, had no unexported types or redacted fields, and had
+SOURCE_ID_MATCH evidence. They are extractor-message recordings, not HTTP
+responses or Session dumps. All native fields are retained through P2's sanitizer.
+Replay covers all Work fields and missing quality/size honestly; nested image
+references do not become extra content. Synthetic recordings cover the broader
+message shapes and restrictions. This P4 performs no live upstream or media
+request and claims no new live platform acceptance. Routing, shadow hooks,
+health tests and user downloads remain unconnected until their scheduled PRs.
