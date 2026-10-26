@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from ..assets import MediaAsset, ParseResult
+from ..pipeline_shadow_capture import capture_raw, submit_with_capture
 from ..work_caption import work_caption_metadata, work_caption_presentation
 from ..common import (
     HEADERS,
@@ -688,7 +689,7 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 max_workers=1,
                 thread_name_prefix="xhs-parsehub-livephoto",
             )
-            parsehub_future = parsehub_executor.submit(
+            parsehub_future = submit_with_capture(parsehub_executor,
                 enhance_xhs_images_with_parsehub,
                 native_result=flat_result,
                 snapshot=structured_state.private_selected_note_snapshot,
@@ -843,8 +844,11 @@ class XiaohongshuAdapter(BasePlatformAdapter):
                 raise XhsParseError(XHS_PAGE_STATE_MESSAGES["login_required"])
             page_fetch_duration_ms = round((time.monotonic() - parse_started_at) * 1000)
             identity_url = url if extract_xhs_note_id(url) else response.url
+            html = response.text
+            capture_raw("xhs_native", {"html": html, "page_url": response.url}, url,
+                        page_url=response.url)
             result = self.parse_html(
-                response.text,
+                html,
                 source_url=identity_url,
                 enable_xhs_livephoto_preview=bool(
                     enable_xhs_livephoto_preview

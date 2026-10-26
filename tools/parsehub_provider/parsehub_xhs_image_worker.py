@@ -13,6 +13,7 @@ import asyncio
 from hashlib import sha256
 from importlib import metadata
 import json
+from pathlib import Path
 import re
 import sys
 from typing import Any
@@ -142,7 +143,8 @@ def _parse_request(raw: bytes) -> dict[str, Any]:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise WorkerError("PARSEHUB_INVALID_JSON") from error
-    if not isinstance(payload, dict) or set(payload) != REQUEST_FIELDS:
+    if (not isinstance(payload, dict) or not REQUEST_FIELDS.issubset(payload)
+            or set(payload) - REQUEST_FIELDS - {"_shadow_capture_fd"}):
         raise WorkerError("PARSEHUB_INVALID_JSON")
     if payload.get("schema_version") != SCHEMA_VERSION or payload.get("capability") != "xhs_images":
         raise WorkerError("PARSEHUB_INVALID_JSON")
@@ -162,15 +164,18 @@ def _parse_request(raw: bytes) -> dict[str, Any]:
         "source_url": source_url,
         "expected_note_id": note_id,
         "max_items": max_items,
+        **({"_shadow_capture_fd": payload["_shadow_capture_fd"]} if "_shadow_capture_fd" in payload else {}),
     }
 
 
-async def _extract(payload: dict[str, Any]) -> dict[str, Any]:
+async def _extract(payload: dict[str, Any], observe=None) -> dict[str, Any]:
     from parsehub.provider_api.xhs import XHSAPI
 
     api = XHSAPI(proxy=None, cookie=None)
     html = await api._XHSAPI__fetch_html(payload["source_url"])
     data = await api._XHSAPI__extract_data(html)
+    if observe is not None:
+        observe(data)
     note = _exact_note(data, payload["expected_note_id"])
     if str(note.get("type") or "").strip().lower() not in {"normal", "image"}:
         raise WorkerError("PARSEHUB_UNSUPPORTED_POST")
@@ -217,6 +222,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
+    observe = None
     try:
         _verify_parsehub_install()
         if args.check_only:
@@ -230,7 +236,13 @@ def main() -> int:
             )
             return 0
         request = _parse_request(sys.stdin.buffer.read(MAX_INPUT_BYTES + 1))
-        _emit(asyncio.run(_extract(request)))
+        if "_shadow_capture_fd" in request:
+            try:
+                import runpy
+                observe = runpy.run_path(str(Path(__file__).resolve().parents[1] / "worker_raw_sideband.py"))["observer"](request)
+            except Exception:
+                pass
+        _emit(asyncio.run(_extract(request, **({"observe": observe} if observe is not None else {}))))
         return 0
     except WorkerError as error:
         _emit({"schema_version": SCHEMA_VERSION, "error": {"code": error.code}})
@@ -243,6 +255,9 @@ def main() -> int:
             }
         )
         return 2
+    finally:
+        if observe is not None:
+            observe.finish()
 
 
 if __name__ == "__main__":

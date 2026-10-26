@@ -2,6 +2,7 @@ import logging
 import time
 
 from ..assets import MediaAsset, ParseResult
+from ..pipeline_shadow_capture import capture_enabled, capture_error, capture_legacy_sources
 from ..douyin_ultra_attempts import (
     DouyinUltraAttemptAccountingError,
     DouyinUltraAttemptRateLimitedError,
@@ -428,13 +429,28 @@ def enhance_xhs_ordinary_video(
                 "xhs_tiantian_full_server_media_bytes": 0,
             }
         )
-        return ParseResult(
+        result = ParseResult(
             platform=native_result.platform,
             post_type=native_result.post_type,
             base_filename=native_result.base_filename,
             assets=(provider_asset,),
             metadata=result_metadata,
         )
+        if capture_enabled():
+            try:
+                sources = {"items": PROVIDER_ID}
+                if metadata.get("title"):
+                    sources["title"] = "xhs_native"
+                if native_asset.cover_url:
+                    sources["cover"] = "xhs_native"
+                if selected["quality"]:
+                    sources["quality"] = PROVIDER_ID
+                if selected["size"]:
+                    sources["size"] = PROVIDER_ID
+                capture_legacy_sources(result, sources)
+            except Exception:
+                capture_error(PROVIDER_ID)
+        return result
     except Exception as error:
         reason = _failure_reason(error, attempt_controller)
         logger.info(

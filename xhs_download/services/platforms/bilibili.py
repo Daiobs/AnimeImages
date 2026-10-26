@@ -11,6 +11,7 @@ from requests.utils import requote_uri
 
 from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate, dedupe_candidates
+from ..pipeline_shadow_capture import capture_enabled, capture_error, capture_raw
 from ..common import (
     XhsDownloadError,
     XhsParseError,
@@ -342,6 +343,7 @@ def api_get_json(
     accepted_codes=(0,),
     retries=2,
     timeout_seconds=15,
+    observe=None,
 ):
     query = urlencode({key: value for key, value in params.items() if value is not None})
     _require_live_context(cookies)
@@ -384,6 +386,11 @@ def api_get_json(
     finally:
         response.close()
 
+    if observe is not None:
+        try:
+            observe(data)
+        except Exception:
+            capture_error("bilibili_native", referer)
     if not isinstance(data, dict):
         raise XhsParseError("哔哩哔哩接口返回格式错误")
     if data.get("code") not in accepted_codes:
@@ -662,6 +669,14 @@ class BilibiliAdapter(BasePlatformAdapter):
         cookies = anonymous_cookie_context(deadline_monotonic=deadline or None)
         view_params = build_view_params(bvid, aid)
         signed_params = signed_view_params(view_params, cookies, deadline_monotonic=deadline or None)
+        raw_view = []
+        capturing = capture_enabled()
+
+        def observe_view(payload):
+            raw_view[:] = [payload]
+            if not isinstance(payload, dict) or payload.get("code") != 0:
+                capture_raw("bilibili_native", {"view": payload}, source_url, page_url=page_url)
+
         view_data = api_get_json(
             "https://api.bilibili.com/x/web-interface/wbi/view" if signed_params is not None
             else "https://api.bilibili.com/x/web-interface/view",
@@ -669,26 +684,41 @@ class BilibiliAdapter(BasePlatformAdapter):
             referer=page_url,
             deadline_monotonic=deadline or None,
             cookies=cookies,
+            **({"observe": observe_view} if capturing else {}),
         )
         page = choose_page(view_data, page_number)
         if not page.get("cid"):
             raise XhsParseError("没有解析到哔哩哔哩视频 CID")
 
+        play_params = build_play_params(view_data, page)
+
+        def observe_play(payload):
+            if raw_view:
+                capture_raw("bilibili_native", {
+                    "view": raw_view[0], "playurl": payload,
+                    "selection": {"page": page_number, "playurl_params": play_params, "page_url": page_url},
+                }, source_url, page_url=page_url)
+            else:
+                capture_error("bilibili_native", source_url)
+
         play_data = api_get_json(
             "https://api.bilibili.com/x/player/playurl",
-            build_play_params(view_data, page),
+            play_params,
             referer=page_url,
             deadline_monotonic=deadline or None,
             cookies=cookies,
+            **({"observe": observe_play} if capturing else {}),
         )
         video_items = get_play_items(play_data)
         if not video_items:
+            play_params = build_dash_play_params(view_data, page)
             play_data = api_get_json(
                 "https://api.bilibili.com/x/player/playurl",
-                build_dash_play_params(view_data, page),
+                play_params,
                 referer=page_url,
                 deadline_monotonic=deadline or None,
                 cookies=cookies,
+                **({"observe": observe_play} if capturing else {}),
             )
             video_items = get_play_items(play_data)
         if not video_items:

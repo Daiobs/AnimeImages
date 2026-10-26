@@ -328,10 +328,11 @@ def _run_worker(source_url: str, note_id: str, *, deadline_monotonic: float) -> 
         parsehub_provider_timeout_seconds(),
     )
     try:
-        completed = run_external_command(
-            [python, str(_WORKER_PATH)],
+        from ..worker_raw_capture import run_with_capture
+        completed = run_with_capture(
+            run_external_command, [python, str(_WORKER_PATH)], request_payload,
+            PARSEHUB_XHS_PROVIDER_ID, source_url,
             timeout_seconds=timeout_seconds,
-            input_text=json.dumps(request_payload, ensure_ascii=True),
             max_stdout_bytes=min(
                 PARSEHUB_MAX_OUTPUT_BYTES,
                 max(

@@ -33,8 +33,10 @@ def _call(request, timeout):
     if not python.is_absolute() or not python.is_file():
         raise ParseHubBridgeError("unavailable")
     try:
-        result = run_external_command(
-            [str(python), "-I", "-B", str(WORKER)], input_text=json.dumps(request),
+        from .worker_raw_capture import run_with_capture
+        result = run_with_capture(
+            run_external_command, [str(python), "-I", "-B", str(WORKER)], request,
+            PROVIDER_ID, request.get("url", ""), enabled=request.get("action") == "parse",
             timeout_seconds=timeout, max_stdout_bytes=MAX_BYTES, max_stderr_bytes=65536)
         data = json.loads(result.stdout)
     except subprocess.TimeoutExpired:

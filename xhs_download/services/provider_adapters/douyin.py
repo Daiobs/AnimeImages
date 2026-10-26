@@ -1,7 +1,9 @@
-"""Pure Douyin aweme JSON mapping. No fetching, HTML parsing or URL upgrades."""
+"""Native Douyin fetching and pure aweme JSON mapping, without URL upgrades."""
 from dataclasses import dataclass, replace
 import json
+import math
 import re
+import time
 from types import MappingProxyType
 from urllib.parse import parse_qs, urldefrag, urlsplit
 
@@ -9,6 +11,7 @@ from ..pipeline import Failure, FailureKind, Fetchable, Item, Kind, Tracks, Vari
 from ..pipeline.model import PLACEHOLDER_LABELS, PLACEHOLDER_TITLES, SEGMENTED_PATH_SUFFIXES
 from ..work_caption import _TOPIC, work_caption_presentation
 from .failures import failure_for_code, failure_for_http
+from .base import Adapter
 from .service_facts import _browser_fetchable, _expiry, _host_matches, _host_policy, _number, _required_headers, _text, _tracks, _url
 
 
@@ -304,7 +307,19 @@ def _variant(resource, aliases, source, variant_id):
 
 
 def _map(raw, source):
-    identity = _source_identity(source)
+    if type(raw) is dict and "payload" in raw and "page_url" in raw:
+        identity = _source_identity(raw["page_url"])
+        try:
+            requested = _source_identity(source)
+        except ValueError as error:
+            if str(error) != "MISSING_SOURCE_IDENTITY" or urlsplit(source).hostname != "v.douyin.com":
+                raise
+        else:
+            if requested != identity:
+                raise ValueError("IDENTITY_MISMATCH")
+        raw = raw["payload"]
+    else:
+        identity = _source_identity(source)
     aweme = _aweme(raw, identity)
     if isinstance(aweme, Failure):
         return aweme
@@ -393,6 +408,27 @@ class DouyinMapper:
             kind = FailureKind.UNSUPPORTED if code == "UNSUPPORTED_SOURCE" else FailureKind.INVALID_RESULT
             return Failure(kind, "DOUYIN_" + code)
 
+
+class DouyinAdapter(DouyinMapper, Adapter[dict]):
+    def fetch(self, source_url, budget):
+        from ..pipeline_shadow_capture import collect_raw
+        from ..platforms.douyin import DouyinAdapter
+
+        if not math.isfinite(budget) or budget <= 0:
+            return Failure(FailureKind.TIMEOUT, "ADAPTER_BUDGET_EXHAUSTED")
+        failure = None
+        with collect_raw() as session:
+            try:
+                DouyinAdapter().parse_url(source_url, prefer_ultra_hd=False, timeout_seconds=budget,
+                                         deadline_monotonic=time.monotonic() + budget,
+                                         probe_media_metadata=False)
+            except Exception as error:
+                failure = failure_for_exception(error)
+        records = [record for record in session.records if record.provider == self.name]
+        if records:
+            record = records[-1]
+            return {"payload": record.raw, "page_url": record.source_url}
+        return failure or Failure(FailureKind.INVALID_RESULT, "DOUYIN_NO_RAW")
 
 def failure_for_exception(error):
     if isinstance(error, TimeoutError) or type(error).__name__ in {"Timeout", "ReadTimeout", "ConnectTimeout", "XhsProviderTimeoutError"}:

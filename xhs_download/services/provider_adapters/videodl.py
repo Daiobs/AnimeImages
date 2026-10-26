@@ -1,7 +1,8 @@
 """Pure mapping of VideoInfo objects observed before Worker normalization.
 
 The caller supplies the exact executed backend identity, never an auto selector.
-No videodl import, worker launch, raw capture, probing or fallback lives here.
+Mapping never imports videodl, probes, or falls back. Fetch selects one explicit
+backend through the existing controlled bridge.
 """
 import re
 from dataclasses import replace
@@ -19,6 +20,8 @@ from .service_facts import (
     _browser_fetchable, _expiry, _first, _host_policy, _number,
     _required_headers, _size, _source_id, _text, _tracks, _url,
 )
+from .base import Adapter
+from .worker_raw import captured_fetch, decode_raw
 
 
 NAME = "videodl_repo"
@@ -281,6 +284,24 @@ class VideodlMapper:
 
     def map(self, raw, source_url):
         try:
-            return _map(raw, source_url, self.backend_id, self.backend_category)
+            return _map(decode_raw(raw, objects=True), source_url, self.backend_id, self.backend_category)
         except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
             return Failure(FailureKind.INVALID_RESULT, "VIDEODL_INVALID_RAW")
+
+
+class VideodlAdapter(VideodlMapper, Adapter):
+    def __init__(self, *, backend_id, backend_category, external_sharing_confirmed=False):
+        super().__init__(backend_id=backend_id, backend_category=backend_category)
+        self.external_sharing_confirmed = external_sharing_confirmed
+
+    def fetch(self, source_url, budget):
+        from uuid import uuid4
+        from ..provider_lab.providers import run_videodl_repo
+        from ..provider_lab.videodl_control import VideodlExecutionOptions
+        options = VideodlExecutionOptions(mode="specific_backend", backend_ids=(self.backend_id,),
+            backend_category=self.backend_category, external_sharing_confirmed=self.external_sharing_confirmed)
+        return captured_fetch(self.name, source_url, budget,
+            lambda: run_videodl_repo(source=source_url, request_id=uuid4().hex, user_id=0,
+                                    options=options, timeout_seconds=budget),
+            prefix="VIDEODL", objects=True,
+            expected_metadata={"backend_id": self.backend_id, "backend_category": self.backend_category})

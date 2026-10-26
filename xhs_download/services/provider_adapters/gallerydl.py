@@ -13,6 +13,7 @@ from ..pipeline.model import PLACEHOLDER_LABELS, PLACEHOLDER_TITLES, SEGMENTED_P
 from ..request_context import _DEFAULT_MEDIA_HEADERS, inherit_request_context
 from ..work_caption import _TOPIC, work_caption_presentation
 from .failures import failure_for_http
+from .base import Adapter
 
 
 NAME = "gallery_dl_generic"
@@ -343,6 +344,27 @@ class GalleryDlMapper:
 
     def map(self, raw, source_url):
         try:
-            return _map(raw, source_url)
+            from .worker_raw import decode_raw
+            return _map(decode_raw(raw, many=True), source_url)
         except (TypeError, ValueError, KeyError, OverflowError):
             return Failure(FailureKind.INVALID_RESULT, "GALLERYDL_INVALID_RAW")
+
+
+class GalleryDlAdapter(GalleryDlMapper, Adapter):
+    def __init__(self, *, match=None, runner=None):
+        self.match = dict(match) if match is not None else None
+        self.runner = runner
+
+    def fetch(self, source_url, budget):
+        from ..upstream_matching import parse_upstream_url
+        from .worker_raw import captured_fetch
+        if self.match is None:
+            from ..platforms.gallerydl_generic import GalleryDlGenericProvider
+            return captured_fetch(self.name, source_url, budget,
+                lambda: GalleryDlGenericProvider(runner=self.runner).parse(source_url, timeout_seconds=budget),
+                prefix="GALLERYDL", many=True)
+        if self.match.get("provider_id") != self.name:
+            return Failure(FailureKind.INVALID_RESULT, "GALLERYDL_INVALID_MATCH")
+        return captured_fetch(self.name, source_url, budget,
+            lambda: parse_upstream_url(self.match, source_url, timeout_seconds=budget),
+            prefix="GALLERYDL", many=True)

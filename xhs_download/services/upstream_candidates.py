@@ -14,6 +14,7 @@ from django.core.cache import cache
 from .common import XhsDNSResolutionError, XhsParseError, validate_public_download_url
 from .provider_lab.contracts import ASSET_ROLES, MAX_RETAINED_CANDIDATES, exact_public_identity, safe_public_text
 from .request_context import inherit_request_context
+from .pipeline_shadow_capture import capture_legacy_candidate
 
 MAX_CANDIDATES = MAX_RETAINED_CANDIDATES
 MAX_CANDIDATE_BUNDLE_BYTES = 2 * 1024 * 1024
@@ -196,6 +197,7 @@ def issue_candidates(specs, *, work=None):
             records['_shared_work'] = shared_work
         records[key] = record
         candidates.append(public)
+        capture_legacy_candidate(record)
     if records:
         cache.set('upstream:candidate-bundle:' + bundle_id, records, timeout=TTL)
     return candidates

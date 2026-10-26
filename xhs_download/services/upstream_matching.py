@@ -79,8 +79,10 @@ def _executor(provider):
 
 def _call(command, request, timeout=5.0):
     try:
-        completed = run_external_command(
-            command, input_text=json.dumps(request), timeout_seconds=timeout,
+        from .worker_raw_capture import run_with_capture
+        completed = run_with_capture(
+            run_external_command, command, request, request.get("provider_id", ""), request.get("url", ""),
+            enabled=request.get("action") == "parse", timeout_seconds=timeout,
             max_stdout_bytes=4 * 1024 * 1024, max_stderr_bytes=64 * 1024,
         )
         response = json.loads(completed.stdout)

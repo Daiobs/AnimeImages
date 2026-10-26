@@ -7,6 +7,7 @@ from threading import Event
 import time
 
 from ..common import XhsParseError
+from ..pipeline_shadow_capture import capture_enabled, capture_error, capture_legacy_sources, submit_with_capture
 from ..quality_execution import execute_provider, service_configured
 
 SERVICE_ORDER = ("kukutool_generic", "tiantianjiexi_generic")
@@ -153,12 +154,14 @@ def parse_independent(url, *, native_parse, provider_ids, deadline_monotonic=Non
     work_deadline = deadline - min(.25, (deadline - started) * .2)
     stop_waiting = Event()
     service_started = Event()
+    service_provider = ""
 
     def has_media(result):
         return result is not None and bool(
             result.assets or (result.metadata or {}).get("upstream_candidates"))
 
     def service_parse():
+        nonlocal service_provider
         for provider in providers:
             remaining = work_deadline - time.monotonic()
             # _execute_service clamps smaller timeouts to 100ms. Do not start
@@ -170,6 +173,7 @@ def parse_independent(url, *, native_parse, provider_ids, deadline_monotonic=Non
                 result = execute_provider(provider, url, timeout_seconds=min(20, remaining),
                                           service_authorized=True)
                 if has_media(result):
+                    service_provider = provider
                     return result
             except Exception:
                 # Never expose signed URLs or service exceptions to the public page.
@@ -177,8 +181,8 @@ def parse_independent(url, *, native_parse, provider_ids, deadline_monotonic=Non
         return None
 
     executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="xhs-independent")
-    native = executor.submit(native_parse, work_deadline)
-    service = executor.submit(service_parse)
+    native = submit_with_capture(executor, native_parse, work_deadline)
+    service = submit_with_capture(executor, service_parse)
     try:
         done, _ = wait((native, service), timeout=max(0, work_deadline - time.monotonic()))
         stop_waiting.set()
@@ -215,12 +219,25 @@ def parse_independent(url, *, native_parse, provider_ids, deadline_monotonic=Non
                     item.get("media_type") == "video"
                     for item in metadata.get("upstream_candidates", [])
                 )
-            return replace(selected, metadata={**metadata,
+            result = replace(selected, metadata={**metadata,
                 "xhs_independent_source": "service" if selected is service_result else "native",
                 "xhs_native_status": "failed" if native_error else "completed" if native in done else "deadline",
                 "xhs_service_status": ("candidates" if service_result else
                     "not_started_budget" if not service_started.is_set() else
                     "unavailable" if service in done else "deadline")})
+            if capture_enabled() and selected is native_result and service_result is not None:
+                try:
+                    provider = service_provider
+                    if provider in SERVICE_ORDER and metadata.get("upstream_candidates"):
+                        sources = {"items": "xhs_native", "candidates": provider}
+                        if metadata.get("title"):
+                            sources["title"] = "xhs_native"
+                        if any(asset.cover_url for asset in selected.assets):
+                            sources["cover"] = "xhs_native"
+                        capture_legacy_sources(result, sources)
+                except Exception:
+                    capture_error("xhs_native")
+            return result
         if native_error is not None:
             raise native_error
         if native in done and service in done:

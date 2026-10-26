@@ -21,6 +21,7 @@ from django.core.cache import cache
 from django.db import connections
 
 from ..candidates import MediaCandidate
+from ..pipeline_shadow_capture import capture_raw, submit_with_capture
 from ..common import XhsProviderTimeoutError, validate_external_url, validate_public_url
 from ..douyin_ultra_attempts import (
     DouyinUltraAttemptAccountingError,
@@ -135,7 +136,7 @@ def submit_provider_task(
     if not capacity.acquire(blocking=False):
         return None
     try:
-        future = get_provider_executor(name, max_workers).submit(run_provider_task, callback, *args)
+        future = submit_with_capture(get_provider_executor(name, max_workers), run_provider_task, callback, *args)
     except Exception:
         capacity.release()
         raise
@@ -901,6 +902,8 @@ def run_kukutool_helper(
     if len(process.stdout) > 10 * 1024 * 1024:
         raise ValueError("KuKuTool response is too large")
     payload = json.loads(process.stdout)
+    capture_raw("kukutool_generic", payload.get("result", payload) if isinstance(payload, dict) else payload,
+                f"https://www.douyin.com/video/{aweme_id}", transport="helper")
     if isinstance(payload, dict) and "result" in payload:
         profile = payload.get("profile")
         if valid_kukutool_profile(profile) and profile_cache_ttl_seconds > 0:
@@ -1030,6 +1033,8 @@ def run_kukutool_sidecar(
         payload = response.json()
     except ValueError as error:
         raise ValueError("sidecar returned invalid JSON") from error
+    capture_raw("kukutool_generic", payload, f"https://www.douyin.com/video/{aweme_id}",
+                transport="sidecar", http_status=response.status_code)
     if not response.ok:
         message = ""
         if isinstance(payload, dict):
@@ -1145,6 +1150,8 @@ def run_kukutool_url_helper(
     if len(process.stdout) > 10 * 1024 * 1024:
         raise ValueError("KuKuTool response is too large")
     payload = json.loads(process.stdout)
+    capture_raw("kukutool_generic", payload.get("result", payload) if isinstance(payload, dict) else payload,
+                request_url, transport="url_helper")
     if isinstance(payload, dict) and "result" in payload:
         profile = payload.get("profile")
         if valid_kukutool_profile(profile) and profile_cache_ttl_seconds > 0:

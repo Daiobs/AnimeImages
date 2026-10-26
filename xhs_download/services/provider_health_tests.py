@@ -59,6 +59,8 @@ from .provider_lab.videodl_policy import (
     backend_policy,
 )
 from .registry import parse_media_page
+from .pipeline_shadow import health_shadow
+from .pipeline_shadow_capture import capture_result
 from .youtube_merge import build_youtube_merge_plan, get_youtube_merge_health
 from .youtube_merge import YOUTUBE_PAGE_HOST_SUFFIXES
 
@@ -528,6 +530,7 @@ def _validate_current_parse_result(result, *, platform, media_type) -> str:
     return ""
 
 
+@health_shadow
 def execute_provider_health_test(context, item):
     started_at = time.monotonic()
     runtime_setting = context.runtime_setting or ProviderRuntimeSetting.load()
@@ -536,8 +539,10 @@ def execute_provider_health_test(context, item):
     test_url = provider_test_url_for(item, test_setting)
     provider = item.get("provider", "")
     download_smoke_details = None
+    result = None
 
     def record(status, error_type="", error_code="", error_message=""):
+        capture_result(result)
         return provider_health_test_record(
             context,
             item,

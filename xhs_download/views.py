@@ -27,6 +27,8 @@ from django.views.decorators.http import require_GET, require_POST
 from download_console.models import DownloadRuntimeSetting
 from djangoProject.health import get_runtime_readiness
 from .services.download_audit import download_attempts, operational_download_logs
+from .services.pipeline_shadow import public_shadow
+from .services.pipeline_shadow_capture import capture_result
 
 from .models import (
     DownloadAuditEvent,
@@ -3839,7 +3841,7 @@ def build_result_display_context(
                 or ""
             )[:20]
         )
-    return {
+    display = {
         "platform": result.platform,
         "platform_name": (
             result_metadata.get("source_platform_name")
@@ -3884,6 +3886,8 @@ def build_result_display_context(
         "unexpanded_scope": result_metadata.get("unexpanded_scope", {}),
         "candidates_truncated": result_metadata.get("candidates_truncated", 0),
     }
+    capture_result(result, display)
+    return display
 
 
 def query_uses_third_party_provider(query):
@@ -4473,6 +4477,7 @@ def apply_search_result_to_context(
         context["error_message"] = "没有解析到图片或视频。"
 
 
+@public_shadow
 def build_search_results_context(request, platform_key="home"):
     query = request.GET.get("q", "").strip()
     third_party_gate = {}
@@ -5124,6 +5129,7 @@ def douyin_continuation_view(request):
     return response
 
 
+@public_shadow
 def build_batch_result_row(
     request,
     source_text,

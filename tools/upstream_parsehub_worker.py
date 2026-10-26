@@ -18,10 +18,10 @@ from urllib.parse import urljoin, urlsplit
 from unittest.mock import patch
 
 try:
-    from .upstream_match_worker import install_network_guard, safe_error, validate_url, validate_media_url
+    from .upstream_match_worker import install_network_guard, raw_observer, safe_error, validate_url, validate_media_url
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from upstream_match_worker import install_network_guard, safe_error, validate_url, validate_media_url
+    from upstream_match_worker import install_network_guard, raw_observer, safe_error, validate_url, validate_media_url
 
 PIN = "144260f4349c5bb57415f7555a572fcd48c3b8ba"
 VERSION = "2.2.0"
@@ -680,10 +680,13 @@ def install_execution_guard(budget):
 
 def main():
     stage = "request"
+    observe = None
     try:
         request = json.loads(sys.stdin.read(8193))
-        if not isinstance(request, dict) or set(request) - {"action", "url", "match", "timeout_seconds"}:
+        if not isinstance(request, dict) or set(request) - {"action", "url", "match", "timeout_seconds", "_shadow_capture_fd"}:
             raise ValueError("invalid_request")
+        if request.get("action") == "parse":
+            observe = raw_observer(request)
         for key in tuple(os.environ):
             if key not in {"PATH", "HOME", "LANG", "TMPDIR"}:
                 os.environ.pop(key, None)
@@ -729,7 +732,8 @@ def main():
             install_execution_guard(budget)
             stage = "parse"
             with open(os.devnull, "w") as silent, contextlib.redirect_stdout(silent), contextlib.redirect_stderr(silent):
-                payload = asyncio.run(parse(source, timeout, import_parser(request["match"]["extractor_id"]), budget))
+                payload = asyncio.run(parse(source, timeout, import_parser(request["match"]["extractor_id"]), budget,
+                                            **({"observe": observe} if observe is not None else {})))
         else:
             raise ValueError("invalid_request")
         output = json.dumps({"ok": True, "payload": payload})
@@ -738,6 +742,8 @@ def main():
     except Exception as error:
         output = json.dumps(failure_summary(error, stage))
     sys.stdout.write(output)
+    if observe is not None:
+        observe.finish()
 
 
 if __name__ == "__main__":

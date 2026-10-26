@@ -3,6 +3,7 @@
 from datetime import date, timedelta
 from unittest.mock import patch
 
+from django import forms
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
@@ -17,6 +18,7 @@ from download_console.models import DownloadRuntimeSetting
 from .models import (
     BatchParseRuntimeSetting,
     PipelineShadowDailyCount,
+    ProviderAdminAuditLog,
     ProviderHealthTestRun,
     ProviderHealthTestSetting,
     ProviderRuntimeSetting,
@@ -186,6 +188,70 @@ class ShadowSettingAdminTests(ShadowStorageTestCase):
     @staticmethod
     def setting_snapshot(setting):
         return ProviderHealthTestSetting.objects.values().get(pk=setting.pk)
+
+    def test_toggle_uses_plain_boolean_form_without_model_validation(self):
+        model_admin = admin.site._registry[ProviderHealthTestSetting]
+        form_class = model_admin.get_form(self.request(self.superuser))
+        self.assertTrue(issubclass(form_class, forms.Form))
+        self.assertFalse(issubclass(form_class, forms.ModelForm))
+        form = form_class({"public_shadow_enabled": "on", "videodl_backend_id": "UnknownBackend"})
+        with patch.object(ProviderHealthTestSetting, "clean", side_effect=AssertionError("hidden model validation")):
+            self.assertTrue(form.is_valid())
+        self.assertEqual(form.cleaned_data, {"public_shadow_enabled": True})
+
+    def test_toggle_audits_only_boolean_changes_with_actor_and_no_hidden_values(self):
+        setting = ProviderHealthTestSetting.objects.create(
+            videodl_backend_id="UnknownBackend", douyin_url="https://example.test/private-url",
+            email_recipients=["private-recipient@example.test"],
+        )
+        url = admin_url(ProviderHealthTestSetting, "change", setting)
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.assertFalse(ProviderAdminAuditLog.objects.exists())
+        for payload, expected in (({}, False), ({"public_shadow_enabled": "on"}, True),
+                                  ({"public_shadow_enabled": "on"}, True), ({}, False)):
+            response = self.client.post(url, {"_save": "Save", **payload})
+            self.assertEqual(response.status_code, 302)
+            setting.refresh_from_db()
+            self.assertIs(setting.public_shadow_enabled, expected)
+        audits = list(ProviderAdminAuditLog.objects.order_by("pk"))
+        self.assertEqual(len(audits), 2)
+        for audit, old, new in zip(audits, (False, True), (True, False)):
+            self.assertEqual(audit.action, "provider_shadow_update")
+            self.assertEqual(audit.changed_fields, ["public_shadow_enabled"])
+            self.assertEqual(audit.before_snapshot, {"public_shadow_enabled": old})
+            self.assertEqual(audit.after_snapshot, {"public_shadow_enabled": new})
+            self.assertEqual(audit.actor_id, self.superuser.pk)
+            self.assertEqual(audit.actor_username, self.superuser.username)
+            self.assertTrue(audit.request_id)
+            serialized = repr((audit.before_snapshot, audit.after_snapshot, audit.changed_fields))
+            for hidden in ("private-url", "private-recipient", "UnknownBackend"):
+                self.assertNotIn(hidden, serialized)
+
+    def test_initial_explicit_post_is_audited_without_default_configuration(self):
+        url = admin_url(ProviderHealthTestSetting, "add")
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.assertFalse(ProviderAdminAuditLog.objects.exists())
+        self.assertEqual(self.client.post(url, {"_save": "Save"}).status_code, 302)
+        audit = ProviderAdminAuditLog.objects.get()
+        self.assertEqual(audit.before_snapshot, {})
+        self.assertEqual(audit.after_snapshot, {"public_shadow_enabled": False})
+        self.assertEqual(audit.changed_fields, ["public_shadow_enabled"])
+
+    def test_audit_uses_current_boolean_not_stale_admin_object(self):
+        setting = ProviderHealthTestSetting.objects.create()
+        stale = ProviderHealthTestSetting.objects.get(pk=setting.pk)
+        ProviderHealthTestSetting.objects.filter(pk=setting.pk).update(
+            public_shadow_enabled=True, douyin_url="https://example.test/concurrent",
+        )
+        model_admin = admin.site._registry[ProviderHealthTestSetting]
+        with patch.object(model_admin, "get_object", return_value=stale):
+            response = self.client.post(admin_url(ProviderHealthTestSetting, "change", setting), {"_save": "Save"})
+        self.assertEqual(response.status_code, 302)
+        audit = ProviderAdminAuditLog.objects.get()
+        self.assertEqual(audit.before_snapshot, {"public_shadow_enabled": True})
+        self.assertEqual(audit.after_snapshot, {"public_shadow_enabled": False})
+        setting.refresh_from_db()
+        self.assertEqual(setting.douyin_url, "https://example.test/concurrent")
 
     def test_initial_add_uses_change_permission_ignores_hidden_fields_and_is_singleton(self):
         self.client.force_login(self.staff)

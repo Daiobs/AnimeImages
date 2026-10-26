@@ -20,6 +20,10 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from ..assets import MediaAsset, ParseResult
+from ..pipeline_shadow_capture import (
+    bind_capture, capture_enabled, capture_error, capture_legacy_sources,
+    current_capture, submit_with_capture,
+)
 from ..candidates import MediaCandidate
 from ..common import XhsProviderTimeoutError, clean_filename, validate_external_url
 from ..diagnostics import select_best_media_candidate
@@ -663,13 +667,27 @@ def build_tikhub_provider_response(data):
 def with_parse_metadata(result, **metadata):
     if not result:
         return result
-    return replace(
+    updated = replace(
         result,
         metadata={
             **(result.metadata or {}),
             **metadata,
         },
     )
+    return inherit_legacy_sources(updated, result)
+
+
+def inherit_legacy_sources(result, original):
+    try:
+        session = current_capture()
+        if session is not None:
+            with session._lock:
+                sources = session.legacy_sources.get(id(original))
+            if sources:
+                capture_legacy_sources(result, sources)
+    except Exception:
+        capture_error("douyin_native")
+    return result
 
 
 def get_reference_result(adapter, context, *, allow_network=True):
@@ -965,7 +983,7 @@ def build_external_parse_result(
                 "reference_metadata" if reference_title else "provider_payload"
             ),
         }
-    return ParseResult(
+    result = ParseResult(
         platform=adapter.platform_id,
         post_type="video",
         base_filename=base_filename,
@@ -985,6 +1003,23 @@ def build_external_parse_result(
         ),
         metadata=result_metadata,
     )
+    if capture_enabled():
+        try:
+            provider = {"kukutool": "kukutool_generic", "tiantianjiexi": "tiantianjiexi_generic"}.get(provider_name)
+            if provider:
+                sources = {"items": provider}
+                if display_title:
+                    sources["title"] = "douyin_native" if reference_title else provider
+                if resolved_cover_url:
+                    sources["cover"] = "douyin_native" if reference_cover_url else provider
+                if candidate.quality_label:
+                    sources["quality"] = provider
+                if candidate.size_bytes:
+                    sources["size"] = provider
+                capture_legacy_sources(result, sources)
+        except Exception:
+            capture_error("douyin_native")
+    return result
 
 
 def attach_douyin_service_picker(result, *, adapter, context, candidates, payload=None):
@@ -1031,10 +1066,11 @@ def attach_douyin_service_picker(result, *, adapter, context, candidates, payloa
                      '_dedicated_default': is_default})
     material = ServiceFormatPayload({**(payload or {}), 'title': work_title,
                                     'cover': main.cover_url, '_service_format_rows': rows})
-    return attach_service_picker(result, payload=material, provider=main.provider,
+    attached = attach_service_picker(result, payload=material, provider=main.provider,
                                  source_url=context.canonical_url, binding_assets=tuple(assets.values()),
                                  match={'provider_id': main.provider, 'extractor_id': 'douyin:' + main.provider,
                                         'version': 'douyin-service-picker-v1', 'label': main.provider})
+    return inherit_legacy_sources(attached, result)
 
 
 class DouyinTianTianJieXiProvider(DouyinResultProvider):
@@ -1544,12 +1580,12 @@ class DouyinTianTianFirstProvider(DouyinResultProvider):
 
         def capture(future, name, stage_context):
             if continuation is not None:
-                future.add_done_callback(lambda done: continuation.capture_future(
+                future.add_done_callback(bind_capture(lambda done: continuation.capture_future(
                     done, provider_name=name, score_result=scorer.result_score,
                     # INV-01: any service result may end the wait; none is ranked against another.
                     is_strong_result=lambda result: True,
                     prepare_result=lambda result: accepted_result(result, stage_context),
-                ))
+                )))
 
         def submit_service(provider, stage_context):
             if controller is not None:
@@ -1944,7 +1980,7 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
             native_attempt_observation,
         )
         if native_future is None:
-            native_future = DOUYIN_ULTRA_EXECUTOR.submit(
+            native_future = submit_with_capture(DOUYIN_ULTRA_EXECUTOR,
                 get_fast_native_result,
                 adapter,
                 context,
@@ -1972,7 +2008,7 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
             )
 
         future_to_provider = {
-            DOUYIN_ULTRA_EXECUTOR.submit(provider.parse, adapter, context): provider
+            submit_with_capture(DOUYIN_ULTRA_EXECUTOR, provider.parse, adapter, context): provider
             for provider in enabled_providers
         }
         if continuation:
@@ -1982,7 +2018,7 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                     "name",
                     type(provider).__name__,
                 )
-                future.add_done_callback(
+                future.add_done_callback(bind_capture(
                     lambda completed_future, name=provider_name: (
                         continuation.capture_future(
                             completed_future,
@@ -1998,7 +2034,7 @@ class DouyinUltraRaceProvider(DouyinResultProvider):
                             ),
                         )
                     )
-                )
+                ))
         last_timeout_error = None
         best_result = None
         best_provider_name = ""
@@ -2654,7 +2690,7 @@ class DouyinTikHubProvider(DouyinResultProvider):
             return cached, None
 
         native_attempt_observation = {}
-        native_future = DOUYIN_ULTRA_EXECUTOR.submit(
+        native_future = submit_with_capture(DOUYIN_ULTRA_EXECUTOR,
             get_fast_native_result,
             adapter,
             context,
@@ -2664,7 +2700,7 @@ class DouyinTikHubProvider(DouyinResultProvider):
             ),
             native_attempt_observation,
         )
-        tikhub_future = DOUYIN_ULTRA_EXECUTOR.submit(
+        tikhub_future = submit_with_capture(DOUYIN_ULTRA_EXECUTOR,
             self.resolve_validated_candidate,
             adapter,
             context,
@@ -2774,6 +2810,8 @@ class DouyinMobileFeedProvider(DouyinResultProvider):
         request_options = {
             "probe_video_candidates": bool(context.prefer_ultra_hd and context.probe_media_metadata),
         }
+        if capture_enabled():
+            request_options["capture_source_url"] = context.resolved_url or context.canonical_url
         if context.deadline_monotonic:
             remaining = context.deadline_monotonic - monotonic()
             if remaining <= 0:
@@ -2797,6 +2835,8 @@ class DouyinMobileShareProvider(DouyinResultProvider):
         request_options = {
             "probe_video_candidates": bool(context.prefer_ultra_hd and context.probe_media_metadata),
         }
+        if capture_enabled():
+            request_options["capture_source_url"] = context.resolved_url or context.canonical_url
         if context.deadline_monotonic:
             remaining = context.deadline_monotonic - monotonic()
             if remaining <= 0:

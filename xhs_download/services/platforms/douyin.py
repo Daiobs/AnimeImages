@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from django.conf import settings
 
 from ..assets import MediaAsset, ParseResult
+from ..pipeline_shadow_capture import capture_enabled, capture_raw
 from ..candidates import MediaCandidate, rank_media_candidates
 from ..common import (
     XhsProviderTimeoutError,
@@ -668,6 +669,8 @@ class DouyinAdapter(BasePlatformAdapter):
     ):
         aweme = find_aweme_in_html(html)
         if aweme:
+            capture_raw("douyin_native", aweme, source_url or build_douyin_canonical_url(aweme.get("aweme_id")),
+                        page_url=source_url or "", transport="page")
             return self.parse_aweme(
                 aweme,
                 probe_video_candidates=probe_video_candidates,
@@ -770,6 +773,7 @@ class DouyinAdapter(BasePlatformAdapter):
         request_timeout=15,
         request_retries=2,
         request_deadline=0,
+        capture_source_url="",
     ):
         feed_url = build_mobile_feed_url(aweme_id)
         if not feed_url:
@@ -786,6 +790,9 @@ class DouyinAdapter(BasePlatformAdapter):
         )
         try:
             data = response.json()
+            if capture_enabled():
+                source = capture_source_url if extract_aweme_id(capture_source_url) else build_douyin_canonical_url(aweme_id)
+                capture_raw("douyin_native", data, source, page_url=capture_source_url, transport="mobile_feed")
         finally:
             response.close()
 
@@ -798,12 +805,14 @@ class DouyinAdapter(BasePlatformAdapter):
         request_timeout=15,
         request_retries=2,
         request_deadline=0,
+        capture_source_url="",
     ):
         aweme = self.fetch_mobile_feed_aweme(
             aweme_id,
             request_timeout=request_timeout,
             request_retries=request_retries,
             request_deadline=request_deadline,
+            **({"capture_source_url": capture_source_url} if capture_source_url else {}),
         )
         if not aweme:
             return None
@@ -820,6 +829,7 @@ class DouyinAdapter(BasePlatformAdapter):
         request_timeout=15,
         request_retries=2,
         request_deadline=0,
+        capture_source_url="",
     ):
         for share_url in build_mobile_share_urls(aweme_id):
             try:
@@ -835,6 +845,10 @@ class DouyinAdapter(BasePlatformAdapter):
                 try:
                     aweme = find_aweme_in_html(response.text)
                     if aweme:
+                        if capture_enabled():
+                            source = capture_source_url if extract_aweme_id(capture_source_url) else build_douyin_canonical_url(aweme_id)
+                            capture_raw("douyin_native", aweme, source,
+                                        page_url=response.url or share_url, transport="mobile_share")
                         return aweme
                 finally:
                     response.close()
@@ -849,12 +863,14 @@ class DouyinAdapter(BasePlatformAdapter):
         request_timeout=15,
         request_retries=2,
         request_deadline=0,
+        capture_source_url="",
     ):
         aweme = self.fetch_mobile_share_aweme(
             aweme_id,
             request_timeout=request_timeout,
             request_retries=request_retries,
             request_deadline=request_deadline,
+            **({"capture_source_url": capture_source_url} if capture_source_url else {}),
         )
         if aweme:
             result = self.parse_aweme(
