@@ -383,6 +383,7 @@ class MailMigrationTests(TransactionTestCase):
         old = [("xhs_download", "0025_provider_daily_validation")]
         new = [("xhs_download", "0026_mail_channel_setting")]
         executor = MigrationExecutor(connection)
+        initial_leaf_nodes = executor.loader.graph.leaf_nodes()
         try:
             executor.migrate(old)
             model = executor.loader.project_state(old).apps.get_model("xhs_download", "ProviderHealthTestSetting")
@@ -399,4 +400,4 @@ class MailMigrationTests(TransactionTestCase):
             executor.migrate(old)
             self.assertNotIn("xhs_download_mailchannelsetting", connection.introspection.table_names())
         finally:
-            MigrationExecutor(connection).migrate(new)
+            MigrationExecutor(connection).migrate(initial_leaf_nodes)
