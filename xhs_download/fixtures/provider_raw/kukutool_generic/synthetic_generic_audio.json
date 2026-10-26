@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "provider": "kukutool_generic",
+  "platform": "douyin",
+  "source_url": "https://www.douyin.com/video/7000000000000000003",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "title": "Synthetic video and soundtrack",
+    "type": "video",
+    "cover": "https://p3.douyinpic.com/synthetic/audio-cover.jpg",
+    "url": "https://v26-default.365yg.com/synthetic/video.mp4",
+    "videos": [{
+      "url": "https://v26-default.365yg.com/synthetic/video.mp4",
+      "video_fullinfo": [{
+        "type": "720P",
+        "size": 1000000,
+        "url": "https://v26-default.365yg.com/synthetic/video.mp4"
+      }]
+    }],
+    "pics": [],
+    "audios": [
+      "https://sf1-cdn-tos.douyinstatic.com/synthetic/soundtrack.mp3",
+      {
+        "url": "https://sf1-cdn-tos.douyinstatic.com/synthetic/alternate.m4a",
+        "size": 120000,
+        "type": "audio"
+      }
+    ]
+  }
+}

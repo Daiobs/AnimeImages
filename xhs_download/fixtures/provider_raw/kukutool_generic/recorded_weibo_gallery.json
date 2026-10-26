@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "provider": "kukutool_generic",
+  "platform": "weibo",
+  "source_url": "https://weibo.com/2142312651/RkWevk3D3",
+  "provenance": {
+    "kind": "recorded",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "title": "#\u8fd9\u5f88\u5c3c\u5eb7Z63#\ud83c\udf0a\u6668\u5149\u6f2b\u8fc7\u5a01\u6d77\u7ef5\u5ef6\u7684\u6d77\u5cb8\u7ebf\uff0c\u5c71\u6d77\u76f8\u62e5\u95f4\uff0c\u57ce\u5e02\u8f6e\u5ed3\u6e10\u6e10\u6e05\u6670\u3002 \n\n\ud83c\udfe1\u7cbe\u81f4\u6d6a\u6f2b\u7684\u8f7b\u76d0\u98ce\u5c0f\u697c\u987a\u5761\u5ef6\u4f38\u81f3\u6d77\u8fb9\uff0c\u843d\u65e5\u4f59\u6656\u6d12\u6ee1\u6728\u6808\u6865\uff0c\u4e3a\u57ce\u5821\u4e0e\u6d6a\u82b1\u67d3\u4e0a\u4e00\u5c42\u68a6\u5e7b\u7684\u7c89\u6a59\u8272\u3002\ud83d\udea2\u706f\u5854\u4e0b\u6d77\u9e25\u60ca\u8d77\uff0c\u8fdc\u65b9\u7684\u6401\u6d45\u5de8\u8f6e\u9759\u7acb\u5728\u66ae\u8272\u6df1\u5904\u3002\ud83c\udf43\u54b8\u6da6\u7684\u6d77\u98ce\u7a7f\u8fc7\u6797\u836b\u5927\u9053\uff0c\u62c2\u8fc7\u6cbf\u9014\u98ce\u666f\uff0c\u4e5f\u5439\u6563\u4e00\u8def\u75b2\u60eb\u3002\n\n\ud83c\udf05\u6cbf\u7740\u6ee8\u6d77\u6b65\u9053\u60a0\u7136\u6f2b\u6b65\uff0c\u770b\u5c71\u6d77\u76f8\u4f9d\uff0c\u4e5f\u770b\u57ce\u5e02\u70df\u706b\u3002\u5a01\u6d77\u7684\u60ec\u610f\u4e0e\u6cbb\u6108\uff0c\u4fbf\u85cf\u5728\u8fd9\u4e00\u7a0b\u6d77\u98ce\u4e0e\u665a\u971e\u4e2d\u3002\n\n\ud83d\udc64\uff1a\u6444\u5f71\u5e08 \u732b\u732b\u5934\n\ud83d\udcf7\uff1a\u5c3c\u5eb7Z6\u2162+\u5c3c\u514b\u5c14 Z 14-30mm f/4 S\u3001\u5c3c\u514b\u5c14 Z 24-120mm f/4 S\n\ud83c\udfa8\uff1a#\u5c3c\u5eb7\u4e91\u521b#\u8272\u5f69\u65b9\u6848\uff1aMOSS by Nagisa Ichikawahttp://t.cn/AXWVhccl\u3001Nature by Linkshttp://t.cn/AXNfYJJe\u3001Pale Tale by Yurihttp://t.cn/AXWVhccW\u3001Summertime by Marcello Zerlettihttp://t.cn/AX7zxuZl\u3001Warm Street by Benhttp://t.cn/AXWVhccY",
+    "type": "images",
+    "videos": [],
+    "pics": [
+      "https://data.hellotik.app/v1/download/image?token=REDACTED",
+      "https://data.hellotik.app/v1/download/image?token=REDACTED",
+      "https://data.hellotik.app/v1/download/image?token=REDACTED",
+      "https://data.hellotik.app/v1/download/image?token=REDACTED",
+      "https://data.hellotik.app/v1/download/image?token=REDACTED",
+      "https://data.hellotik.app/v1/download/image?token=REDACTED",
+      "https://data.hellotik.app/v1/download/image?token=REDACTED",
+      "https://data.hellotik.app/v1/download/image?token=REDACTED",
+      "https://data.hellotik.app/v1/download/image?token=REDACTED"
+    ]
+  }
+}
