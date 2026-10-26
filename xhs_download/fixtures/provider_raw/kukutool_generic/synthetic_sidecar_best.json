@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "provider": "kukutool_generic",
+  "platform": "douyin",
+  "source_url": "https://www.douyin.com/video/7000000000000000001",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "contract_version": "douyin-source-resolver.v1",
+    "status": "ok",
+    "cached": true,
+    "cache": {"hit": true, "coalesced": false},
+    "timing": {"stage": "cache_hit", "total_ms": 12},
+    "best": {
+      "type": "\u8d85\u9ad8\u6e05",
+      "size": 70481987,
+      "url": "https://v26-default.365yg.com/synthetic/source/?br=53031&quality_type=13&sign=REDACTED",
+      "final_url": "https://v26-default.365yg.com/synthetic/final/video/tos/cn/bucket/source-final/",
+      "bitrate": 53031000,
+      "quality_score": 13,
+      "object_key": "video/tos/cn/bucket/synthetic-source"
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "provider": "kukutool_generic",
+  "platform": "douyin",
+  "source_url": "https://www.douyin.com/video/7000000000000000002",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "contract_version": "douyin-source-resolver.v1",
+    "status": "ok",
+    "title": "Sidecar fixture",
+    "cover": "https://p3.douyinpic.com/synthetic/cover.jpg",
+    "cached": false,
+    "cache": {"hit": false, "coalesced": false},
+    "timing": {"stage": "resolved", "total_ms": 15},
+    "best": {
+      "type": "1080P+",
+      "size_bytes": 2000000,
+      "url": "https://v26-default.365yg.com/synthetic/high.mp4",
+      "bit_rate": 3000000
+    },
+    "resources": [
+      {
+        "type": "4K",
+        "verified_size": 4000000,
+        "url": "https://v26-default.365yg.com/synthetic/four-k.mp4?br=99999&quality_type=99"
+      },
+      {
+        "type": "1080P+",
+        "size_bytes": null,
+        "url": "https://v26-default.365yg.com/synthetic/high.mp4"
+      },
+      {
+        "quality_label": "\u539f\u753b",
+        "size": 5000000,
+        "url": "https://v26-default.365yg.com/synthetic/original.mp4",
+        "headers": {
+          "User-Agent": "Synthetic fixture client",
+          "Referer": "https://www.douyin.com/",
+          "Origin": "https://www.douyin.com",
+          "Accept": "*/*",
+          "X-Fixture-Token": "REDACTED"
+        }
+      },
+      {
+        "quality_label": "\u8d85\u9ad8\u6e05\u6e90",
+        "url": "https://v26-default.365yg.com/synthetic/ultra.mp4",
+        "size": null
+      }
+    ]
+  }
+}
