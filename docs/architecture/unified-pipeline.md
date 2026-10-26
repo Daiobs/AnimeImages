@@ -1,6 +1,6 @@
 # 统一管线契约 v1
 
-Human 于 2026-10-25 确认，同日确认 D-01～D-04 修订（第 9 节）。修改本文件属于 L2；Agent 只能引用，不得自行增删改。
+Human 于 2026-10-25 确认，同日确认 D-01～D-04 修订（第 9 节）；2026-10-26 按 INV-03 更正了常规请求头的示例。修改本文件属于 L2；Agent 只能引用，不得自行增删改。
 
 - **基线：** `baseline/2026-10-25`，即 `834d331`。基线之后冻结补丁 PR，只修复相对基线的回归，而且必须附上失败的冒烟测试或契约测试作为证据（规则见 `AGENTS.md`）。
 - **内核：** `xhs_download/services/pipeline/` 实现本契约的模型、路由策略、交付规则和文件名，暂未接入任何请求路径。
@@ -79,7 +79,7 @@ Human 于 2026-10-25 确认，同日确认 D-01～D-04 修订（第 9 节）。�
 | `size_bytes`、`size_exact` | 大小，以及它是精确值还是估计值 |
 | `tracks` | `unknown`（默认）、`av`（音视频完整）、`video_only` 或 `audio_only`。上游或平台没有说明时就是 `unknown`；图片不适用，保持默认值 |
 | `merge_with` | `video_only` 时要合并的音频变体，必须是同一作品里的 `audio_only` 变体 |
-| `required_headers` | 下载时必须带的请求头名称，例如 Referer、Cookie。值只保存在服务端，不下发给浏览器 |
+| `required_headers` | 下载时必须带的请求头名称，例如 Cookie、鉴权头或上游指定的自定义请求头。User-Agent、Accept、Referer、Origin 等常规请求头不算（INV-03）。值只保存在服务端，不下发给浏览器 |
 | `browser_fetchable` | `true`、`false` 或 `unknown`：浏览器能否不带特殊请求头直接读取（包括 CORS） |
 | `drm` | 上游标明有 DRM 时为 `true`，默认 `false` |
 | `segmented` | 由分片清单或分片组成时为 `true`（HLS、DASH 分片等），默认 `false` |
@@ -192,7 +192,7 @@ parse(source_url, budget) → Work | Failure
 
 - 规则里不出现平台名、Provider 名或资源 ID 前缀。
 - `tracks = unknown` 按完整文件处理：不命中第 1 条，按第 2～7 条交付。这与现状一致，只有明确分轨的资源才在服务端合并。
-- 现有的例外都由事实推出：B 站需要 Referer，命中第 2 条；YouTube 高清音视频分离，命中第 1 条。
+- 现有的例外都由事实推出：需要 Cookie 或鉴权的资源命中第 2 条；YouTube 高清音视频分离，命中第 1 条。B 站不因平台或常规的 Referer 一概走服务端（INV-03）。
 - `server_attachment` 和 `server_merge` 计入现有的下载额度。
 - 一起保存时（决定 2）：
   - 任一项命中第 0 条：不打包，显示原因；
@@ -299,3 +299,7 @@ Human 的决定：
 > 批准 D-03/D-04 修订：变体增加 request_method（默认 GET），非 GET 不提供下载、原因 UNSUPPORTED_REQUEST，请求体的值不进入结果；没有合并对象的 video_only 不提供下载、原因 NEEDS_AUDIO_MERGE。
 
 据此修改了 1.3、1.4 第 2 条、新增第 7 条，以及第 3 节第 0 条和一起保存的说明。不新增 POST 交付方式。给每条视频轨都配上最好的音轨、提供更多 YouTube 清晰度，会增加服务端合并，属于以后的产品决定。
+
+### 更正：常规请求头（2026-10-26）
+
+1.3 和第 3 节原先把 Referer 当作必须带的请求头的例子，并写了“B 站需要 Referer，命中第 2 条”。这与 Human 已确认的 INV-03 不一致：常规的 User-Agent、Accept、Referer、Origin 等请求头本身不构成必须的访问条件，B 站也不一概走服务端。现有代码同样如此（`request_context` 的常规请求头清单），第 2 步的适配器已经按它填写。本更正只改示例文字，不改变任何规则或行为。
