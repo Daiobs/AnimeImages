@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "provider": "xhs_native",
+  "platform": "xiaohongshu",
+  "source_url": "https://www.xiaohongshu.com/explore/64a1b2c3d4e5f6789012abcd",
+  "provenance": {"kind": "synthetic", "raw_kind": "html", "complete": true},
+  "raw": "<!doctype html><html><head><link rel='canonical' href='https://www.xiaohongshu.com/explore/64a1b2c3d4e5f6789012abcd'></head><body><nav>Navigation<img src='https://example.test/shell.jpg'></nav><div id='noteContainer' data-note-id='64a1b2c3d4e5f6789012abcd'><div class='note-content'><h1 class='title'>Native body</h1><div class='author-container'><span class='name'>Synthetic author</span><img class='avatar' src='https://example.test/avatar.jpg'></div><p>First <strong>paragraph</strong>.</p><img src='http://sns-webpic-qc.xhscdn.com/body.jpg?x=1&amp;y=2'><p>Second paragraph #travel[话题]#</p><img data-src='/body-two.webp'><img src='#placeholder'><img src='data:image/png;base64,AAAA'><script>Do not include script text</script></div></div><div class='swiper-slide'><img src='https://example.test/recommend.jpg'></div></body></html>"
+}

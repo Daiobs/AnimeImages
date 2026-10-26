@@ -290,3 +290,10 @@ ytdlp_result_picker/ordinary_media_download 前端。表达式：
 - 保留 Native 图集、视频各清晰度及原声独立音频；不扩写媒体 URL、不改 playwm 或 ratio，不从编码名推断完整音视频，也不自行配音轨。音频不成为视频内容项的默认变体；当前模型没有 Work 级主选项字段，本步不声称已接入页面默认勾选。
 - 同 URL 不同格式标签仍保留各自事实，访问限制按该 URL 合并；不同图片表示不继承未证实的宽高。视频时长不由原声时长补造。缺少事实保持未知，封面不成为独立下载项。
 - 本步使用两份明确标注的受控原始结构夹具及边界测试；限定范围未找到完整 Native aweme 真实录制，未新增真实请求，不把旧投影或通用服务录制冒充 Native。
+
+## P10 补充（2026-10-26）
+
+- `provider_adapters/xiaohongshu.py:XiaohongshuMapper` 映射完整原始 HTML/page state 及实际响应页面地址，不接收 `XhsPageState`、私有裁剪快照、旧 rich-media 投影、候选或令牌。旧 Native 尚无 raw 观察点，fetch/捕获留 P12。
+- 请求、最终页面、canonical/当前容器和结构中的作品身份必须一致；map 键与对象内 noteId 冲突不能交给旧 selector 任择。只选择当前作品，不扫描推荐、整页脚本 URL 或无身份壳页。
+- 保留原始图集顺序、同图格式、视频流及备选地址；实况 groups 只由同一 imageList 项的 livePhoto、图片和 motion stream 建立，不跨 Provider 补配对。视频笔记的封面不是另一个下载内容项。
+- Native 富文本范围是可确认当前作品的 `.note-content` 正文子树，纯解析为正文和有序图片；不发明新的富文本 JSON 字段，不从整个外层作品容器提取正文。相关 fixture 明确为受控构造，未声称取得真实富文本完整录制。
