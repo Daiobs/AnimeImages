@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "provider": "bilibili_native",
+  "platform": "bilibili",
+  "source_url": "https://www.bilibili.com/video/BV1J4JX6PEMV/?p=2",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "view": {
+      "code": 0,
+      "data": {
+        "bvid": "BV1J4JX6PEMV",
+        "aid": 123,
+        "cid": 111,
+        "title": "Native title",
+        "desc": "Original body #topic",
+        "owner": {"name": "Creator", "mid": 456},
+        "pic": "http://i0.hdslb.com/synthetic-cover.jpg",
+        "duration": 34,
+        "dimension": {"width": 1920, "height": 1080},
+        "pages": [
+          {"page": 1, "cid": 111, "part": "First part", "duration": 10},
+          {"page": 2, "cid": 222, "part": "Second part", "duration": 24}
+        ]
+      }
+    },
+    "playurl": {
+      "code": 0,
+      "data": {
+        "quality": 64,
+        "format": "mp4",
+        "timelength": 24000,
+        "accept_quality": [64],
+        "accept_description": ["720P"],
+        "support_formats": [{"quality": 64, "new_description": "720P"}],
+        "durl": [{
+          "order": 1,
+          "url": "http://media.bilivideo.com/synthetic-full.mp4?deadline=1900000000",
+          "backup_url": ["https://mirror.bilivideo.com/synthetic-full.mp4?deadline=1900000010"],
+          "size": 12345,
+          "length": 24000
+        }]
+      }
+    },
+    "selection": {
+      "page": 2,
+      "playurl_params": {"bvid": "BV1J4JX6PEMV", "cid": 222, "qn": 80, "fnval": 0},
+      "request_headers": {"Cookie": "REDACTED", "Referer": "https://www.bilibili.com/"}
+    }
+  }
+}

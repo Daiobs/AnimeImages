@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "provider": "bilibili_native",
+  "platform": "bilibili",
+  "source_url": "https://www.bilibili.com/video/BV1J4JX6PEMV/",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "view": {"code": 0, "data": {
+      "bvid": "BV1J4JX6PEMV", "aid": 123, "cid": 111, "title": "Two continuous segments",
+      "pages": [{"page": 1, "cid": 111, "duration": 30}]
+    }},
+    "playurl": {"code": 0, "data": {
+      "quality": 80, "format": "flv", "timelength": 30000,
+      "durl": [
+        {"order": 1, "url": "https://media.bilivideo.com/part1.flv", "size": 100, "length": 10000,
+         "backup_url": ["https://mirror.bilivideo.com/part1.flv"]},
+        {"order": 2, "url": "https://media.bilivideo.com/part2.flv", "size": 200, "length": 20000,
+         "backup_url": ["https://mirror.bilivideo.com/part2.flv"]}
+      ]
+    }},
+    "selection": {"page": 1, "playurl_params": {"bvid": "BV1J4JX6PEMV", "cid": 111}}
+  }
+}
