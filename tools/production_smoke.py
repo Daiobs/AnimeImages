@@ -2,6 +2,8 @@
 
 Control bodies and credentials stay in memory. Local image ZIPs verify HTTP
 delivery, not the browser ZIP implementation, CORS, Service Worker, or UI saves.
+Browser-native and streaming descriptors authorize HTTP resource validation here,
+not proof of browser handoff or execution of either browser transport.
 An existing round is never resumed, including after an unknown request outcome.
 """
 import argparse
@@ -37,7 +39,7 @@ VIDEO_LIMIT = 1024 * 1024 * 1024
 STATUSES = {"success", "error", "failed", "timeout", "unchanged", "continuation_pending",
             "issued", "connecting", "refreshing", "streaming", "completed", "expired",
             "queued", "running", "pending", "routed"}
-STRATEGIES = {"browser_streaming", "browser_blob", "browser_direct", "browser_direct_images",
+STRATEGIES = {"browser_native", "browser_streaming", "browser_blob", "browser_direct", "browser_direct_images",
               "browser_direct_provider_video", "server_attachment", "server_single_attachment",
               "server_merge", "server_zip", "none", "browser_download_required",
               "browser_image_download_required", "blocked_by_download_cost_guard"}
@@ -438,7 +440,7 @@ class SmokeRunner:
         else:
             require(item.get("selection_delivery", "direct") == "direct" and item.get("browser_upstream_bound") is True
                     and item.get("browser_direct_fetch_safe") is True and item.get("requires_merge") is False
-                    and item.get("requires_cookie") is False, "DIRECT_BINDING_MISMATCH")
+                    and item.get("requires_cookie") is not True, "DIRECT_BINDING_MISMATCH")
             require(float(item.get("selection_expires_at", 0)) > time.time() * 1000, "SELECTION_EXPIRED")
             if item.get("provider") in {"tiantianjiexi", "kukutool"}:
                 require(all(item.get(k) for k in BINDING) and item["asset_id"] == radio.get("data-legacy-asset-id"), "DEDICATED_BINDING_MISMATCH")
@@ -459,12 +461,28 @@ class SmokeRunner:
         report.setdefault("policies", []).append(policy)
 
     def route(self, items, base, report):
-        body = {"media_items": items, "base_filename": base, "download_mode": "auto",
+        body = {"media_items": items, "base_filename": base, "download_mode": "browser", "intent": "download",
                 "save_format": "original", "quality": 95, "video_save_mode": "video"}
         route = self.http.control("POST", "/media/download-images/", "route", data={**body, "route_only": True})
         require(route.get("status") == "routed", "ROUTE_FAILED")
         self.policy(route, report)
         return body, route
+
+    @staticmethod
+    def validate_browser_video(item):
+        require(item.get("browser_direct_fetch_safe") is True
+                and not item.get("requires_merge") and not item.get("requires_cookie"), "DIRECT_ROUTE_UNAUTHORIZED")
+        now_ms = time.time() * 1000
+
+        def live_deadline(value):
+            return (type(value) in (int, float) and now_ms < value <= 2 ** 53 - 1
+                    and value == int(value))
+
+        for key in ("selection_expires_at", "expiresAt"):
+            if key in item:
+                require(live_deadline(item[key]), "SELECTION_EXPIRED")
+        if item.get("download_strategy") == "browser_native":
+            require(live_deadline(item.get("native_download_expires_at")), "NATIVE_DESCRIPTOR_EXPIRED")
 
     def photos(self, items, base, directory, report):
         require(len(items) >= 2, "GROUP_ZIP_REQUIRES_MULTIPLE_IMAGES")
@@ -516,18 +534,21 @@ class SmokeRunner:
     def video(self, item, action, base, directory, report):
         body = None
         if action == "download":
-            require(report["sample"] != "bilibili", "BILIBILI_MUST_USE_ATTACHMENT")
+            self.validate_browser_video(item)
             kind, url, site, method, data = "video", item["url"], False, "GET", None
             report["transport"] = "http_direct_media"
         else:
             body, route = self.route([item], base, report)
             route_type, strategy = route.get("route_type"), route.get("download_strategy")
-            if report["sample"] == "bilibili":
-                require(route_type == "proxy" and strategy == "server_single_attachment", "BILIBILI_MUST_USE_ATTACHMENT")
             if route_type == "direct":
                 bound = route.get("items", [])
-                require(len(bound) == 1 and all(bound[0].get(k) == item.get(k) for k in ("url", "type", "asset_id", "provider")), "ROUTE_BINDING_MISMATCH")
-                require(bound[0].get("browser_direct_fetch_safe") is True, "DIRECT_ROUTE_UNAUTHORIZED")
+                require(len(bound) == 1
+                        and all(bound[0].get(k) == item.get(k) for k in ("url", "type"))
+                        and all(bound[0].get(k) == item.get(k)
+                                or (bound[0].get(k) in (None, "") and item.get(k) in (None, ""))
+                                for k in ("asset_id", "provider")), "ROUTE_BINDING_MISMATCH")
+                self.policy(bound[0], report)
+                self.validate_browser_video(bound[0])
                 kind, url, site, method, data = "video", bound[0]["url"], False, "GET", None
                 report["transport"] = "http_direct_media"
             elif route_type == "proxy" and strategy == "server_single_attachment":
@@ -591,7 +612,8 @@ class SmokeRunner:
         raise SmokeError("DELIVERY_STATUS_TIMEOUT")
 
     def run_sample(self, name, source):
-        report = {"sample": name, "started_at": now(), "status": "failed"}
+        report = {"sample": name, "started_at": now(), "status": "failed", "scope": "anonymous_http_smoke",
+                  "browser_native_verified": False, "browser_sw_verified": False}
         self.http.sample, self.http.events = name, []
         directory = self.directory / name
         directory.mkdir(mode=0o700)
@@ -667,7 +689,7 @@ def main(argv=None):
         http = PublicHTTP(args.base_url, journal)
         report = {"scope": "anonymous_http_smoke", "started_at": now(),
                   **selection,
-                  "browser_sw_verified": False, "ui_auto_replace_verified": False,
+                  "browser_native_verified": False, "browser_sw_verified": False, "ui_auto_replace_verified": False,
                   "browser_zip_verified": False, "samples": []}
         runner = SmokeRunner(http, directory, ffprobe=args.ffprobe)
         try:

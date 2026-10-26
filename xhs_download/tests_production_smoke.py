@@ -325,6 +325,209 @@ class ProductionSmokeTests(SimpleTestCase):
         self.assertFalse(wire.steps)
         return code, json.loads((target / "report.json").read_text()), wire
 
+    def test_cli_browser_first_bilibili_and_native_descriptors_are_http_evidence_only(self):
+        self.need_video()
+        for entry in ("card", "picker"):
+            for strategy in ("browser_native", "browser_streaming"):
+                with self.subTest(entry=entry, strategy=strategy):
+                    native = {"download_strategy": "browser_native",
+                              "native_download_expires_at": int((time.time() + 300) * 1000)}
+                    ordinary = smoke.card_item(smoke.BeautifulSoup(card(1, "video"), "html.parser").div)
+                    bili = item(provider="tiantianjiexi_generic") if entry == "picker" else dict(ordinary)
+                    bili.update(source_platform="bilibili", **native)
+                    bili["download_strategy"] = strategy
+                    bili_html = picker(provider="tiantianjiexi_generic") if entry == "picker" else card(
+                        1, "video", **{"source-platform": "bilibili"})
+                    steps = [
+                        ("GET", "/results/", response(parsed(card(1) + card(2)))),
+                        ("GET", "/1.png", media(self.png)), ("GET", "/2.png", media(self.png)),
+                        ("GET", "/results/", response(parsed(card(1, "video")))),
+                        ("POST", "/media/download-images/", response({"status": "routed", "route_type": "direct",
+                            "download_strategy": "browser_direct_provider_video", "items": [{**ordinary, **native}]})),
+                        ("GET", "/1.png", media(self.video)),
+                        ("GET", "/results/", response(parsed(picker()))),
+                        ("POST", "/media/service-selected-format/", response({"status": "success", "item": {**item(), **native}})),
+                        ("GET", "/video.mp4", media(self.video)),
+                        ("GET", "/results/", response(parsed(bili_html))),
+                    ]
+                    if entry == "picker":
+                        steps.append(("POST", "/media/service-selected-format/", response({"status": "success", "item": bili})))
+                    else:
+                        steps.append(("POST", "/media/download-images/", response({"status": "routed", "route_type": "direct",
+                            "download_strategy": "browser_direct_provider_video", "items": [bili]})))
+                    steps.append(("GET", urlsplit(bili["url"]).path, media(self.video)))
+                    code, report, wire = self.run_cli_round("browser-" + entry + "-" + strategy, steps,
+                                                           exclude=True, ffprobe=self.ffprobe)
+                    self.assertEqual(code, 0, report)
+                    self.assertTrue(report["passed"])
+                    self.assertEqual(report["scope"], "anonymous_http_smoke")
+                    for key in ("browser_native_verified", "browser_sw_verified", "browser_zip_verified", "ui_auto_replace_verified"):
+                        self.assertIs(report[key], False)
+                    for result in report["samples"]:
+                        self.assertEqual(result["parse_attempts"], 1)
+                        self.assertEqual(result["scope"], "anonymous_http_smoke")
+                        self.assertIs(result["browser_native_verified"], False)
+                        self.assertIs(result["browser_sw_verified"], False)
+                    for result in report["samples"][1:]:
+                        self.assertEqual(result["transport"], "http_direct_media")
+                        self.assertEqual(result["media_http_attempts"], 1)
+                        self.assertEqual(result["saved_count"], 1)
+                    self.assertEqual(report["samples"][-1]["policies"][-1]["download_strategy"], strategy)
+                    for request in wire.requests:
+                        path = urlsplit(request.url).path
+                        self.assertNotIn(path, ("/media/download-prepare/", "/media/download-tasks/"))
+                        if path == "/media/download-images/":
+                            payload = json.loads(request.body)
+                            self.assertEqual(payload["intent"], "download")
+                            self.assertIs(payload["route_only"], True)
+                            self.assertEqual(payload["download_mode"], "browser")
+                    self.assertNotIn(SECRET, json.dumps(report))
+
+    def test_ordinary_preparation_denial_never_fetches_media_or_retries(self):
+        runner, wire = self.runner([
+            ("GET", "/results/", response(parsed(card(1, "video")))),
+            ("POST", "/media/download-images/", response({"status": "error"}, status=403)),
+        ])
+        result = runner.run_sample("bilibili", dict(smoke.SAMPLES)["bilibili"])
+        self.assertEqual(result["error_code"], "CONTROL_HTTP_FAILED")
+        self.assertEqual((result["parse_attempts"], result["media_http_attempts"]), (1, 0))
+        self.assertEqual(json.loads(wire.requests[-1].body)["intent"], "download")
+        self.assertFalse(wire.steps)
+
+    def test_nullable_cookie_descriptor_requires_authoritative_browser_safety(self):
+        self.need_video()
+        for strategy in ("browser_native", "browser_streaming"):
+            for index, (cookie, safe, accepted) in enumerate(((None, True, True), (True, True, False), (None, False, False))):
+                with self.subTest(strategy=strategy, requires_cookie=cookie, safe=safe):
+                    selected = {**item(), "download_strategy": strategy, "requires_cookie": cookie,
+                                "browser_direct_fetch_safe": safe,
+                                "native_download_expires_at": int((time.time() + 300) * 1000)}
+                    steps = [("GET", "/results/", response({"status": "error"}, status=403)) for _ in range(3)]
+                    steps.extend([
+                        ("GET", "/results/", response(parsed(picker()))),
+                        ("POST", "/media/service-selected-format/", response({"status": "success", "item": selected})),
+                    ])
+                    if accepted:
+                        steps.append(("GET", "/video.mp4", media(self.video)))
+                    _, report, _ = self.run_cli_round("nullable-" + strategy + "-" + str(index), steps,
+                                                      exclude=True, ffprobe=self.ffprobe)
+                    result = report["samples"][-1]
+                    self.assertEqual(result["parse_attempts"], 1)
+                    self.assertEqual(result["media_http_attempts"], int(accepted))
+                    if accepted:
+                        self.assertEqual(result["status"], "passed", result)
+                        self.assertEqual(result["saved_count"], 1)
+                        self.assertEqual(result["transport"], "http_direct_media")
+                        self.assertIs(result["browser_native_verified"], False)
+                        self.assertIs(result["browser_sw_verified"], False)
+                    else:
+                        self.assertEqual(result["error_code"], "DIRECT_BINDING_MISMATCH")
+
+    def test_ordinary_route_accepts_only_empty_optional_identity_projection(self):
+        self.need_video()
+        original = smoke.card_item(smoke.BeautifulSoup(card(1, "video"), "html.parser").div)
+        for index, identity in enumerate(({}, {"asset_id": None, "provider": None}, {"asset_id": "", "provider": ""})):
+            with self.subTest(identity=identity):
+                # public_route_item omits absent/empty identity fields from ordinary cards.
+                projected = {"url": original["url"], "type": "video", "browser_direct_fetch_safe": True,
+                             "requires_merge": False, "download_strategy": "browser_streaming", **identity}
+                steps = [("GET", "/results/", response({"status": "error"}, status=403)) for _ in range(3)]
+                steps.extend([
+                    ("GET", "/results/", response(parsed(card(1, "video")))),
+                    ("POST", "/media/download-images/", response({"status": "routed", "route_type": "direct",
+                        "download_strategy": "browser_direct_provider_video", "items": [projected]})),
+                    ("GET", "/1.png", media(self.video)),
+                ])
+                _, report, wire = self.run_cli_round("empty-identity-" + str(index), steps,
+                                                     exclude=True, ffprobe=self.ffprobe)
+                result = report["samples"][-1]
+                self.assertEqual(result["status"], "passed", result)
+                self.assertEqual((result["parse_attempts"], result["media_http_attempts"]), (1, 1))
+                sent = json.loads(wire.requests[-2].body)["media_items"][0]
+                self.assertEqual((sent["asset_id"], sent["provider"]), ("", ""))
+
+    def test_route_identity_normalization_keeps_resource_and_nonempty_bindings_strict(self):
+        cases = [({}, {"url": "https://cdn.example/other.mp4"}),
+                 ({}, {"type": "audio"}),
+                 ({}, {"asset_id": "unexpected-id"}),
+                 ({}, {"provider": "unexpected-provider"}),
+                 ({}, {"asset_id": 0}),
+                 ({}, {"provider": False})]
+        for key in ("asset_id", "provider"):
+            for value in (None, "", "changed"):
+                cases.append(({key.replace("_", "-"): "original"}, {key: value}))
+        for index, (attributes, changes) in enumerate(cases):
+            with self.subTest(attributes=attributes, changes=changes):
+                html = card(1, "video", **attributes)
+                original = smoke.card_item(smoke.BeautifulSoup(html, "html.parser").div)
+                steps = [("GET", "/results/", response({"status": "error"}, status=403)) for _ in range(3)]
+                steps.extend([
+                    ("GET", "/results/", response(parsed(html))),
+                    ("POST", "/media/download-images/", response({"status": "routed", "route_type": "direct",
+                        "download_strategy": "browser_direct_provider_video", "items": [{**original, **changes}]})),
+                ])
+                _, report, _ = self.run_cli_round("strict-identity-" + str(index), steps, exclude=True)
+                result = report["samples"][-1]
+                self.assertEqual(result["error_code"], "ROUTE_BINDING_MISMATCH")
+                self.assertEqual((result["parse_attempts"], result["media_http_attempts"]), (1, 0))
+
+    def test_native_descriptor_requires_live_expiry_on_picker_and_card(self):
+        for entry in ("card", "picker"):
+            for expiry in (None, 1, True, "9999999999999"):
+                with self.subTest(entry=entry, expiry=expiry):
+                    ordinary = smoke.card_item(smoke.BeautifulSoup(card(1, "video"), "html.parser").div)
+                    selected = item(provider="tiantianjiexi_generic") if entry == "picker" else ordinary
+                    selected["download_strategy"] = "browser_native"
+                    if expiry is not None:
+                        selected["native_download_expires_at"] = expiry
+                    steps = [("GET", "/results/", response({"status": "error"}, status=403)) for _ in range(3)]
+                    steps.append(("GET", "/results/", response(parsed(
+                        picker(provider="tiantianjiexi_generic") if entry == "picker" else card(1, "video")))))
+                    if entry == "picker":
+                        steps.append(("POST", "/media/service-selected-format/", response({"status": "success", "item": selected})))
+                    else:
+                        steps.append(("POST", "/media/download-images/", response({"status": "routed", "route_type": "direct",
+                            "download_strategy": "browser_direct_provider_video", "items": [selected]})))
+                    code, report, _ = self.run_cli_round("expiry-" + entry + "-" + str(expiry), steps, exclude=True)
+                    self.assertEqual(code, 1)
+                    result = report["samples"][-1]
+                    self.assertEqual(result["error_code"], "NATIVE_DESCRIPTOR_EXPIRED")
+                    self.assertEqual((result["parse_attempts"], result["media_http_attempts"]), (1, 0))
+
+    def test_prepared_route_authority_and_policy_are_checked_before_media(self):
+        cases = [({"selection_expires_at": 1}, "SELECTION_EXPIRED"),
+                 ({"expiresAt": 1}, "SELECTION_EXPIRED"),
+                 ({"download_strategy": "future_unknown_strategy"}, "UNRECOGNIZED_ROUTE_POLICY"),
+                 ({"requires_cookie": True}, "DIRECT_ROUTE_UNAUTHORIZED"),
+                 ({"requires_merge": True}, "DIRECT_ROUTE_UNAUTHORIZED")]
+        for index, (changes, expected) in enumerate(cases):
+            with self.subTest(changes=changes):
+                ordinary = smoke.card_item(smoke.BeautifulSoup(card(1, "video"), "html.parser").div)
+                steps = [("GET", "/results/", response({"status": "error"}, status=403)) for _ in range(3)]
+                steps.extend([
+                    ("GET", "/results/", response(parsed(card(1, "video")))),
+                    ("POST", "/media/download-images/", response({"status": "routed", "route_type": "direct",
+                        "download_strategy": "browser_direct_provider_video", "items": [{**ordinary, **changes}]})),
+                ])
+                code, report, _ = self.run_cli_round("route-authority-" + str(index), steps, exclude=True)
+                self.assertEqual(code, 1)
+                self.assertEqual(report["samples"][-1]["error_code"], expected)
+                self.assertEqual(report["samples"][-1]["media_http_attempts"], 0)
+
+    def test_unknown_native_http_result_never_retries_or_switches_transport(self):
+        native = {**item(), "download_strategy": "browser_native",
+                  "native_download_expires_at": int((time.time() + 300) * 1000)}
+        runner, wire = self.runner([
+            ("GET", "/results/", response(parsed(picker()))),
+            ("POST", "/media/service-selected-format/", response({"status": "success", "item": native})),
+            ("GET", "/video.mp4", requests.ReadTimeout(SECRET)),
+        ])
+        result = runner.run_sample("douyin", dict(smoke.SAMPLES)["douyin"])
+        self.assertEqual(result["error_code"], "HTTP_OUTCOME_UNKNOWN", result)
+        self.assertEqual(result["transport"], "http_direct_media")
+        self.assertEqual((result["parse_attempts"], result["media_http_attempts"]), (1, 1))
+        self.assertFalse(wire.steps)
+
     def test_default_still_parses_youtube_and_403_never_auto_excludes(self):
         for exclude, count in ((False, 5), (True, 4)):
             with self.subTest(exclude=exclude):
