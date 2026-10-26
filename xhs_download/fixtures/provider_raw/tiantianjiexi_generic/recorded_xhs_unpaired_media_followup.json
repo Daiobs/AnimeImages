@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "provider": "tiantianjiexi_generic",
+  "platform": "xiaohongshu",
+  "source_url": "https://www.xiaohongshu.com/explore/6add82de000000003101e637?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed",
+  "provenance": {
+    "kind": "recorded",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "code": 200,
+    "data": {
+      "desc": "\u94dc\u4ec1\u5199\u771f\uff5c\u5728\u516c\u56ed\u91cc\u62cd\u5230\u4e86\u4eba\u751f\u7167\u7247|||\u597d\u4e0d\u5bb9\u6613\u51fa\u9633\u5149\u4e86\u2600\ufe0f\u8d76\u7d27\u5494\u5693\ud83d\udcf8\u4e24\u5f20\n-\n\u5b9e\u51b5\u90fd\u5982\u6b64\u7f8e\u4e3d\uff01\n#\u6211\u62cd\u5230\u4e86\u590f\u5929\u7684\u5473\u9053[\u8bdd\u9898]# #\u94dc\u4ec1\u5199\u771f[\u8bdd\u9898]# #\u8d6b\u62c9\u6620\u753b\u6444\u5f71\u5de5\u4f5c\u5ba4[\u8bdd\u9898]# #\u4e2a\u4eba\u5199\u771f[\u8bdd\u9898]# #\u6c1b\u56f4\u611f[\u8bdd\u9898]# #\u8fd9\u624d\u662f\u5b9e\u51b5\u7684\u610f\u4e49\u5427[\u8bdd\u9898]# #\u53ea\u4e3a\u51e0\u4e2a\u77ac\u95f4[\u8bdd\u9898]# #\u751f\u52a8\u6bd4\u6f02\u4eae\u66f4\u91cd\u8981[\u8bdd\u9898]#",
+      "images": [
+        "https://sns-img-hw.xhscdn.com/notes_pre_post/1040g3k8326ntm13450705pjspblguf7fc7r5540?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_pre_post/1040g3k8326ntm134507g5pjspblguf7fcu3d55o?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_pre_post/1040g3k8326ntm13450905pjspblguf7fujurjqg?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_pre_post/1040g3k8326ntm13450805pjspblguf7fsleivrg?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_pre_post/1040g3k8326ntm134508g5pjspblguf7ftmu1rdg?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_pre_post/1040g3k8326ntm134509g5pjspblguf7f18eihv8?imageView2/2/w/0/format/jpg"
+      ],
+      "videos": [
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadd82de71d0d901005003a171476f5b_19.mp4?sign=REDACTED&t=6ae3701a",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadd82de19bc8801005003a171476384_19.mp4?sign=REDACTED&t=6ae3701a",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadd82de71d0da01005003a171477350_19.mp4?sign=REDACTED&t=6ae3701a",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadd82de72f01c01005003a171477f2a_19.mp4?sign=REDACTED&t=6ae3701a",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadd82de72f01b01005003a171476fb1_19.mp4?sign=REDACTED&t=6ae3701a",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadd82de71d0db01005003a171476c47_19.mp4?sign=REDACTED&t=6ae3701a",
+          "streams": []
+        }
+      ]
+    },
+    "msg": "success"
+  }
+}

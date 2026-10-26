@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "provider": "tiantianjiexi_generic",
+  "platform": "bilibili",
+  "source_url": "https://www.bilibili.com/video/BV13x41117TL",
+  "provenance": {
+    "kind": "recorded",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "code": 200,
+    "data": {
+      "desc": "\u963f\u6ef4\u82f1\u6587\uff5c\u82f1\u6587\u6b4c\u5206\u4eab#6 \"Closer",
+      "images": [
+        "http://i2.hdslb.com/bfs/archive/49267ce20bc246be6304bf369a3ded0256854c23.jpg"
+      ],
+      "videos": [
+        {
+          "url": "http://upos-sz-mirrorcos.bilivideo.com/upgcxcode/89/45/14694589/14694589-1-48.mp4?e=ig8euxZM2rNcNbRBnWdVhwdlhWUHhwdVhoNvNC8BqJIzNbfq9rVEuxTEnE8L5F6VnEsSTx0vkX8fqJeYTj_lta53NCM=&oi=2067284620&trid=a62505dfe7aa44ca987b91f564544b6O&deadline=1791885949&nbs=1&platform=html5&gen=playurlv3&os=cosbv&og=cos&mid=0&uipk=5&upsig=REDACTED&uparams=e,oi,trid,deadline,nbs,platform,gen,os,og,mid,uipk&bvc=vod&nettype=1&bw=1277100&lrs=0&f=O_0_0&agrr=1&buvid=&build=7330300&dl=0&orderid=0,3",
+          "streams": []
+        }
+      ]
+    },
+    "msg": "success"
+  }
+}

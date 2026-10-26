@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "provider": "tiantianjiexi_generic",
+  "platform": "generic",
+  "source_url": "https://source.example/work/failure",
+  "provenance": {
+    "kind": "synthetic",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "code": 1001,
+    "msg": "Synthetic service failure",
+    "data": null
+  }
+}
