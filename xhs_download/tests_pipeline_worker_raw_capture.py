@@ -1,10 +1,12 @@
 """Synthetic offline boundaries: no provider request, config, or recorded claims."""
 import asyncio
 from concurrent.futures import wait
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout
 from copy import deepcopy
 from datetime import datetime, timezone
+import io
 import json
+import logging
 import os
 from pathlib import Path
 import socket
@@ -83,6 +85,20 @@ class OfflineCase(SimpleTestCase):
 
 
 class RawSidebandTests(OfflineCase):
+    def sideband_command(self, size):
+        helper = Path(wire.__file__).resolve()
+        script = ("import json,sys,runpy,time\n"
+                  "request=json.load(sys.stdin)\n"
+                  f"observe=runpy.run_path({str(helper)!r})['observer'](request)\n"
+                  "if observe is not None:\n"
+                  f"    observe({{'upstream_only':'s'*{size}}})\n"
+                  "print('{\"ok\":true,\"payload\":[1]}')\n"
+                  "started=time.monotonic()\n"
+                  "if observe is not None:\n"
+                  "    observe.finish()\n"
+                  "print(json.dumps({'finish_seconds':time.monotonic()-started}),file=sys.stderr)\n")
+        return [sys.executable, "-I", "-B", "-c", script]
+
     def test_disabled_has_no_pipe_snapshot_future_or_payload_change(self):
         request = {"action": "parse", "url": SOURCE}
         runner = Mock(return_value="legacy")
@@ -112,6 +128,21 @@ class RawSidebandTests(OfflineCase):
         self.assertEqual(result.stderr, "")
         self.assertEqual(decode_raw(session.records[0].raw), {"upstream_only": "s" * 6000})
 
+    def test_actual_subprocess_one_mib_repeatedly_reaches_real_reader(self):
+        size = 1024 * 1024
+        command = self.sideband_command(size)
+        for attempt in range(8):
+            with self.subTest(attempt=attempt), collect_raw() as session:
+                result = transport.run_with_capture(run_external_command, command, {}, "provider", SOURCE,
+                    timeout_seconds=5, max_stdout_bytes=1024, max_stderr_bytes=1024)
+            settled(session)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '{"ok":true,"payload":[1]}\n')
+            self.assertEqual(session.errors, set())
+            self.assertEqual(len(session.records), 1)
+            self.assertEqual(decode_raw(session.records[0].raw), {"upstream_only": "s" * size})
+            self.assertLess(json.loads(result.stderr.splitlines()[-1])["finish_seconds"], 2.5)
+
     def test_slow_reader_returns_before_future_and_retains_original_context(self):
         release, entered = Event(), Event()
         receive = transport._receive
@@ -138,15 +169,46 @@ class RawSidebandTests(OfflineCase):
         finally:
             release.set()
 
-    def test_full_pipe_drops_shadow_without_waiting(self):
-        observer = wire.Observer(100)
-        observer(info())
-        with patch.object(wire.os, "set_blocking"), patch.object(wire.os, "close"), \
-                patch.object(wire.os, "write", side_effect=BlockingIOError) as write:
+    def test_full_pipe_waits_only_until_fixed_deadline(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            os.set_blocking(write_fd, False)
+            while True:
+                try:
+                    os.write(write_fd, b"x" * 65536)
+                except BlockingIOError:
+                    break
+            observer = wire.Observer(write_fd)
+            observer(info())
             start = time.monotonic()
-            observer.finish()
-            self.assertLess(time.monotonic() - start, 0.05)
-        write.assert_called_once()
+            with self.assertLogs("pipeline_shadow.worker", level="WARNING") as logs:
+                observer.finish()
+            elapsed = time.monotonic() - start
+            self.assertGreaterEqual(elapsed, 1.8)
+            self.assertLess(elapsed, 2.5)
+            self.assertIn("reason=write_deadline exception_class=TimeoutError", logs.output[0])
+            with self.assertRaises(OSError):
+                os.fstat(write_fd)
+        finally:
+            os.close(read_fd)
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+    def test_broken_pipe_does_not_wait_for_deadline_or_change_stdout(self):
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        try:
+            result = subprocess.run(self.sideband_command(1024 * 1024),
+                input=json.dumps({"_shadow_capture_fd": write_fd}), text=True, capture_output=True,
+                pass_fds=(write_fd,), timeout=3)
+        finally:
+            os.close(write_fd)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '{"ok":true,"payload":[1]}\n')
+        self.assertLess(json.loads(result.stderr.splitlines()[-1])["finish_seconds"], 0.5)
+        self.assertIn("reason=write_failed exception_class=BrokenPipeError", result.stderr)
 
     def test_truncated_oversized_and_missing_sidebands_only_record_error(self):
         for value, limit in ((b'{"worker_raw_v1":[', 1000), (b"x" * 100, 10), (b"", 1000)):
@@ -167,25 +229,143 @@ class RawSidebandTests(OfflineCase):
             self.assertNotIn("pass_fds", runner.call_args.kwargs)
         self.assertEqual(session.errors, {"provider"})
 
-    def test_large_raw_short_write_reports_error_without_changing_legacy_result(self):
+    def test_stalled_real_reader_expires_without_changing_legacy_stdout(self):
         release = Event()
+        entered = Event()
         receive = transport._receive
         def slow(*args):
-            release.wait(2)
+            entered.set()
+            release.wait(8)
             receive(*args)
-        def runner(command, **kwargs):
-            send(json.loads(kwargs["input_text"]), [{"large": "x" * (wire.MAX_BYTES // 2)}])
-            return {"legacy": "complete"}
+        command = self.sideband_command(1024 * 1024)
+        baseline = transport.run_with_capture(run_external_command, command, {}, "provider", SOURCE,
+            timeout_seconds=5, max_stdout_bytes=1024, max_stderr_bytes=1024)
         try:
             with patch.object(transport, "_receive", side_effect=slow), collect_raw() as session:
-                self.assertEqual(transport.run_with_capture(runner, [], {}, "provider", SOURCE),
-                                 {"legacy": "complete"})
+                result = transport.run_with_capture(run_external_command, command, {}, "provider", SOURCE,
+                    timeout_seconds=5, max_stdout_bytes=1024, max_stderr_bytes=1024)
+                self.assertTrue(entered.is_set())
+                self.assertEqual(result.returncode, baseline.returncode)
+                self.assertEqual(result.stdout, baseline.stdout)
+                elapsed = json.loads(result.stderr.splitlines()[-1])["finish_seconds"]
+                self.assertGreaterEqual(elapsed, 1.8)
+                self.assertLess(elapsed, 2.5)
+                self.assertIn("reason=write_deadline exception_class=TimeoutError", result.stderr)
                 self.assertFalse(session.futures[0].done())
         finally:
             release.set()
-        settled(session)
+            settled(session)
         self.assertEqual(session.records, ())
         self.assertEqual(session.errors, {"provider"})
+
+    def test_worker_error_warnings_exclude_raw_and_exception_messages(self):
+        private = "https://private.example/?token=secret Cookie=private-cookie"
+        for target, method, reason, error in (
+            (wire.json, "dumps", "serialization_failed", ValueError(private)),
+            (wire.os, "write", "write_failed", OSError(private)),
+        ):
+            with self.subTest(reason=reason):
+                observer = wire.Observer(100)
+                observer({"url": private, "headers": {"Cookie": "private-cookie"}})
+                stdout = io.StringIO()
+                with patch.object(wire.os, "set_blocking"), patch.object(wire.os, "close"), \
+                        patch.object(target, method, side_effect=error), redirect_stdout(stdout), \
+                        self.assertLogs("pipeline_shadow.worker", level="WARNING") as logs:
+                    observer.finish()
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(len(logs.output), 1)
+                self.assertEqual(logs.records[0].getMessage(),
+                    "pipeline_shadow_failure provider=unknown difference_code=SHADOW_ERROR "
+                    f"reason={reason} exception_class={type(error).__name__}")
+                self.assertIsNone(logs.records[0].exc_info)
+                for value in ("private.example", "token=", "Cookie", "private-cookie"):
+                    self.assertNotIn(value, logs.output[0])
+
+    def test_short_parent_budget_skips_before_encoding(self):
+        observer = wire.observer({"_shadow_capture_fd": 100,
+                                  "_shadow_capture_deadline": time.monotonic() + 0.2})
+        observer(info())
+        with patch.object(wire.json, "dumps", side_effect=AssertionError("must not encode")) as encode, \
+                patch.object(wire.os, "write", side_effect=AssertionError("must not write")) as write, \
+                patch.object(wire.os, "close") as close, \
+                self.assertLogs("pipeline_shadow.worker", level="WARNING") as logs:
+            observer.finish()
+        encode.assert_not_called()
+        write.assert_not_called()
+        close.assert_called_once_with(100)
+        self.assertIn("reason=capturebudget exception_class=TimeoutError", logs.output[0])
+
+    def test_parent_deadline_is_checked_again_after_encoding(self):
+        observer = wire.observer({"_shadow_capture_fd": 100, "_shadow_capture_deadline": 10.5})
+        observer(info())
+        with patch.object(wire.time, "monotonic", side_effect=[10.0, 10.3]), \
+                patch.object(wire.os, "set_blocking"), patch.object(wire.os, "close"), \
+                patch.object(wire.os, "write", side_effect=AssertionError("budget exhausted")) as write, \
+                self.assertLogs("pipeline_shadow.worker", level="WARNING") as logs:
+            observer.finish()
+        write.assert_not_called()
+        self.assertIn("reason=capturebudget exception_class=TimeoutError", logs.output[0])
+
+    def test_half_second_stalled_reader_keeps_legacy_stdout_and_timeout(self):
+        release, entered = Event(), Event()
+        receive = transport._receive
+        requests = []
+        def stalled(*args):
+            entered.set()
+            release.wait(5)
+            receive(*args)
+        def run(command, **kwargs):
+            requests.append((json.loads(kwargs["input_text"]), kwargs["timeout_seconds"], time.monotonic()))
+            return run_external_command(command, **kwargs)
+        command = self.sideband_command(1024 * 1024)
+        baseline = transport.run_with_capture(run, command, {}, "provider", SOURCE,
+            timeout_seconds=0.5, max_stdout_bytes=1024, max_stderr_bytes=1024)
+        try:
+            with patch.object(transport, "_receive", side_effect=stalled), collect_raw() as session:
+                started = time.monotonic()
+                result = transport.run_with_capture(run, command, {}, "provider", SOURCE,
+                    timeout_seconds=0.5, max_stdout_bytes=1024, max_stderr_bytes=1024)
+                self.assertLess(time.monotonic() - started, 0.5)
+                self.assertTrue(entered.is_set())
+                self.assertEqual(result.returncode, baseline.returncode)
+                self.assertEqual(result.stdout, baseline.stdout)
+                self.assertLess(json.loads(result.stderr.splitlines()[-1])["finish_seconds"], 0.5)
+                self.assertIn("reason=capturebudget exception_class=TimeoutError", result.stderr)
+                self.assertFalse(session.futures[0].done())
+        finally:
+            release.set()
+            settled(session)
+        self.assertEqual([timeout for _, timeout, _ in requests], [0.5, 0.5])
+        self.assertNotIn("_shadow_capture_deadline", requests[0][0])
+        request, _, invoked = requests[1]
+        self.assertIn("_shadow_capture_deadline", request)
+        self.assertGreater(request["_shadow_capture_deadline"], invoked)
+        self.assertLessEqual(request["_shadow_capture_deadline"] - invoked, 0.5)
+        self.assertEqual(session.records, ())
+        self.assertEqual(session.errors, {"provider"})
+
+    def test_worker_oversize_warning_preserves_stdout_and_closes_pipe(self):
+        observer = wire.Observer(100)
+        observer(info())
+        stdout = io.StringIO()
+        with patch.object(wire, "MAX_BYTES", 1), patch.object(wire.os, "close") as close, \
+                patch.object(wire.os, "write") as write, redirect_stdout(stdout), \
+                self.assertLogs("pipeline_shadow.worker", level="WARNING") as logs:
+            observer.finish()
+        close.assert_called_once_with(100)
+        write.assert_not_called()
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("reason=output_limit exception_class=ValueError", logs.output[0])
+
+    def test_worker_logging_failure_does_not_escape_finish(self):
+        observer = wire.Observer(100)
+        observer(info())
+        with patch.object(wire.os, "set_blocking"), patch.object(wire.os, "close"), \
+                patch.object(wire.os, "write", side_effect=BrokenPipeError("private-message")), \
+                patch.object(logging.getLogger("pipeline_shadow.worker"), "warning",
+                             side_effect=RuntimeError("private-logger-error")) as warning:
+            observer.finish()
+        warning.assert_called_once()
 
     def test_snapshot_is_complete_independent_and_never_advances_lazy_values(self):
         raw = {"timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc), "bytes": b"secret", "nested": [1]}
@@ -521,8 +701,9 @@ class WorkerObservationTests(OfflineCase):
                 return {"_type": "playlist", "id": "collection", "entries": [
                     {"id": "child", "title": "Synthetic", "url": MEDIA, "ext": "mp4"}]}
         observer = wire.Observer(100)
-        old = match_worker.parse_ytdlp(SyntheticIE, "https://example.org/1", 2)
-        new = match_worker.parse_ytdlp(SyntheticIE, "https://example.org/1", 2, observe=observer)
+        with patch("time.time", return_value=1700000000):
+            old = match_worker.parse_ytdlp(SyntheticIE, "https://example.org/1", 2)
+            new = match_worker.parse_ytdlp(SyntheticIE, "https://example.org/1", 2, observe=observer)
         self.assertEqual(new, old)
         self.assertFalse(observer.failed)
         root = decode_raw({"worker_raw_v1": observer.records})

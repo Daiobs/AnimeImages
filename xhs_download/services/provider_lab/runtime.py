@@ -205,6 +205,7 @@ def execute_provider_worker(
             worker_capture(
                 request_data, "videodl_repo", source,
                 enabled=worker_path.name == "videodl_worker.py" and operation not in {"inventory", "match_dedicated"},
+                timeout_seconds=timeout_seconds,
                 backend_id=backend_id, backend_category=backend_category,
             ) as (capture_request, capture_options),
             tempfile.TemporaryDirectory(prefix="animeimages_provider_lab_") as root,
