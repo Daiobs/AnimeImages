@@ -15,6 +15,7 @@ from ..request_context import _DEFAULT_MEDIA_HEADERS, inherit_request_context
 from ..work_caption import _TOPIC, work_caption_presentation
 from .base import Adapter
 from .failures import failure_for_http
+from .service_facts import EMPTY_HOST_POLICY_SOURCE
 
 
 NAME = "yt_dlp_generic"
@@ -121,7 +122,7 @@ def _variant(raw, row, variant_id, aliases):
         browser_fetchable=Fetchable.UNKNOWN,
         drm=any(source.get("has_drm") is True for source in aliases),
         segmented=any(_segmented(source) for source in aliases), expires_at=_expires(row["url"]),
-        host_policy=(urlsplit(row["url"]).hostname,),
+        host_policy=(),
     )
 
 
@@ -266,8 +267,10 @@ def _map(raw, source_url):
             for field in Variant.__dataclass_fields__:
                 value = getattr(variant, field)
                 source = NAME if value not in (None, "", (), False) else "contract:default"
-                if field in {"variant_id", "host_policy"}:
+                if field == "variant_id":
                     source = "adapter:resource_identity"
+                elif field == "host_policy":
+                    source = EMPTY_HOST_POLICY_SOURCE
                 elif field == "browser_fetchable" or field == "tracks" and value is Tracks.UNKNOWN:
                     source = "contract:unknown"
                 elif field == "request_method":

@@ -32,6 +32,17 @@ default selection, filenames, delivery and fact-gap reporting. Use its
 `height_from_label` and `fact_gaps`; do not duplicate those rules. Unknown tracks
 remain unknown, while explicitly known tracks must be preserved.
 
+D-06 host facts are not authorization or proof that a URL is safe. yt-dlp and
+gallery-dl emit `host_policy=()` without adding platform-specific routing.
+`service_facts._host_policy` preserves all existing platform suffix lists and
+their `existing:` provenance; only sources without an existing list use `()`.
+This shared behavior applies to ParseHub, videodl, TianTian and KuKuTool.
+An empty tuple means any public HTTPS host that passes every per-hop safety
+check, including DNS/address checks; it does not disable those checks or change
+the existing HTTP server-attachment path. Its `field_sources` value is
+`contract:empty_list:any_public_https_host_passing_per_hop_checks`, including
+when ParseHub delegates to yt-dlp. Nonempty lists still constrain every hop.
+
 Offline tests in `xhs_download/tests_provider_adapters.py` enforce the forbidden
 direct-import boundary across all adapter modules and provide `deny_map_io()`
 for later family fixture tests. Each family must run its actual map with that
@@ -73,8 +84,8 @@ not registered in any live request, health test or shadow hook yet.
   Duplicate resource aliases retain all restrictive facts without dropping their
   format labels. Header and cookie values never enter Work.
   Browser CORS ability is unknown: no media-extension or hostname assumption says
-  it is readable. Host policy is limited to each returned resource's host, as in
-  the existing generic dynamic-host path; subsequent authorization and per-hop
+  it is readable. Host policy is empty under D-06, allowing any public HTTPS
+  host that passes per-hop safety checks; subsequent authorization and per-hop
   DNS/address checks remain required. Signed Google video `expire` values are
   preserved as UTC expiry, not renewed. `is_original` requires an explicit flag.
 - `field_sources` identifies upstream observations, request identity, adapter
@@ -144,8 +155,8 @@ because extractors reuse mutable metadata. Neither old path is changed here.
   shared Session cookies are not captured by these messages; absence here is
   not evidence that the Session has no context. P12 must preserve the raw
   request-context boundary, not claim the legacy CLI export is complete.
-- `host_policy` contains the emitted URL's exact host, following the existing
-  dynamic-host family. This is not admission or a grant. `is_original` requires
+- `host_policy` is empty under D-06, allowing any public HTTPS host that passes
+  per-hop safety checks. This is not admission or a grant. `is_original` requires
   an explicit upstream flag. Missing expiry remains unknown, never renewed.
 - Expected error messages (-1) map explicit not-found/unsupported/timeout types
   and HTTP status via P2's table, including native quoted `'404 Not Found' for ...`

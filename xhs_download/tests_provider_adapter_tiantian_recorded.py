@@ -85,9 +85,12 @@ class TianTianRecordedMappingTests(TestCase):
         self.assertFalse(variant.segmented)
         self.assertEqual(variant.request_method, "GET")
         self.assertEqual(variant.expires_at, expiry)
-        expected_policy = tuple(host_policy) if host_policy is not None else (urlsplit(url).hostname,)
+        expected_policy = tuple(host_policy) if host_policy is not None else ()
         self.assertEqual(variant.host_policy, expected_policy)
         path = f"items.{item.item_id}.variants.{variant.variant_id}"
+        if not expected_policy:
+            self.assertEqual(work.field_sources[f"{path}.host_policy"],
+                             "contract:empty_list:any_public_https_host_passing_per_hop_checks")
         self.assertEqual(work.field_sources[f"{path}.url"], NAME)
         for field, present in (("quality_label", bool(quality)), ("size_bytes", size is not None)):
             if present:

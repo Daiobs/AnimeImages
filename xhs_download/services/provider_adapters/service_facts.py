@@ -12,6 +12,7 @@ from ..platforms.xiaohongshu import XHS_MEDIA_HOST_SUFFIXES
 from ..request_context import _DEFAULT_MEDIA_HEADERS, inherit_request_context
 
 _URL_KEYS = ("url", "video_url", "videoUrl", "download_url", "downloadUrl", "play_url", "playUrl", "src")
+EMPTY_HOST_POLICY_SOURCE = "contract:empty_list:any_public_https_host_passing_per_hop_checks"
 
 
 def _text(value):
@@ -62,7 +63,7 @@ def _host_policy(source_url, media_url):
     for rule in THIRD_PARTY_PLATFORM_RULES:
         if rule.media_host_suffixes and any(_host_matches(host, suffix) for suffix in rule.host_suffixes):
             return tuple(rule.media_host_suffixes), "existing:THIRD_PARTY_PLATFORM_RULES." + rule.platform_id
-    return (urlsplit(media_url).hostname,), "adapter:exact_url_host"
+    return (), EMPTY_HOST_POLICY_SOURCE
 
 
 def _source_id(source_url):

@@ -35,7 +35,7 @@ def variant_fields(url, **changes):
         "size_exact": False, "merge_with": "", "required_headers": (),
         "browser_fetchable": Fetchable.UNKNOWN, "drm": False,
         "segmented": False, "request_method": "GET", "expires_at": None,
-        "host_policy": ("cdn.example",),
+        "host_policy": (),
     }
     return {**expected, **changes}
 
@@ -140,8 +140,9 @@ class YtDlpMappingTests(TestCase):
         prefix = f"items.{item.item_id}.variants.{variant.variant_id}."
         for field in fields(Variant):
             self.assertTrue(work.field_sources.get(prefix + field.name), field.name)
-        for name in ("variant_id", "host_policy"):
-            self.assertEqual(work.field_sources[prefix + name], "adapter:resource_identity", name)
+        self.assertEqual(work.field_sources[prefix + "variant_id"], "adapter:resource_identity")
+        self.assertEqual(work.field_sources[prefix + "host_policy"],
+                         "contract:empty_list:any_public_https_host_passing_per_hop_checks")
         for name in native:
             self.assertEqual(work.field_sources[prefix + name], NAME, name)
         for name in defaults:
@@ -437,7 +438,7 @@ class YtDlpMappingTests(TestCase):
         for variant in work.items[0].variants:
             self.assertEqual(variant.required_headers, ("cookie", "referer"))
             self.assertIs(variant.browser_fetchable, Fetchable.UNKNOWN)
-            self.assertEqual(variant.host_policy, ("cdn.example",))
+            self.assertEqual(variant.host_policy, ())
             self.assertNotIn("REDACTED", repr(variant.required_headers))
 
     def test_review_cookie_strings_require_cookie_without_exposing_values(self):
@@ -523,7 +524,7 @@ class YtDlpMappingTests(TestCase):
                 raw = {"id": "synthetic01", "url": f"https://{host}/media?expire=2000000000"}
                 variant = self.map_work(raw).items[0].default_variant
                 self.assertEqual(variant.expires_at, expiry)
-                self.assertEqual(variant.host_policy, (host,))
+                self.assertEqual(variant.host_policy, ())
 
     def test_wrong_source_identity_is_rejected(self):
         for url in ("https://www.youtube.com/watch?v=other",

@@ -146,7 +146,7 @@ class TianTianMappingBoundaryTests(TestCase):
             self.assertFalse(variant.deliverable)
         self.assertIs(item.default_variant, item.variants[1])
 
-    def test_host_policies_reuse_existing_suffixes_otherwise_exact_host(self):
+    def test_host_policies_reuse_existing_suffixes_otherwise_empty(self):
         cases = (
             (SOURCE, DOUYIN_MEDIA_HOST_SUFFIXES),
             ("https://www.bilibili.com/video/BV13x41117TL/", BILIBILI_MEDIA_HOST_SUFFIXES),
@@ -160,8 +160,9 @@ class TianTianMappingBoundaryTests(TestCase):
         self.raw["data"]["id"] = "work-1"
         work = self.map(source="https://source.example/work/1")
         variant = work.items[0].variants[0]
-        self.assertEqual(variant.host_policy, ("cdn.example",))
-        self.assertEqual(work.field_sources[f"items.{work.items[0].item_id}.variants.{variant.variant_id}.host_policy"], "adapter:exact_url_host")
+        self.assertEqual(variant.host_policy, ())
+        self.assertEqual(work.field_sources[f"items.{work.items[0].item_id}.variants.{variant.variant_id}.host_policy"],
+                         "contract:empty_list:any_public_https_host_passing_per_hop_checks")
 
     def test_size_estimate_and_missing_facts_are_honest(self):
         row = self.raw["data"]["videos"][0]["streams"][1]

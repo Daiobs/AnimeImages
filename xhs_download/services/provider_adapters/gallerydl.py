@@ -14,6 +14,7 @@ from ..request_context import _DEFAULT_MEDIA_HEADERS, inherit_request_context
 from ..work_caption import _TOPIC, work_caption_presentation
 from .failures import failure_for_http
 from .base import Adapter
+from .service_facts import EMPTY_HOST_POLICY_SOURCE
 
 
 NAME = "gallery_dl_generic"
@@ -201,7 +202,7 @@ def _variant(url, row, ordinal, headers, request_method):
         required_headers=headers, browser_fetchable=Fetchable.UNKNOWN,
         drm=row.get("drm") is True or row.get("has_drm") is True, segmented=segmented,
         request_method=request_method,
-        host_policy=(urlsplit(url).hostname,),
+        host_policy=(),
     )
 
 
@@ -319,8 +320,10 @@ def _map(raw, source_url):
             for field in Variant.__dataclass_fields__:
                 value = getattr(variant, field)
                 source = NAME if value not in (None, "", (), False) else "contract:default"
-                if field in {"variant_id", "host_policy"}:
+                if field == "variant_id":
                     source = "adapter:resource_identity"
+                elif field == "host_policy":
+                    source = EMPTY_HOST_POLICY_SOURCE
                 elif field == "browser_fetchable" or field == "tracks" and value is Tracks.UNKNOWN:
                     source = "contract:unknown"
                 elif field == "drm" and any(key in facts[variant.variant_id] for key in ("drm", "has_drm")):

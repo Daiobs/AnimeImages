@@ -70,7 +70,7 @@ class VideodlReducedReplayTests(SimpleTestCase):
                     "size_bytes": None, "size_exact": False, "merge_with": "",
                     "required_headers": (), "browser_fetchable": Fetchable.UNKNOWN,
                     "drm": False, "segmented": segmented, "request_method": "GET",
-                    "expires_at": None, "host_policy": ("media.example",),
+                    "expires_at": None, "host_policy": (),
                 })
                 expected_sources = {
                     "source_url": "request", "work_id": origin, "backend": origin,
@@ -95,7 +95,7 @@ class VideodlReducedReplayTests(SimpleTestCase):
                     "required_headers": "contract:default", "browser_fetchable": "contract:unknown",
                     "drm": "contract:default", "segmented": origin if segmented else "contract:default",
                     "request_method": "contract:default", "expires_at": "contract:default",
-                    "host_policy": "adapter:exact_url_host",
+                    "host_policy": "contract:empty_list:any_public_https_host_passing_per_hop_checks",
                 }
                 expected_sources.update({f"items.1.variants.1:1.{field}": source
                                          for field, source in variant_sources.items()})
