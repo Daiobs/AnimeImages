@@ -230,6 +230,18 @@ class FloorAndUpgradeContract(TestCase):
         run, _ = simulate(floor_and_upgrade("secondary", "primary"), providers)
         self.assertEqual(run.shown.provider, "secondary")
 
+    def test_a_taller_but_undeliverable_late_result_is_not_an_upgrade(self):
+        for facts in (dict(segmented=True), dict(drm=True)):
+            with self.subTest(facts=facts):
+                blocked = video_work(variants=(variant("v2160", height=2160, **facts),))
+                providers = {
+                    "floor": FakeProvider(0.8, video_work(720)),
+                    "primary": FakeProvider(9, blocked),
+                }
+                run, _ = simulate(floor_and_upgrade("primary"), providers)
+                self.assertEqual((run.shown.provider, run.shown.completeness),
+                                 ("floor", Completeness.FINAL))
+
     def test_split_track_upgrade_ranks_by_its_merged_quality(self):
         split = video_work(variants=(
             variant("v2160", height=2160, tracks=Tracks.VIDEO_ONLY, merge_with="a1"),

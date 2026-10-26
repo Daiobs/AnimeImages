@@ -112,6 +112,32 @@ class DeliveryRuleContract(TestCase):
                 delivery = decide_delivery(Kind.VIDEO, variant(tracks=Tracks.UNKNOWN, **facts))
                 self.assertEqual((delivery.rule, delivery.method), expected)
 
+    def test_rule_0_drm_and_segmented_are_listed_but_not_downloaded(self):
+        cases = [
+            ("drm", dict(drm=True, fetchable=T), "DRM_PROTECTED"),
+            ("drm with headers", dict(drm=True, required_headers=("Referer",)), "DRM_PROTECTED"),
+            ("segmented", dict(segmented=True, fetchable=T), "SEGMENTED_STREAM"),
+            ("segmented split", dict(segmented=True, tracks=Tracks.VIDEO_ONLY, merge_with="a"),
+             "SEGMENTED_STREAM"),
+            ("both", dict(drm=True, segmented=True), "DRM_PROTECTED"),
+        ]
+        for name, facts, reason in cases:
+            with self.subTest(name):
+                for kind in (Kind.VIDEO, Kind.IMAGE, Kind.AUDIO):
+                    delivery = decide_delivery(kind, variant(**facts))
+                    self.assertEqual((delivery.rule, delivery.method, delivery.reason),
+                                     (0, Method.NONE, reason))
+                    self.assertFalse(delivery.counts_against_quota)
+
+    def test_rule_0_an_undeliverable_item_is_never_packed(self):
+        for facts, reason in ((dict(drm=True), "DRM_PROTECTED"),
+                              (dict(segmented=True), "SEGMENTED_STREAM")):
+            with self.subTest(reason=reason):
+                entries = [(Kind.IMAGE, variant("p1", fetchable=T)),
+                           (Kind.VIDEO, variant("m1", fetchable=T, **facts))]
+                delivery = decide_archive(entries)
+                self.assertEqual((delivery.method, delivery.reason), (Method.NONE, reason))
+
     def test_rules_apply_in_table_order(self):
         both = variant(tracks=Tracks.VIDEO_ONLY, merge_with="a", required_headers=("Referer",))
         self.assertEqual(decide_delivery(Kind.VIDEO, both).rule, 1)

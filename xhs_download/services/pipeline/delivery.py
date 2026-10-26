@@ -42,6 +42,10 @@ class Delivery:
         return self.fallback in SERVER_METHODS
 
 
+def _undeliverable_reason(variant):
+    return "DRM_PROTECTED" if variant.drm else "SEGMENTED_STREAM"
+
+
 def _needs_merge(variant):
     return variant.tracks is Tracks.VIDEO_ONLY and bool(variant.merge_with)
 
@@ -49,6 +53,8 @@ def _needs_merge(variant):
 def decide_delivery(kind, variant, *, allow_server_fallback=True,
                     blob_limit_bytes=BLOB_LIMIT_BYTES):
     """Deliver one selected variant; the first matching rule wins."""
+    if not variant.deliverable:
+        return Delivery(0, Method.NONE, reason=_undeliverable_reason(variant))
     if _needs_merge(variant):
         return Delivery(1, Method.SERVER_MERGE)
     if variant.required_headers:
@@ -72,6 +78,9 @@ def decide_archive(entries, *, allow_server_fallback=True):
     if len(entries) < 2:
         raise ValueError("an archive needs at least two items")
     variants = [variant for _kind, variant in entries]
+    blocked = next((variant for variant in variants if not variant.deliverable), None)
+    if blocked is not None:
+        return Delivery(0, Method.NONE, reason=_undeliverable_reason(blocked))
     if any(_needs_merge(variant) for variant in variants):
         return Delivery(1, Method.NONE, reason="ARCHIVE_NEEDS_MERGE")
     if any(variant.required_headers for variant in variants):
