@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "provider": "tiantianjiexi_generic",
+  "platform": "xiaohongshu",
+  "source_url": "https://www.xiaohongshu.com/explore/68abcdef0123456789abcdef",
+  "provenance": {
+    "kind": "synthetic",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "code": 200,
+    "msg": "success",
+    "data": {
+      "title": "Synthetic ordinary gallery",
+      "desc": "Two still images, with no motion or pair evidence.",
+      "images": [
+        "https://media.example/still-1.jpg",
+        "https://media.example/still-2.webp"
+      ],
+      "videos": []
+    }
+  }
+}

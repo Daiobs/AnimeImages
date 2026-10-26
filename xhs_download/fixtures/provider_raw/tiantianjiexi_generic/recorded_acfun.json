@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "provider": "tiantianjiexi_generic",
+  "platform": "acfun",
+  "source_url": "https://www.acfun.cn/v/ac37303684",
+  "provenance": {
+    "kind": "recorded",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "code": 200,
+    "data": {
+      "desc": "\u68a6 \u4e2d \u4ed9 \u5883 \uff01 \uff01 \uff01 \u539f\u7247286G\u30104k HDR\u3011\u4eba\u95f4\u4ed9\u5883\u632a\u5a01 - \u7edd\u7f8e\u98ce\u666f\u4f11\u95f2\u653e\u677e\u7597\u6108\u5f71\u7247",
+      "images": [
+        "https://tx-free-imgs.acfun.cn/newUpload/3353002_f9e48541f0a74212898fac98050d850b.jpeg?imageslim"
+      ],
+      "videos": [
+        {
+          "url": "http://tx-video.acfun.cn/mediacloud/acfun/acfun_video/b641f440d3511056-4dc2bd3484c9c9831619bd5be085f0c9-mp4_4k_1.mp4?sign=REDACTED&t=1791898651&us=512161125",
+          "streams": [
+            {
+              "url": "http://tx-video.acfun.cn/mediacloud/acfun/acfun_video/b641f440d3511056-fccf74f57ea0c9f5146a59fa4e662483-mp4_360p_1.mp4?sign=REDACTED&t=1791898651&us=425987190",
+              "sizeInBytes": 256504206,
+              "qualityLabel": "360P"
+            },
+            {
+              "url": "http://tx-video.acfun.cn/mediacloud/acfun/acfun_video/b641f440d3511056-43fbabae1a86ca81e716ce974629fc95-mp4_540p_1.mp4?sign=REDACTED&t=1791898651&us=176044474",
+              "sizeInBytes": 441223813,
+              "qualityLabel": "480P"
+            },
+            {
+              "url": "http://tx-video.acfun.cn/mediacloud/acfun/acfun_video/b641f440d3511056-43fbabae1a86ca81e716ce974629fc95-mp4_540p_1.mp4?sign=REDACTED&t=1791898651&us=112590686",
+              "sizeInBytes": 441223813,
+              "qualityLabel": "540P"
+            },
+            {
+              "url": "http://tx-video.acfun.cn/mediacloud/acfun/acfun_video/b641f440d3511056-d6d6f3d3d4be8324bdc56160e57bbfe6-mp4_720p_1.mp4?sign=REDACTED&t=1791898651&us=1303252131",
+              "sizeInBytes": 940515424,
+              "qualityLabel": "720P"
+            },
+            {
+              "url": "http://tx-video.acfun.cn/mediacloud/acfun/acfun_video/b641f440d3511056-d2b0e4b99b2c4d41bcbd57813fb6c02e-mp4_1080p_1.mp4?sign=REDACTED&t=1791898651&us=1221870433",
+              "sizeInBytes": 1454895518,
+              "qualityLabel": "1080P"
+            },
+            {
+              "url": "http://tx-video.acfun.cn/mediacloud/acfun/acfun_video/b641f440d3511056-fb56610df7f55457e787813c1d46ecb0-mp4_1080p_6m_1.mp4?sign=REDACTED&t=1791898651&us=476262215",
+              "sizeInBytes": 2705867906,
+              "qualityLabel": "1080P+"
+            },
+            {
+              "url": "http://tx-video.acfun.cn/mediacloud/acfun/acfun_video/b641f440d3511056-4dc2bd3484c9c9831619bd5be085f0c9-mp4_4k_1.mp4?sign=REDACTED&t=1791898651&us=512161125",
+              "sizeInBytes": 4428698300,
+              "qualityLabel": "2160P"
+            }
+          ]
+        }
+      ]
+    },
+    "msg": "success"
+  }
+}

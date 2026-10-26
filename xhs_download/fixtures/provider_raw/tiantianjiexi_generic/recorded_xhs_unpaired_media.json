@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "provider": "tiantianjiexi_generic",
+  "platform": "xiaohongshu",
+  "source_url": "https://www.xiaohongshu.com/explore/6adddada000000002403eb00?xsec_token=REDACTED&xsec_source=pc_search&source=web_explore_feed",
+  "provenance": {
+    "kind": "recorded",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "code": 200,
+    "data": {
+      "desc": "10.25 Live\u5b9e\u51b5\u56fe\uff5c\u6cbf\u6c5f\u6865\u5e95\u843d\u65e5\u7f8e\u75af\u4e86\uff01\ud83c\udf07|||\u6df1\u5733\u897f\u4e61\u85cf\u7740\u4e00\u4e2a\u62cd\u65e5\u843d\u5c01\u795e\u7684\u673a\u4f4d\u2728\n\ud83d\udccd\u5b9a\u4f4d\uff1a\u897f\u6e7e\u7ea2\u6811\u6797\uff08\u6cbf\u6c5f\u6865\u5e95\u516c\u4ea4\u7ad9\u524d\uff09\n\u8fd9\u91cc\u662f\u6444\u5f71\u7231\u597d\u8005\u624e\u5806\u7684\u5730\u65b9\uff0c\u4e00\u5230\u508d\u665a\uff0c\u5cb8\u8fb9\u5bc6\u5bc6\u9ebb\u9ebb\u6446\u6ee1\u4e09\u811a\u67b6\uff0c\u5927\u5bb6\u90fd\u5728\u7b49\u4e00\u573a\u8f6c\u77ac\u5373\u901d\u7684\u843d\u65e5\u3002\n\t\n\u771f\u5fc3\u5efa\u8bae\u4e94\u70b9\u591a\u5c31\u8fc7\u6765\u5360\u4f4d\u7f6e\uff01\n\u6700\u7f8e\u7684\u65e5\u843d\u9ec4\u91d1\u65f6\u95f4\u53ea\u6709\u77ed\u77ed\u5341\u51e0\u5206\u949f\uff0c\u592a\u9633\u843d\u4e0b\u7684\u901f\u5ea6\u7279\u522b\u5feb\uff0c\u665a\u4e00\u70b9\u70b9\u5c31\u9519\u8fc7\u3002\n\t\n\u6d77\u9762\u8fbd\u9614\uff0c\u8fdc\u5904\u6df1\u4e2d\u901a\u9053\u7684\u6865\u5854\u9759\u9759\u4f2b\u7acb\uff0c\u8fd8\u6709\u6d77\u4e0a\u9ad8\u538b\u7535\u5854\u3001\u822a\u6807\u70b9\u7f00\u5728\u753b\u9762\u91cc\u3002\u843d\u65e5\u4e0b\u6c89\u7684\u65f6\u5019\uff0c\u6574\u7247\u5929\u7a7a\u88ab\u70e7\u5f97\u6eda\u70eb\u6d53\u70c8\uff0c\u6f2b\u5929\u6a58\u7ea2\u94fa\u6d12\u6d12\u6d12\uff0c\u91d1\u5149\u987a\u7740\u6d77\u9762\u94fa\u5f00\uff0c\u6ce2\u5149\u7cbc\u7cbc\uff0c\u50cf\u6492\u4e86\u4e00\u6d77\u788e\u91d1\u3002\n\u6d77\u98ce\u8f7b\u8f7b\u5439\u8fc7\u6765\uff0c\u770b\u7740\u843d\u65e5\u6162\u6162\u6c89\u5411\u5927\u6865\uff0c\u5b89\u9759\u53c8\u6cbb\u6108\uff0c\u6240\u6709\u6d6e\u8e81\u90fd\u88ab\u8fd9\u7247\u6a58\u8272\u629a\u5e73\u3002\n\t\n\ud83d\udcf8\u62cd\u7167\u5c0f\u63d0\u9192\n\u25ab\ufe0f\u514d\u8d39\u673a\u4f4d\uff0c\u6ca1\u6709\u95e8\u7968\uff0c\u6d77\u8fb9\u98ce\u5927\uff0c\u8bb0\u5f97\u5e26\u5916\u5957\n\u25ab\ufe0f\u957f\u7126\u62cd\u5927\u6865\u548c\u843d\u65e5\u6c1b\u56f4\u611f\u66f4\u5f3a\uff0c\u624b\u673a\u4e5f\u5f88\u597d\u51fa\u7247\n\u25ab\ufe0f\u65e5\u843d\u7a97\u53e3\u671f\u5f88\u77ed\uff0c\u63d0\u524d\u8c03\u597d\u53c2\u6570\uff0c\u522b\u7b49\u592a\u9633\u843d\u4e0b\u53bb\u624d\u51c6\u5907\n\u25ab\ufe0f\u516c\u4ea4\u5750\u5230\u3010\u6cbf\u6c5f\u6865\u5e95\u7ad9\u3011\u4e0b\u8f66\u5f80\u524d\u8d70\u51e0\u6b65\u5c31\u5230\n\t\n#\u6df1\u5733\u65e5\u843d[\u8bdd\u9898]# #\u897f\u6e7e\u7ea2\u6811\u6797[\u8bdd\u9898]# #\u6df1\u4e2d\u901a\u9053[\u8bdd\u9898]# #\u897f\u4e61\u62cd\u7167[\u8bdd\u9898]# #\u6df1\u5733\u6d77\u8fb9\u65e5\u843d[\u8bdd\u9898]# #\u6df1\u5733\u5468\u672b\u53bb\u54ea\u513f[\u8bdd\u9898]#",
+      "images": [
+        "https://sns-img-hw.xhscdn.com/1040g2sg326ob04bslq4g4a5rmc8uieiu7c72om0?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/1040g2sg326ob04bslq6g4a5rmc8uieiuhn24570?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/1040g2sg326ob04bslq7g4a5rmc8uieiurqhr330?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/1040g2sg326ob04bslq8g4a5rmc8uieius5drd00?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_uhdr/1040g3qg326ob6hf850004a5rmc8uieiunvrbj0g?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_uhdr/1040g3qg326ob6hf8500g4a5rmc8uieiu2tt776g?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_uhdr/1040g3qg326ob6hf850104a5rmc8uieiu5ncii20?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_uhdr/1040g3qg326ob6hf8501g4a5rmc8uieiu0mb52q0?imageView2/2/w/0/format/jpg",
+        "https://sns-img-hw.xhscdn.com/notes_uhdr/1040g3qg326ob6hf850204a5rmc8uieiuqkngc98?imageView2/2/w/0/format/jpg"
+      ],
+      "videos": [
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadddacf930e2601005003a1729f2aad_19.mp4?sign=REDACTED&t=6ae36f33",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadddad034e9ab01005003a1729f45b3_19.mp4?sign=REDACTED&t=6ae36f33",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadddad134ebad01005003a1729f30dc_19.mp4?sign=REDACTED&t=6ae36f33",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadddad49213cc01005003a1729f4b1e_19.mp4?sign=REDACTED&t=6ae36f33",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadddad434f27a01005003a1729f36f8_19.mp4?sign=REDACTED&t=6ae36f33",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadddad534f44901005003a1729f2602_19.mp4?sign=REDACTED&t=6ae36f33",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadddad6931e4801005003a1729f28ec_19.mp4?sign=REDACTED&t=6ae36f33",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadddad7921b4001005003a1729f2701_19.mp4?sign=REDACTED&t=6ae36f33",
+          "streams": []
+        },
+        {
+          "url": "https://sns-video-hw.xhscdn.com/stream/1/10/19/01eadddad8921d4001005003a1729f2d8e_19.mp4?sign=REDACTED&t=6ae36f33",
+          "streams": []
+        }
+      ]
+    },
+    "msg": "success"
+  }
+}

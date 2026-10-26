@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "provider": "tiantianjiexi_generic",
+  "platform": "xiaohongshu",
+  "source_url": "https://www.xiaohongshu.com/explore/67abcdef0123456789abcdef",
+  "provenance": {
+    "kind": "synthetic",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "code": 200,
+    "msg": "success",
+    "data": {
+      "title": "Synthetic tea preparation",
+      "desc": "A deliberately synthetic ordinary video.",
+      "images": [
+        "https://media.example/tea-cover.jpg"
+      ],
+      "videos": [
+        {
+          "url": "https://media.example/tea-original.mp4",
+          "streams": [
+            {
+              "url": "https://media.example/tea-original.mp4",
+              "sizeInBytes": 29143890,
+              "qualityLabel": "\u539f\u753b"
+            },
+            {
+              "url": "https://media.example/tea-normal.mp4",
+              "sizeInBytes": 2663888,
+              "qualityLabel": "\u6b63\u5e38"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
