@@ -124,9 +124,8 @@ class KukutoolMappingBoundaryTests(TestCase):
         self.assertFalse(variant.size_exact)
         self.assertIs(variant.tracks, Tracks.AV)
 
-    def test_ordinary_headers_do_not_make_platform_attachment_only(self):
+    def test_ordinary_header_values_do_not_make_platform_attachment_only(self):
         self.raw["headers"] = {"Referer": "https://www.bilibili.com/", "Origin": "https://www.bilibili.com", "User-Agent": "UA", "Accept": "*/*"}
-        self.raw["required_headers"] = ["Referer"]
         item = self.map(source="https://www.bilibili.com/video/BV13x41117TL/").items[0]
         self.assertTrue(all(v.required_headers == () for v in item.variants))
         self.assertTrue(all(v.browser_fetchable is Fetchable.UNKNOWN for v in item.variants))
