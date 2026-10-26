@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "provider": "parsehub_xhs_images",
+  "platform": "xiaohongshu",
+  "source_url": "https://www.xiaohongshu.com/explore/0123456789abcdef01234567",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "note": {
+      "noteDetailMap": {
+        "0123456789abcdef01234567": {
+          "note": {
+            "noteId": "0123456789abcdef01234567",
+            "title": "Synthetic note",
+            "imageList": [
+              {
+                "urlDefault": "https://sns-img-hw.xhscdn.com/a.jpg",
+                "livePhoto": true,
+                "stream": {"h264": [{
+                  "masterUrl": "https://sns-video-v7.xhscdn.com/a.mp4",
+                  "width": 1080,
+                  "height": 1440,
+                  "backupUrls": ["https://sns-video-v7.xhscdn.com/a-backup.mp4"]
+                }]}
+              },
+              {"urlDefault": "https://sns-img-hw.xhscdn.com/b.jpg", "livePhoto": false},
+              {
+                "urlDefault": "https://sns-img-hw.xhscdn.com/c.jpg",
+                "livePhoto": true,
+                "stream": {"h265": [{"masterUrl": "https://sns-video-v7.xhscdn.com/c.mp4"}]}
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

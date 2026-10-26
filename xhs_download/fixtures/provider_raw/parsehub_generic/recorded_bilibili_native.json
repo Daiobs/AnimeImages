@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "provider": "parsehub_generic",
+  "platform": "bilibili",
+  "source_url": "https://www.bilibili.com/video/BV13x41117TL",
+  "provenance": {
+    "kind": "recorded",
+    "raw_kind": "json",
+    "complete": true
+  },
+  "raw": {
+    "_class": "BiliVideoParseResult",
+    "fields": {
+      "raw_url": "https://www.bilibili.com/video/BV13x41117TL",
+      "title": "\u963f\u6ef4\u82f1\u6587\uff5c\u82f1\u6587\u6b4c\u5206\u4eab#6 \"Closer",
+      "content": "\u6ef4\u59b9\u4eca\u5929\u5531Closer\u7d66\u4f60\u807d! \u6709\u53f2\u4ee5\u6765\uff0c\u88ab\u63a8\u6700\u591a\u6b21\u4e5f\u662f\u6700\u4e45\u7684\u6b4c\u66f2\uff0c\u5176\u5b9e\u6b4c\u8bcd\u8ddf\u6211\u539f\u672c\u60f3\u50cf\u5dee\u86ee\u591a\u7684\uff0c\u4e0d\u8fc7\u8fd8\u662f\u597d\u542c\uff01 \u5fae\u535a@\u963f\u6ef4\u82f1\u6587",
+      "media": {
+        "_class": "VideoRef",
+        "fields": {
+          "url": "https://upos-sz-upcdnbda2.bilivideo.com/upgcxcode/89/45/14694589/14694589-1-48.mp4?e=ig8euxZM2rNcNbRBnWdVhwdlhWUHhwdVhoNvNC8BqJIzNbfqXBvEqxTEto8BTrNvN0GvT90W5JZMkX_YN0MvXg8gNEV4NC8xNEV4N03eN0B5tZlqNxTEto8BTrNvNeZVuJ10Kj_g2UB02J0mN0B5tZlqNCNEto8BTrNvNC7MTX502C8f2jmMQJ6mqF2fka1mqx6gqj0eN0B599M=&deadline=1791874874&trid=29ed433295d84abf9bdf7f9fccba85cu&mid=0&nbs=1&platform=pc&gen=playurlv3&og=cos&oi=2346926022&uipk=5&os=cosbv&upsig=REDACTED&uparams=e,deadline,trid,mid,nbs,platform,gen,og,oi,uipk,os&bvc=vod&nettype=0&bw=1277100&lrs=-1&qn_dyeid=09ec3c842cc5afa900c725076acdbb1a&agrr=0&buvid=&build=0&dl=0&f=u_0_0&orderid=1,3",
+          "ext": "mp4",
+          "thumb_url": "http://i2.hdslb.com/bfs/archive/49267ce20bc246be6304bf369a3ded0256854c23.jpg",
+          "width": 640,
+          "height": 360,
+          "duration": 554
+        }
+      },
+      "platform": {
+        "_class": "Platform",
+        "fields": {
+          "id": "bilibili",
+          "display_name": "Bilibili"
+        }
+      },
+      "name": "\u963f\u6ef4\u82f1\u6587-\u82f1\u6587\u6b4c\u5206\u4eab-6-Closer"
+    }
+  }
+}
