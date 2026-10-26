@@ -1,7 +1,7 @@
 """KuKuTool decrypted business JSON and unconverted sidecar envelope mapping.
 
-The generic helper already returns raw JSON. Sidecar capture before the legacy
-conversion is P12; this module never consumes that conversion or fetches it.
+Generic and sidecar fetches are explicit entries. Neither consumes the legacy
+sidecar conversion as raw or silently switches the caller's chosen backend.
 """
 from copy import deepcopy
 import math
@@ -277,14 +277,19 @@ class KukutoolAdapter(Adapter[dict]):
 
     def fetch(self, source_url, budget):
         from ..common import XhsDownloadError, XhsProviderTimeoutError
+        from ..pipeline_shadow_capture import collect_raw
         from ..platforms.kukutool_generic import KukutoolGenericProvider
         if not math.isfinite(budget) or budget <= 0:
             return Failure(FailureKind.TIMEOUT, "ADAPTER_BUDGET_EXHAUSTED")
-        try:
-            # This cache holds helper raw JSON, unlike TianTian's normalized cache.
-            raw = KukutoolGenericProvider(runner=self.runner).parse(source_url, timeout_seconds=budget)
-        except (XhsDownloadError, XhsProviderTimeoutError, OSError, RuntimeError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
-            return failure_for_exception(error)
+        with collect_raw() as session:
+            try:
+                # This cache holds helper raw JSON, unlike TianTian's normalized cache.
+                raw = KukutoolGenericProvider(runner=self.runner).parse(source_url, timeout_seconds=budget)
+            except (XhsDownloadError, XhsProviderTimeoutError, OSError, RuntimeError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
+                return failure_for_exception(error)
+        records = [record for record in session.records if record.provider == self.name]
+        if records:
+            raw = records[-1].raw
         if not _is_raw(raw):
             return Failure(FailureKind.INVALID_RESULT, "KUKUTOOL_NO_RAW")
         return deepcopy(raw)
@@ -294,3 +299,46 @@ class KukutoolAdapter(Adapter[dict]):
             return _map(raw, source_url)
         except (TypeError, ValueError, KeyError, OverflowError):
             return Failure(FailureKind.INVALID_RESULT, "KUKUTOOL_INVALID_RAW")
+
+
+class KukutoolSidecarAdapter(KukutoolAdapter):
+    platforms = ("douyin",)
+
+    def __init__(self, *, base_url=None):
+        self.base_url = base_url
+
+    def fetch(self, source_url, budget):
+        import requests
+        from django.conf import settings
+        from ..pipeline_shadow_capture import collect_raw
+        from ..platforms.douyin import DouyinAdapter, extract_aweme_id
+        from ..platforms.douyin_kukutool import AWEME_ID_PATTERN, run_kukutool_sidecar
+
+        # The existing sidecar client has a 100 ms timeout floor.
+        if not math.isfinite(budget) or budget < 0.1:
+            return Failure(FailureKind.TIMEOUT, "ADAPTER_BUDGET_EXHAUSTED")
+        aweme_id = extract_aweme_id(source_url)
+        if not DouyinAdapter().supports_url(source_url) or not AWEME_ID_PATTERN.fullmatch(aweme_id):
+            return Failure(FailureKind.UNSUPPORTED, "KUKUTOOL_SIDECAR_SOURCE")
+        base_url = self.base_url if self.base_url is not None else getattr(settings, "KUKUTOOL_SIDECAR_BASE_URL", "")
+        if not base_url:
+            return Failure(FailureKind.UNAVAILABLE, "KUKUTOOL_SIDECAR_UNCONFIGURED")
+        timeout = min(budget, max(0.1, float(getattr(settings, "KUKUTOOL_SIDECAR_TIMEOUT_SECONDS", 3.0))))
+        failure = None
+        with collect_raw() as session:
+            try:
+                run_kukutool_sidecar(aweme_id, base_url=base_url, timeout_seconds=timeout)
+            except requests.Timeout:
+                failure = Failure(FailureKind.TIMEOUT, "KUKUTOOL_TIMEOUT")
+            except (OSError, RuntimeError, ValueError, TypeError) as error:
+                failure = failure_for_exception(error)
+        records = [record for record in session.records if record.provider == self.name]
+        if records:
+            record = records[-1]
+            status = record.metadata.get("http_status")
+            http_failure = failure_for_http(status) if type(status) is int else None
+            if http_failure:
+                return http_failure
+            if _is_raw(record.raw):
+                return record.raw
+        return failure or Failure(FailureKind.INVALID_RESULT, "KUKUTOOL_NO_RAW")

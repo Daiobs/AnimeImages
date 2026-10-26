@@ -11,6 +11,7 @@ from ..common import XhsProviderTimeoutError, clean_filename
 from ..provider_manifest import build_provider_manifest_token
 from ..provider_strategy import media_request_context
 from ..request_context import inherit_request_context
+from ..pipeline_shadow_capture import capture_enabled, capture_raw
 from .douyin_kukutool import submit_provider_task
 from .external_tools import (
     cache_external_failure,
@@ -72,6 +73,8 @@ def run_ytdlp_json(url, *, binary="", timeout_seconds=15.0):
         raise RuntimeError("yt-dlp returned invalid JSON") from error
     if not isinstance(payload, dict):
         raise RuntimeError("yt-dlp result format is invalid")
+    if capture_enabled():
+        capture_raw(PROVIDER_ID, payload, url)
     return payload
 
 
@@ -205,6 +208,8 @@ class YtDlpGenericProvider:
         source_key = source_key_for_url(url)
         cached = get_cached_external_payload(PROVIDER_ID, source_key)
         if cached is not None:
+            if capture_enabled():
+                capture_raw(PROVIDER_ID, cached, url)
             return cached
         failure = get_cached_external_failure(PROVIDER_ID, source_key)
         if failure:

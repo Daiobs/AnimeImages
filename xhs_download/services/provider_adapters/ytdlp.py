@@ -334,6 +334,22 @@ class YtDlpAdapter(Adapter[dict]):
 
     def map(self, raw, source_url):
         try:
-            return _map(raw, source_url)
+            from .worker_raw import decode_raw
+            return _map(decode_raw(raw), source_url)
         except (TypeError, ValueError, KeyError, OverflowError):
             return Failure(FailureKind.INVALID_RESULT, "YTDLP_INVALID_RAW")
+
+
+class YtDlpWorkerAdapter(YtDlpAdapter):
+    """Explicit Worker match; the existing CLI adapter stays unchanged."""
+
+    def __init__(self, *, match):
+        self.match = dict(match)
+
+    def fetch(self, source_url, budget):
+        from ..upstream_matching import parse_upstream_url
+        from .worker_raw import captured_fetch
+        if self.match.get("provider_id") != self.name:
+            return Failure(FailureKind.INVALID_RESULT, "YTDLP_INVALID_MATCH")
+        return captured_fetch(self.name, source_url, budget,
+            lambda: parse_upstream_url(self.match, source_url, timeout_seconds=budget), prefix="YTDLP")

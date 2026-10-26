@@ -112,7 +112,7 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
 
 `contracts/pipeline/` pins the kernel in `xhs_download/services/pipeline/` to the
 [unified pipeline contract](../docs/architecture/unified-pipeline.md), confirmed by
-Human on 2026-10-25. No request path uses the kernel yet, so these tests enter at
+Human on 2026-10-25. No user-facing decision uses the kernel yet, so these tests enter at
 the kernel's public API rather than public HTTP. Fake Providers return unified
 results or failures, and a virtual clock replaces real time; no platform code,
 network or database is involved. When a platform switches over, its HTTP contracts
@@ -153,6 +153,22 @@ the request reason ahead of the segmented one; unpaired video-only reported as a
 request problem.
 Run them with `PYTHONDONTWRITEBYTECODE=1`:
 a same-size edit restored within a second can otherwise reuse stale bytecode.
+
+## Pipeline Shadow
+
+`test_pipeline_shadow.py` enters the existing public HTTP controllers, health
+executor and Daily runner, replacing upstream HTTP through `contracts/network.py`.
+It checks identical on/off responses and request counts, fail-open errors, private
+counter dimensions, cache-without-raw, concurrent Native/late ultra capture, and
+health/Daily details. Neither public nor health callers wait for comparison.
+Shadow mapping does not select the response or authorize downloads.
+
+Counterchecks against the P12 draft: forcing the public switch off fails the
+on/off observation assertion; looking up configuration by `pk=1` fails the
+non-primary-key singleton case; synchronous health comparison fails the blocked
+comparator case. The latter two failed before correction and passed afterward.
+Worker-sideband, mapper fetch and comparison-detail cases live in the existing
+Django test discovery under `tests_pipeline_*`; no real Provider request is used.
 
 ## Recorded Counterchecks
 

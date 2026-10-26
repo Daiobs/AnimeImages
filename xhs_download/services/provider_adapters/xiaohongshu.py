@@ -1,4 +1,4 @@
-"""Pure Native XHS HTML/page-state mapping. Capture and fetching belong to P12."""
+"""Native XHS fetching and pure HTML/page-state mapping."""
 from dataclasses import dataclass, replace
 import re
 from types import MappingProxyType
@@ -15,6 +15,7 @@ from ..platforms.xhs_page_state import (
 )
 from ..work_caption import _TOPIC, work_caption_presentation
 from .failures import failure_for_http
+from .base import Adapter
 from .service_facts import _browser_fetchable, _expiry, _host_matches, _host_policy, _number, _required_headers, _text, _tracks, _url
 
 
@@ -510,3 +511,28 @@ class XiaohongshuMapper:
         except (TypeError, ValueError, KeyError, AttributeError, OverflowError, RecursionError) as error:
             code = str(error) if type(error) is ValueError and re.fullmatch(r"[A-Z_]+", str(error)) else "INVALID_RAW"
             return Failure(FailureKind.INVALID_RESULT, "XHS_" + code)
+
+
+class XiaohongshuAdapter(XiaohongshuMapper, Adapter[dict]):
+    def fetch(self, source_url, budget):
+        import math
+        import time
+        from ..pipeline_shadow_capture import collect_raw
+        from ..platforms.xiaohongshu import XiaohongshuAdapter
+
+        if not math.isfinite(budget) or budget <= 0:
+            return Failure(FailureKind.TIMEOUT, "ADAPTER_BUDGET_EXHAUSTED")
+        failure = None
+        with collect_raw() as session:
+            try:
+                XiaohongshuAdapter().parse_url(source_url, timeout_seconds=budget,
+                                              deadline_monotonic=time.monotonic() + budget)
+            except Exception as error:
+                if isinstance(error, TimeoutError) or type(error).__name__ in {"ReadTimeout", "ConnectTimeout", "XhsProviderTimeoutError"}:
+                    failure = Failure(FailureKind.TIMEOUT, "XHS_TIMEOUT")
+                else:
+                    status = getattr(error, "http_status", None)
+                    failure = failure_for_http(status) if type(status) is int else None
+                    failure = failure or Failure(FailureKind.UNAVAILABLE, "XHS_UNAVAILABLE")
+        records = [record for record in session.records if record.provider == self.name]
+        return records[-1].raw if records else failure or Failure(FailureKind.INVALID_RESULT, "XHS_NO_RAW")

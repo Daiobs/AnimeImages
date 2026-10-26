@@ -41,6 +41,7 @@ from .provider_health_tests import (
     validate_daily_test_keys,
     validate_daily_videodl_backend_id,
 )
+from .pipeline_shadow import daily_shadow_scope
 
 
 LOCK_KEY = "provider-health:daily-validation:v1:lock"
@@ -559,6 +560,7 @@ def _complete_suite(
     )
 
 
+@daily_shadow_scope
 def run_daily_provider_validation(
     *,
     force=False,

@@ -1,4 +1,4 @@
-"""Pure ParseHub objects/page state. Subprocess capture and fetch belong to P12."""
+"""Pure ParseHub mapping and fetch through the existing bounded bridges."""
 from dataclasses import replace
 import ipaddress
 from pathlib import PurePosixPath
@@ -13,6 +13,8 @@ from ..pipeline import Failure, FailureKind, Fetchable, Group, Item, Kind, Track
 from ..pipeline.model import PLACEHOLDER_LABELS, PLACEHOLDER_TITLES, SEGMENTED_PATH_SUFFIXES
 from ..work_caption import _TOPIC, work_caption_presentation
 from .failures import failure_for_http
+from .base import Adapter
+from .worker_raw import captured_fetch, decode_raw
 from .service_facts import _browser_fetchable, _expiry, _first, _host_policy, _number, _required_headers, _size, _source_id, _text, _tracks, _url
 from .ytdlp import YtDlpAdapter
 
@@ -380,7 +382,7 @@ class ParseHubMapper:
 
     def map(self, raw, source_url):
         try:
-            return _map_result(raw, source_url)
+            return _map_result(decode_raw(raw), source_url)
         except (TypeError, ValueError, KeyError, AttributeError, OverflowError) as error:
             code = str(error) if type(error) is ValueError and re.fullmatch(r"[A-Z_]+", str(error)) else "INVALID_RAW"
             return Failure(FailureKind.INVALID_RESULT, "PARSEHUB_" + code)
@@ -392,10 +394,38 @@ class ParseHubXhsMapper:
 
     def map(self, raw, source_url):
         try:
-            return _map_xhs(raw, source_url)
+            return _map_xhs(decode_raw(raw), source_url)
         except (TypeError, ValueError, KeyError, AttributeError, OverflowError) as error:
             code = str(error) if type(error) is ValueError and re.fullmatch(r"[A-Z_]+", str(error)) else "INVALID_RAW"
             return Failure(FailureKind.INVALID_RESULT, "PARSEHUB_" + code)
+
+
+class ParseHubAdapter(ParseHubMapper, Adapter):
+    def __init__(self, *, match):
+        self.match = dict(match)
+
+    def fetch(self, source_url, budget):
+        from ..upstream_parsehub import parse_upstream_url
+        if self.match.get("provider_id") != self.name:
+            return Failure(FailureKind.INVALID_RESULT, "PARSEHUB_INVALID_MATCH")
+        return captured_fetch(self.name, source_url, budget,
+            lambda: parse_upstream_url(self.match, source_url, timeout_seconds=budget), prefix="PARSEHUB")
+
+
+class ParseHubXhsAdapter(ParseHubXhsMapper, Adapter):
+    def __init__(self, *, note_id=None):
+        self.note_id = note_id
+
+    def fetch(self, source_url, budget):
+        import time
+        from ..platforms.xhs_parsehub_images import load_parsehub_worker_payload
+        note_id = self.note_id or _source_id(source_url)
+        if not isinstance(note_id, str) or not re.fullmatch(r"[0-9a-f]{24}", note_id):
+            return Failure(FailureKind.INVALID_RESULT, "PARSEHUB_XHS_INVALID_SOURCE")
+        return captured_fetch(self.name, source_url, budget,
+            lambda: load_parsehub_worker_payload(source_url=source_url, note_id=note_id,
+                                                deadline_monotonic=time.monotonic() + budget),
+            prefix="PARSEHUB_XHS")
 
 
 def failure_for_exception(error):

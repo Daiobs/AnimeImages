@@ -1,4 +1,4 @@
-"""Pure Native view/playurl JSON mapping. Capture and fetch belong to P12.
+"""Native view/playurl fetching and pure JSON mapping.
 
 Input is {view: API JSON, playurl: API JSON, selection: {page,
 playurl_params: {cid, bvid or avid}, page_url: optional resolved video URL}}.
@@ -8,7 +8,9 @@ context. In particular, API cookies and API request headers are not inherited.
 """
 from dataclasses import replace
 from fractions import Fraction
+import math
 import re
+import time
 from types import MappingProxyType
 from urllib.parse import parse_qs, urldefrag, urlsplit
 
@@ -19,6 +21,7 @@ from ..pipeline import (
 from ..pipeline.model import PLACEHOLDER_LABELS, PLACEHOLDER_TITLES, SEGMENTED_PATH_SUFFIXES
 from ..work_caption import _TOPIC, work_caption_presentation
 from .failures import failure_for_code, failure_for_http
+from .base import Adapter
 from .service_facts import (
     _browser_fetchable, _expiry, _first, _host_matches, _host_policy, _number,
     _required_headers, _size, _text, _tracks, _url,
@@ -403,6 +406,23 @@ class BilibiliMapper:
             kind = FailureKind.UNSUPPORTED if code == "UNSUPPORTED_SOURCE" else FailureKind.INVALID_RESULT
             return Failure(kind, "BILIBILI_" + code)
 
+
+class BilibiliAdapter(BilibiliMapper, Adapter[dict]):
+    def fetch(self, source_url, budget):
+        from ..pipeline_shadow_capture import collect_raw
+        from ..platforms.bilibili import BilibiliAdapter
+
+        if not math.isfinite(budget) or budget <= 0:
+            return Failure(FailureKind.TIMEOUT, "ADAPTER_BUDGET_EXHAUSTED")
+        failure = None
+        with collect_raw() as session:
+            try:
+                BilibiliAdapter().parse_url(source_url, timeout_seconds=budget,
+                                           deadline_monotonic=time.monotonic() + budget)
+            except Exception as error:
+                failure = failure_for_exception(error)
+        records = [record for record in session.records if record.provider == self.name]
+        return records[-1].raw if records else failure or Failure(FailureKind.INVALID_RESULT, "BILIBILI_NO_RAW")
 
 def failure_for_exception(error):
     if isinstance(error, TimeoutError) or type(error).__name__ in {"ReadTimeout", "ConnectTimeout", "XhsProviderTimeoutError"}:

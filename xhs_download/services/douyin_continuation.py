@@ -12,6 +12,7 @@ from django.core import signing
 from django.core.cache import cache
 
 from .assets import MediaAsset, ParseResult
+from .pipeline_shadow_capture import capture_result
 from .common import (
     XhsParseError,
     XhsProviderTimeoutError,
@@ -629,6 +630,7 @@ class DouyinContinuationCoordinator:
                             else time.time() + self.settle_seconds
                         )
                         self._settle_first_upgrade()
+                        capture_result(prepared_result)
             except XhsProviderTimeoutError:
                 self._timeout_count += 1
             except Exception:

@@ -486,6 +486,8 @@ class TianTianJieXiApiClient:
             raise TianTianJieXiUncertainError("天天解析接口请求失败", diagnostic_detail="SERVICE_NETWORK_ERROR") from error
         except ValueError as error:
             raise TianTianJieXiApiError("天天解析接口返回非 JSON", diagnostic_detail="SERVICE_INVALID_JSON") from error
+        from ..pipeline_shadow_capture import capture_raw
+        capture_raw("tiantianjiexi_generic", payload, url)
         if self.observe is not None:
             self.observe(payload)
         ensure_api_success(payload)

@@ -21,6 +21,7 @@ from .contracts import (
     ProviderLabError,
     SCHEMA_VERSION,
 )
+from ..worker_raw_capture import worker_capture
 
 
 MAX_WORKER_STDOUT_BYTES = 1024 * 1024
@@ -201,6 +202,12 @@ def execute_provider_worker(
 
     try:
         with (
+            worker_capture(
+                request_data, "videodl_repo", source,
+                enabled=worker_path.name == "videodl_worker.py" and operation not in {"inventory", "match_dedicated"},
+                timeout_seconds=timeout_seconds,
+                backend_id=backend_id, backend_category=backend_category,
+            ) as (capture_request, capture_options),
             tempfile.TemporaryDirectory(prefix="animeimages_provider_lab_") as root,
             tempfile.TemporaryFile() as stdin_file,
             tempfile.TemporaryFile() as stdout_file,
@@ -220,6 +227,8 @@ def execute_provider_worker(
             )
             if not environment_is_clean(env):
                 raise ProviderLabError("PROVIDER_PROCESS_FAILED")
+            if capture_options:
+                request_payload = json.dumps(capture_request, ensure_ascii=True, separators=(",", ":"))
             stdin_file.write(request_payload.encode("utf-8"))
             stdin_file.seek(0)
             completed = _execute_external_process(
@@ -232,6 +241,7 @@ def execute_provider_worker(
                 timeout_seconds=timeout_seconds,
                 max_stdout_bytes=MAX_WORKER_STDOUT_BYTES,
                 max_stderr_bytes=MAX_WORKER_STDERR_BYTES,
+                **capture_options,
             )
             stdout = read_external_output(
                 stdout_file,

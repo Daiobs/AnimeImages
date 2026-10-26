@@ -128,7 +128,7 @@ def validate_operation_request(request: dict) -> str:
         "source",
         "max_assets",
         "max_output_bytes",
-    } | OPTIONAL_REQUEST_FIELDS
+    } | OPTIONAL_REQUEST_FIELDS | {"_shadow_capture_fd"}
     if not set(request).issubset(allowed_fields):
         raise WorkerError("PROVIDER_INVALID_JSON")
     present_optional = OPTIONAL_REQUEST_FIELDS.intersection(request)
@@ -391,16 +391,23 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
+    observe = None
     try:
         verify_install()
         if args.check_only:
             emit_check(PROVIDER_ID, PROVIDER_VERSION)
             return 0
         request = parse_request(
-            optional_fields=OPTIONAL_REQUEST_FIELDS,
+            optional_fields=OPTIONAL_REQUEST_FIELDS | {"_shadow_capture_fd"},
             allow_empty_source=True,
         )
         operation = validate_operation_request(request)
+        if "_shadow_capture_fd" in request and operation == "backend":
+            try:
+                import runpy
+                observe = runpy.run_path(str(Path(__file__).resolve().parents[3] / "worker_raw_sideband.py"))["observer"](request)
+            except Exception:
+                pass
         if operation == "inventory":
             emit_message(
                 {"operation": operation, "inventory": backend_inventory()},
@@ -422,6 +429,7 @@ def main() -> int:
                 request["backend_id"],
                 request["backend_category"],
                 str(Path.cwd() / "provider-work"),
+                **({"observe": observe} if observe is not None else {}),
             )
         else:
             client = build_client(str(Path.cwd() / "provider-work"))
@@ -449,6 +457,9 @@ def main() -> int:
     except Exception:
         emit_error("PROVIDER_PROCESS_FAILED")
         return 2
+    finally:
+        if observe is not None:
+            observe.finish()
 
 
 if __name__ == "__main__":

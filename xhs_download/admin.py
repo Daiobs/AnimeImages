@@ -1,9 +1,15 @@
 from django import forms
 from django.contrib import admin, messages
+from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from django.http import FileResponse, Http404
 from django.shortcuts import redirect
+from django.template import engines
+from django.template.response import TemplateResponse
 from django.urls import path, reverse
+from django.utils.decorators import method_decorator
 from django.utils.html import format_html
+from django.views.decorators.csrf import csrf_protect
 
 from .admin_batch_runtime import (
     BATCH_RUNTIME_MUTATION_FIELDS,
@@ -32,6 +38,7 @@ from .models import (
     SelfHealingEvent,
     UserFeedback,
 )
+from .services.observability import record_provider_admin_audit_log
 
 
 @admin.register(BatchParseRuntimeSetting)
@@ -229,25 +236,40 @@ class ReadOnlyLogAdmin(admin.ModelAdmin):
         return bool(getattr(request.user, "is_superuser", False))
 
 
-class _ProviderShadowSettingForm(forms.ModelForm):
-    class Meta:
-        model = ProviderHealthTestSetting
-        fields = ("public_shadow_enabled",)
+class _ProviderShadowSettingForm(forms.Form):
+    public_shadow_enabled = forms.BooleanField(required=False, label="公开解析影子开关")
 
-    def _post_clean(self):
-        # Only the Boolean form field is editable here. ModelForm's usual
-        # model.clean() also validates hidden legacy configuration fields.
-        if "public_shadow_enabled" in self.cleaned_data:
-            self.instance.public_shadow_enabled = self.cleaned_data["public_shadow_enabled"]
+
+_PROVIDER_SHADOW_SETTING_TEMPLATE = """
+{% extends "admin/base_site.html" %}{% load i18n static %}
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/css/forms.css' %}">{% endblock %}
+{% block breadcrumbs %}<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% translate "Home" %}</a> &rsaquo;
+<a href="{{ changelist_url }}">{{ opts.verbose_name_plural }}</a> &rsaquo; {{ title }}
+</div>{% endblock %}
+{% block content %}<div id="content-main">
+{% if can_change %}<form method="post">{% csrf_token %}{{ form.non_field_errors }}{% endif %}
+<fieldset class="module aligned">
+<div class="form-row field-public_shadow_enabled">
+{% if can_change %}{{ form.public_shadow_enabled.errors }}{{ form.public_shadow_enabled }} {{ form.public_shadow_enabled.label_tag }}
+{% else %}<label>公开解析影子开关:</label><div class="readonly">{{ public_shadow_enabled|yesno }}</div>{% endif %}
+</div>
+<div class="form-row field-updated_at"><label>Updated at:</label><div class="readonly">{{ updated_at|default_if_none:"-" }}</div></div>
+</fieldset>
+{% if can_change %}<div class="submit-row"><input type="submit" name="_save" value="{% translate 'Save' %}" class="default"></div></form>{% endif %}
+</div>{% endblock %}
+"""
 
 
 @admin.register(ProviderHealthTestSetting)
 class ProviderHealthTestSettingAdmin(admin.ModelAdmin):
-    form = _ProviderShadowSettingForm
     fields = ("public_shadow_enabled", "updated_at")
     readonly_fields = ("updated_at",)
     list_display = ("public_shadow_enabled", "updated_at")
     actions = None
+
+    def get_form(self, request, obj=None, **kwargs):
+        return _ProviderShadowSettingForm
 
     def has_add_permission(self, request):
         return self.has_change_permission(request) and not self.model.objects.exists()
@@ -259,20 +281,66 @@ class ProviderHealthTestSettingAdmin(admin.ModelAdmin):
         request._skip_batch_runtime_visibility_load = True
         return super().changelist_view(request, extra_context)
 
+    @method_decorator(csrf_protect)
     def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
         request._skip_batch_runtime_visibility_load = True
-        return super().changeform_view(request, object_id, form_url, extra_context)
+        adding = object_id is None
+        obj = None if adding else self.get_object(request, object_id)
+        if not adding and obj is None:
+            raise Http404
+        can_change = self.has_add_permission(request) if adding else self.has_change_permission(request, obj)
+        if (adding and not can_change or request.method == "POST" and not can_change
+                or not adding and not self.has_view_or_change_permission(request, obj)):
+            raise PermissionDenied
+        initial = {"public_shadow_enabled": obj.public_shadow_enabled if obj else False}
+        form = self.get_form(request, obj)(request.POST if request.method == "POST" else None, initial=initial)
+        if request.method == "POST" and form.is_valid():
+            with transaction.atomic():
+                if adding:
+                    obj = self.model()
+                changed = self.save_model(request, obj, form, change=not adding)
+                if adding:
+                    self.log_addition(request, obj, [{"added": {}}])
+                elif changed:
+                    self.log_change(request, obj, [{"changed": {"fields": ["public_shadow_enabled"]}}])
+            return self.response_add(request, obj) if adding else self.response_change(request, obj)
+        context = {
+            **self.admin_site.each_context(request),
+            **(extra_context or {}),
+            "title": "公开解析影子开关",
+            "opts": self.opts,
+            "form": form,
+            "can_change": can_change,
+            "public_shadow_enabled": initial["public_shadow_enabled"],
+            "updated_at": obj.updated_at if obj else None,
+            "changelist_url": reverse("admin:xhs_download_providerhealthtestsetting_changelist"),
+        }
+        template = engines["django"].from_string(_PROVIDER_SHADOW_SETTING_TEMPLATE)
+        return TemplateResponse(request, template, context)
 
     def history_view(self, request, object_id, extra_context=None):
         request._skip_batch_runtime_visibility_load = True
         return super().history_view(request, object_id, extra_context)
 
     def save_model(self, request, obj, form, change):
-        if change:
-            obj.save(update_fields=("public_shadow_enabled", "updated_at"))
-        else:
-            obj.singleton_key = 1
-            obj.save(force_insert=True)
+        with transaction.atomic():
+            before = {}
+            if change:
+                persisted = self.model.objects.select_for_update().only("public_shadow_enabled").get(pk=obj.pk)
+                before = {"public_shadow_enabled": persisted.public_shadow_enabled}
+            obj.public_shadow_enabled = form.cleaned_data["public_shadow_enabled"]
+            if change:
+                obj.save(update_fields=("public_shadow_enabled", "updated_at"))
+            else:
+                obj.singleton_key = 1
+                obj.save(force_insert=True)
+            after = {"public_shadow_enabled": obj.public_shadow_enabled}
+            if before != after:
+                record_provider_admin_audit_log(
+                    request, action="provider_shadow_update",
+                    before_snapshot=before, after_snapshot=after,
+                )
+            return before != after
 
 
 @admin.register(PipelineShadowDailyCount)

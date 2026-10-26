@@ -1,4 +1,5 @@
 from .common import XhsParseError, extract_url_from_text
+from .pipeline_shadow import observe_result
 from .platforms import (
     BilibiliAdapter,
     DouyinAdapter,
@@ -122,6 +123,7 @@ def list_platforms():
     return default_registry.list_platforms()
 
 
+@observe_result
 def parse_media_page(
     url,
     prefer_ultra_hd=False,

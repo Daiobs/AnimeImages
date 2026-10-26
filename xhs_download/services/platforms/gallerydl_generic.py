@@ -5,6 +5,7 @@ from concurrent.futures import TimeoutError
 from urllib.parse import urlparse
 
 from django.conf import settings
+from ..pipeline_shadow_capture import capture_enabled, capture_raw
 
 from ..assets import MediaAsset, ParseResult
 from ..common import XhsProviderTimeoutError, clean_filename
@@ -98,7 +99,7 @@ def run_gallerydl_json(url, *, binary="", timeout_seconds=15.0, max_items=30):
     if not stdout:
         raise RuntimeError("gallery-dl returned empty output")
     try:
-        return json.loads(stdout)
+        payload = json.loads(stdout)
     except json.JSONDecodeError:
         payload = []
         for line in stdout.splitlines():
@@ -109,7 +110,9 @@ def run_gallerydl_json(url, *, binary="", timeout_seconds=15.0, max_items=30):
                 payload.append(json.loads(line))
             except json.JSONDecodeError as error:
                 raise RuntimeError("gallery-dl returned invalid JSON") from error
-        return payload
+    if capture_enabled():
+        capture_raw(PROVIDER_ID, payload, url)
+    return payload
 
 
 def integer_value(value):
@@ -258,6 +261,8 @@ class GalleryDlGenericProvider:
         source_key = source_key_for_url(url)
         cached = get_cached_external_payload(PROVIDER_ID, source_key)
         if cached is not None:
+            if capture_enabled():
+                capture_raw(PROVIDER_ID, cached, url)
             return cached
         failure = get_cached_external_failure(PROVIDER_ID, source_key)
         if failure:

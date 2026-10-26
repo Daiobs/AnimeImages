@@ -530,7 +530,8 @@ def parse_ytdlp(cls, url, timeout, observe=None):
                 if observe is not None:
                     # Preserve already-returned descriptors; Capture never advances lazy entries.
                     observe(result)
-                    raise ValueError('collection_denied')
+                    if not getattr(observe, "allow_collections", False):
+                        raise ValueError('collection_denied')
                 result = {**compact_descriptor(result), '_type': result['_type'],
                           'entries': result.get('entries')}
                 entries = []
@@ -778,7 +779,7 @@ def probe_ytdlp_result(payload, *, deadline, budget):
             candidate['url'], deadline_monotonic=deadline)
 
 
-def handle(request):
+def handle(request, observe=None):
     global _STAGE
     _STAGE = "identity"
     provider = request["provider_id"]
@@ -829,7 +830,8 @@ def handle(request):
     timeout = min(30.0, max(0.1, timeout))
     deadline = time.monotonic() + timeout
     with runtime_budget(timeout) as budget:
-        payload = (parse_ytdlp if provider == "yt_dlp_generic" else parse_gallery)(exact[0], url, timeout)
+        payload = (parse_ytdlp if provider == "yt_dlp_generic" else parse_gallery)(
+            exact[0], url, timeout, **({"observe": observe} if observe is not None else {}))
     if provider == "yt_dlp_generic":
         # The probe owns its hard timer; the child network guard remains installed.
         _STAGE = "ytdlp_probe"
@@ -837,9 +839,23 @@ def handle(request):
     return payload
 
 
+def raw_observer(request):
+    if "_shadow_capture_fd" not in request:
+        return None
+    try:
+        import runpy
+        factory = runpy.run_path(str(Path(__file__).with_name("worker_raw_sideband.py")))["observer"]
+        return factory(request)
+    except Exception:
+        return None
+
+
 def main():
+    observe = None
     try:
         request = json.loads(sys.stdin.read(16385))
+        if request.get("action") == "parse":
+            observe = raw_observer(request)
         try:
             import resource
             ceiling = 1536 * 1024 * 1024
@@ -857,13 +873,15 @@ def main():
         os.environ["YTDLP_NO_PLUGINS"] = "1"
         install_network_guard(offline=request.get("action") not in {"parse", "probe_tracks"})
         with contextlib.redirect_stdout(sys.stderr):
-            payload = handle(request)
+            payload = handle(request, **({"observe": observe} if observe is not None else {}))
         output = json.dumps({"ok": True, "payload": payload}, ensure_ascii=True)
         if len(output.encode()) > MAX_OUTPUT:
             raise ValueError("output_limit")
     except Exception as error:
         output = json.dumps(safe_error(error))
     sys.stdout.write(output)
+    if observe is not None:
+        observe.finish()
 
 
 if __name__ == "__main__":

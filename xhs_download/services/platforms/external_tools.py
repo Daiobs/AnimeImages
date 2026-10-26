@@ -262,6 +262,7 @@ def _execute_external_process(
     progress_path=None,
     estimated_size=0,
     progress_interval_seconds=0.25,
+    pass_fds=(),
 ):
     popen_kwargs = {
         "stdout": stdout,
@@ -272,6 +273,8 @@ def _execute_external_process(
     }
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
+    if pass_fds:
+        popen_kwargs["pass_fds"] = pass_fds
 
     process = None
     process_group_id = None
@@ -357,6 +360,7 @@ def run_external_command(
     progress_path=None,
     estimated_size=0,
     progress_interval_seconds=0.25,
+    pass_fds=(),
 ):
     args = resolve_external_command_for_cwd(args)
     with (
@@ -394,6 +398,7 @@ def run_external_command(
             progress_path=progress_path,
             estimated_size=estimated_size,
             progress_interval_seconds=progress_interval_seconds,
+            **({"pass_fds": pass_fds} if pass_fds else {}),
         )
         completed.stdout = read_external_output(
             stdout_file,
