@@ -122,7 +122,7 @@ must reach the kernel instead of an old path.
   and bounded cooldown that expires without admin action.
 - Model: default variant, placeholders, split tracks, unknown tracks and the
   `TRACKS_UNKNOWN` gap, Provider resolution labels, DRM and segmented streams,
-  field coverage.
+  request methods, unpaired video-only variants, field coverage.
 - Delivery: one case per table rule, plus Provider, platform and resource-ID
   counter-cases that must not change the outcome.
 - Filenames: short title, numbering, live-photo pairs, real extensions.
@@ -146,7 +146,11 @@ unknown tracks not counted; images counted as unknown tracks. The D-02 amendment
 stream; undeliverable variants delivered; segmented or DRM counted deliverable;
 downloadable variants not preferred; an unmarked manifest URL accepted; the URL
 check case-sensitive, reading the query, or missing `.m4s`; an archive packing an
-undeliverable item.
+undeliverable item. The D-03/D-04 amendment (request methods, unpaired video-only)
+adds seven, each also caught: non-GET or unpaired video-only counted deliverable;
+the method check removed or accepting lower case; POST reported as a merge need;
+the request reason ahead of the segmented one; unpaired video-only reported as a
+request problem.
 Run them with `PYTHONDONTWRITEBYTECODE=1`:
 a same-size edit restored within a second can otherwise reuse stale bytecode.
 

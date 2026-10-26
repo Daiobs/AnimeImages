@@ -205,3 +205,31 @@ class DeliverabilityContract(TestCase):
                     "https://media.example.test/video.mp4?list=a.m3u8"):
             with self.subTest(url=url):
                 self.assertEqual(validate_work(video_work(variants=(replace(variant("v"), url=url),))), ())
+
+
+class RequestMethodContract(TestCase):
+    """D-03: only GET is downloadable; the method must be a real upper-case name."""
+
+    def test_method_defaults_to_get(self):
+        self.assertEqual(Variant(variant_id="v", url="https://media.example.test/v").request_method, "GET")
+
+    def test_non_get_is_listed_but_loses_the_default(self):
+        post = variant("post", height=2160, request_method="POST")
+        get = variant("get", height=720)
+        self.assertFalse(post.deliverable)
+        self.assertEqual(item(post, get).default_variant.variant_id, "get")
+        self.assertEqual(validate_work(video_work(variants=(post,))), ())
+
+    def test_method_must_be_an_upper_case_name(self):
+        for method in ("post", "Get", "", "GET ", "P0ST", "X" * 11):
+            with self.subTest(method=method):
+                work = video_work(variants=(variant("v", request_method=method),))
+                self.assertIn("invalid_request_method", validate_work(work))
+
+
+class UnpairedVideoContract(TestCase):
+    """D-04: a video-only variant without an audio partner is listed, not downloaded."""
+
+    def test_unpaired_video_only_is_not_deliverable_but_paired_is(self):
+        self.assertFalse(variant("v", tracks=Tracks.VIDEO_ONLY).deliverable)
+        self.assertTrue(variant("v", tracks=Tracks.VIDEO_ONLY, merge_with="a").deliverable)

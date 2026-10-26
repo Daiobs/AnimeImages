@@ -270,6 +270,9 @@ def _map(raw, source_url):
                     source = "adapter:resource_identity"
                 elif field == "browser_fetchable" or field == "tracks" and value is Tracks.UNKNOWN:
                     source = "contract:unknown"
+                elif field == "request_method":
+                    # yt-dlp does not state a method; GET is the contract default (D-03).
+                    source = "contract:default"
                 elif field == "drm" and any("has_drm" in row and row["has_drm"] is not None
                                             for row in observed[variant.variant_id]):
                     source = NAME
