@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "provider": "yt_dlp_generic",
+  "platform": "generic",
+  "source_url": "https://source.example/audio/recording",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "_type": "video",
+    "id": "recording",
+    "extractor": "generic",
+    "webpage_url": "https://source.example/audio/recording",
+    "title": "Synthetic sound",
+    "description": "",
+    "uploader": null,
+    "channel": "Sound creator",
+    "thumbnail": null,
+    "thumbnails": [{"url": "https://images.example/recording.jpg"}],
+    "duration": 12.5,
+    "format_id": "m4a",
+    "url": "https://cdn.example/recording.m4a",
+    "ext": "m4a",
+    "vcodec": "none",
+    "acodec": "mp4a.40.2",
+    "formats": [
+      {
+        "format_id": "m4a", "url": "https://cdn.example/recording.m4a",
+        "ext": "m4a", "protocol": "https", "format_note": "audio only",
+        "vcodec": "none", "acodec": "mp4a.40.2", "tbr": 128,
+        "filesize": 200000
+      },
+      {
+        "format_id": "opus", "url": "https://cdn.example/recording.opus",
+        "ext": "opus", "protocol": "https", "format_note": "audio only",
+        "vcodec": "none", "acodec": "opus", "tbr": 192,
+        "filesize_approx": 300000
+      }
+    ]
+  }
+}

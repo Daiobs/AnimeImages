@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "provider": "yt_dlp_generic",
+  "platform": "generic",
+  "source_url": "https://source.example/collection/chapters",
+  "provenance": {"kind": "synthetic", "raw_kind": "json", "complete": true},
+  "raw": {
+    "_type": "multi_video",
+    "id": "chapters",
+    "extractor": "generic",
+    "webpage_url": "https://source.example/collection/chapters",
+    "title": "Synthetic chapters",
+    "description": "Two parts in upstream order. #chapters",
+    "creator": "Chapter creator",
+    "thumbnail": "https://images.example/chapters.jpg",
+    "duration": 30,
+    "entries": [
+      {
+        "_type": "video", "id": "part", "title": "First part",
+        "url": "https://cdn.example/chapters/one.mp4", "ext": "mp4",
+        "protocol": "https", "duration": 10
+      },
+      {
+        "_type": "video", "id": "part", "title": "Second part",
+        "duration": 20,
+        "formats": [
+          {
+            "format_id": "480", "url": "https://cdn.example/chapters/two.mp4",
+            "ext": "mp4", "protocol": "https", "vcodec": "avc1.4d401e",
+            "acodec": "mp4a.40.2", "height": 480, "width": 854,
+            "fps": 25, "tbr": 800, "filesize": 2000000
+          }
+        ]
+      }
+    ]
+  }
+}
