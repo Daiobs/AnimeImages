@@ -154,6 +154,59 @@ request problem.
 Run them with `PYTHONDONTWRITEBYTECODE=1`:
 a same-size edit restored within a second can otherwise reuse stale bytecode.
 
+## Unified Grants (P13)
+
+`pipeline/test_grant.py` enters `pipeline.grant` directly with unified Works and
+an explicit virtual UTC clock. The module is not connected to current requests
+or tokens. It uses only the standard library and a caller-supplied bytes key.
+`issue_grant` signs the selected variant's URL, host policy, platform, work and
+variant IDs, required-header **names**, issue time and expiry. Expiry is the
+earlier of the resource's expiry and the short TTL (at most 300 seconds).
+`verify_grant` authenticates immutable claims; consumers must use those claims,
+not a second set of client-submitted resource fields.
+
+Eligibility uses the model's `Variant.deliverable` (rule 0). A resource grant
+does not override the existing single-item, merge or archive delivery decision;
+it does not itself permit a rule-7 download or select a fallback transport.
+Header values, title, description, source URL and Provider data are not included.
+
+`verify_hop` authenticates again at each hop. Its `is_redirect` flag must come
+from the trusted outbound loop, never from client input. The initial URL must
+match byte-for-byte, including its path, query and port. A nonempty policy must
+match every hop with a dot boundary, including the initial URL. Under D-06 an
+empty policy allows redirects to any HTTPS hostname; the original authorized
+HTTP URL remains valid, and a nonempty policy does not change existing HTTP
+attachment handling. IP literals, credentials and malformed host policies are
+rejected rather than silently widening scope.
+
+This is only the grant/scope check, not SSRF approval: public-address validation,
+allowed ports, DNS pinning and redirect request-context handling remain with the
+existing outbound layer. The kernel performs no DNS or network I/O. Per-hop
+integration and replacement of old tokens belong to Step 3, not this PR.
+
+The 29 test methods include an independently signed token, a virtual clock,
+every signed-field tamper, wrong-key and purpose rejection, each rule-0 reason,
+HTTP compatibility, immutable verified claims and a separate `python -S`
+process that forbids Django imports. No upstream or DNS requests are needed.
+
+Counterchecks on 2026-10-26: 21 isolated, single-change mutations were all
+rejected by these tests (the unchanged baseline passed):
+
+- skip signature checking or remove the HMAC purpose domain;
+- ignore resource expiry, take the later expiry, skip time checks, accept the
+  exact expiry instant, or remove the TTL ceiling;
+- bypass rule 0;
+- check only the first-hop host, skip its policy check, or match suffixes
+  without a dot boundary;
+- accept HTTP redirects with an empty policy, or reject authorized HTTP URLs;
+- drop required-header names, accept header values, or accept a header mapping;
+- accept IP literals or numeric IPv4 aliases;
+- accept unknown token versions or URL credentials;
+- import Django into the grant module.
+
+Run the counterchecks in temporary copies, not by editing the live checkout;
+do not weaken the assertions to accommodate a mutation.
+
 ## Pipeline Shadow
 
 `test_pipeline_shadow.py` enters the existing public HTTP controllers, health
