@@ -165,6 +165,7 @@ class DouyinTianTianFirstTests(SimpleTestCase):
 
     def seed_tian(self, ttl=120):
         cache.set(build_payload_cache_key(self.source_key), {
+            "_tiantian_request_kind": "video",
             "title": "Current cached work", "cover": "https://p3.douyinpic.com/fixture.jpg",
             "videos": [{"url": resource("720P")["url"], "quality": "720P", "size": 5000}],
         }, ttl)

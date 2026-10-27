@@ -46,7 +46,7 @@ from .provider_access import (
     PROVIDER_YOUTUBE_MERGE,
     provider_access_summary,
 )
-from .provider_lab.contracts import ProviderLabError
+from .provider_lab.contracts import ProviderLabError, safe_error_detail
 from .provider_lab.videodl_control import (
     VideodlExecutionOptions,
     execute_controlled_videodl,
@@ -794,13 +794,18 @@ def execute_provider_health_test(context, item):
 
         return record(ProviderHealthTestStatus.FAILED, "UnknownTest", "UNKNOWN_TEST")
     except ProviderLabError as error:
-        return record(ProviderHealthTestStatus.FAILED, "ProviderLabError", error.code)
+        return record(
+            ProviderHealthTestStatus.FAILED,
+            "ProviderLabError",
+            error.code,
+            safe_error_detail(error.detail),
+        )
     except Exception as error:
         return record(
             ProviderHealthTestStatus.FAILED,
             type(error).__name__,
             _safe_error_code(type(error).__name__),
-            str(error),
+            safe_error_detail(getattr(error, "diagnostic_detail", "")) or str(error),
         )
 
 

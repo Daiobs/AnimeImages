@@ -198,18 +198,30 @@ def build_douyin_canonical_url(aweme_id):
     return f"https://www.douyin.com/video/{aweme_id}" if aweme_id else ""
 
 
-def build_tiantian_douyin_request_url(aweme_id):
+def build_tiantian_douyin_request_url(aweme_id, *, is_note=False):
     aweme_id = normalize_douyin_aweme_id(aweme_id)
     if not aweme_id:
         return ""
-    return (
-        "https://www.douyin.com/user/self"
-        f"?from_tab_name=main&modal_id={aweme_id}&showTab=record"
-    )
+    kind = "note" if is_note else "video"
+    return f"https://www.douyin.com/{kind}/{aweme_id}"
 
 
 def select_tiantian_request_url(context):
-    provider_url = build_tiantian_douyin_request_url(context.aweme_id)
+    from .douyin import classify_douyin_input_kind
+
+    source_url = context.url
+    if classify_douyin_input_kind(source_url) == "short_link":
+        source_url = next(
+            (url for url in (context.resolved_url, context.final_url)
+             if url and classify_douyin_input_kind(url) != "short_link"),
+            source_url,
+        )
+    input_kind = classify_douyin_input_kind(source_url)
+    is_note = input_kind == "note_url" or (
+        input_kind == "share_url" and "/share/note/" in urlsplit(source_url).path
+    )
+    # Query-only identities do not establish the work type; do not probe both URLs.
+    provider_url = build_tiantian_douyin_request_url(context.aweme_id, is_note=is_note)
     if provider_url:
         return provider_url
     return (
@@ -1376,7 +1388,7 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         return result
 
     def cached_result(self, adapter, context):
-        from .tiantianjiexi_generic import provider_configured, source_key_for_request
+        from .tiantianjiexi_generic import douyin_request_kind, provider_configured, source_key_for_request
 
         if not self.provider_settings.provider_is_enabled(self.name) or not provider_configured():
             return None
@@ -1388,6 +1400,7 @@ class DouyinTianTianJieXiProvider(DouyinResultProvider):
         payload, age = self.provider.get_cached_payload_entry(
             source_key_for_request(source_url, context.source_identity),
             lambda value: self.payload_has_media(value, adapter),
+            request_kind=douyin_request_kind(source_url),
         )
         if not payload:
             return None

@@ -208,6 +208,14 @@ def source_key_for_identity(source_identity):
     return source_key_for_url(f"logical-source:{source_identity}")
 
 
+def douyin_request_kind(url):
+    parsed = urlsplit(url)
+    if (parsed.hostname or "").lower() not in {"www.douyin.com", "douyin.com"}:
+        return ""
+    match = re.fullmatch(r"/(note|video)/[0-9]+/?", parsed.path)
+    return match.group(1) if match else ""
+
+
 def source_key_for_request(url, source_identity=None):
     if source_identity:
         return source_key_for_identity(source_identity)
@@ -293,25 +301,32 @@ def unwrap_api_payload(payload):
 
 
 def ensure_api_success(payload):
-    if payload_has_media(unwrap_api_payload(payload)):
-        return
-    status_value = payload.get("status") or payload.get("code") or payload.get("success")
+    media_payload = unwrap_api_payload(payload)
+    if "code" in payload:
+        status_value = payload["code"]
+        if type(status_value) in (int, str) and str(status_value) == "200":
+            return
+    else:
+        # Preserve unwrapped legacy responses, but an explicit business code wins.
+        if payload_has_media(media_payload):
+            return
+        status_value = payload.get("status") or payload.get("success")
+        if status_value in {True, "true", "success", "ok", 0, "0", 1, "1", 200, "200"}:
+            return
+    code = str(status_value) if type(status_value) in (int, str) else ""
+    detail = (f"SERVICE_BUSINESS_CODE_{int(code)}"
+              if re.fullmatch(r"-?[0-9]{1,5}", code)
+              else "SERVICE_BUSINESS_CODE_UNKNOWN")
     message = response_message(payload)
     if str(status_value) == "451" and "暂不支持该链接" in message:
         raise TianTianJieXiUnsupportedError(
             "天天解析暂不支持该链接", diagnostic_detail="SERVICE_BUSINESS_CODE_451"
         )
-    if status_value in {True, "true", "success", "ok", 0, "0", 1, "1", 200, "200"}:
-        return
     if message_indicates_auth_error(message):
-        raise TianTianJieXiAuthError("天天解析认证失败")
+        raise TianTianJieXiAuthError("天天解析认证失败", diagnostic_detail=detail)
     if message_indicates_rate_limit(message):
-        raise TianTianJieXiRateLimitError("天天解析调用额度或频率受限")
-    code = str(status_value) if type(status_value) in (int, str) else ""
-    detail = (f"SERVICE_BUSINESS_CODE_{int(code)}"
-              if re.fullmatch(r"-?[0-9]{1,5}", code)
-              else "SERVICE_BUSINESS_CODE_UNKNOWN")
-    raise TianTianJieXiApiError(message or "天天解析未返回可用媒体资源", diagnostic_detail=detail)
+        raise TianTianJieXiRateLimitError("天天解析调用额度或频率受限", diagnostic_detail=detail)
+    raise TianTianJieXiApiError("天天解析未返回可用媒体资源", diagnostic_detail=detail)
 
 
 def normalize_list(value):
@@ -572,7 +587,10 @@ class TianTianJieXiGenericProvider:
             except (TypeError, ValueError) as error:
                 raise ProviderResultInvalidError("天天解析返回资源结构无效") from error
             if not valid:
-                raise ProviderResultInvalidError("天天解析未返回可用媒体资源")
+                error = ProviderResultInvalidError("天天解析未返回可用媒体资源")
+                error.diagnostic_detail = ("SERVICE_EMPTY_RESULT" if not payload_has_media(payload)
+                                           else "SERVICE_RESPONSE_REJECTED")
+                raise error
             return payload
 
         try:
@@ -598,13 +616,16 @@ class TianTianJieXiGenericProvider:
             raise error
         return payload
 
-    def get_cached_payload_entry(self, source_key, payload_validator=None):
+    def get_cached_payload_entry(self, source_key, payload_validator=None, *, request_kind=""):
         try:
             payload = cache.get(build_payload_cache_key(source_key))
         except Exception:
             logger.exception("tiantianjiexi_payload_cache_read_failed", extra={"provider": PROVIDER_ID})
             return None, 0
         if payload is None:
+            return None, 0
+        if request_kind and (not isinstance(payload, dict)
+                             or payload.get("_tiantian_request_kind") != request_kind):
             return None, 0
         try:
             self.validate_payload(payload, payload_validator)
@@ -626,10 +647,11 @@ class TianTianJieXiGenericProvider:
             )
         return payload, payload_age_ms
 
-    def get_cached_payload(self, source_key, payload_validator=None):
+    def get_cached_payload(self, source_key, payload_validator=None, *, request_kind=""):
         payload, _payload_age_ms = self.get_cached_payload_entry(
             source_key,
             payload_validator,
+            request_kind=request_kind,
         )
         return payload
 
@@ -823,14 +845,15 @@ class TianTianJieXiGenericProvider:
         source_key,
         timeout_seconds,
         payload_validator=None,
+        *, request_kind="",
     ):
         deadline = time.monotonic() + max(0.0, float(timeout_seconds or 0.0))
         while time.monotonic() < deadline:
-            payload = self.get_cached_payload(source_key, payload_validator)
+            payload = self.get_cached_payload(source_key, payload_validator, request_kind=request_kind)
             if payload:
                 return payload
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
-        return self.get_cached_payload(source_key, payload_validator)
+        return self.get_cached_payload(source_key, payload_validator, request_kind=request_kind)
 
     def release_single_flight(self, lock_key, lock_token):
         try:
@@ -879,9 +902,11 @@ class TianTianJieXiGenericProvider:
 
             payload_validator = validate_current_facts
         source_key = source_key_for_request(url, source_identity)
+        request_kind = douyin_request_kind(url)
         cached, payload_age_ms = self.get_cached_payload_entry(
             source_key,
             payload_validator,
+            request_kind=request_kind,
         )
         if cached:
             if attempt_controller is not None:
@@ -959,11 +984,13 @@ class TianTianJieXiGenericProvider:
                 source_key,
                 execution_timeout_seconds,
                 payload_validator,
+                request_kind=request_kind,
             )
             if cached:
                 _cached, payload_age_ms = self.get_cached_payload_entry(
                     source_key,
                     payload_validator,
+                    request_kind=request_kind,
                 )
                 record_attempt(
                     provider="tiantianjiexi",
@@ -1057,6 +1084,9 @@ class TianTianJieXiGenericProvider:
                         ),
                     )
                     self.validate_payload(payload, payload_validator)
+                    if request_kind:
+                        # Only cache reuse is scoped; work identity and admission stay shared.
+                        payload["_tiantian_request_kind"] = request_kind
                     self.cache_payload(source_key, payload)
                     self.clear_failure(source_key)
                     self.record_success()
@@ -1109,6 +1139,7 @@ class TianTianJieXiGenericProvider:
                 attempt_consumed=attempt_consumed,
                 elapsed_ms=(time.perf_counter() - started_at) * 1000,
                 failure_class=ProviderFailureClass.RESULT_INVALID,
+                diagnostic_detail=getattr(error, "diagnostic_detail", ""),
             )
             raise
         except Exception as error:
@@ -1132,6 +1163,7 @@ class TianTianJieXiGenericProvider:
                     attempt_consumed=attempt_consumed,
                     elapsed_ms=(time.perf_counter() - started_at) * 1000,
                     failure_class=failure_class,
+                    diagnostic_detail=getattr(error, "diagnostic_detail", ""),
                 )
             raise
         finally:

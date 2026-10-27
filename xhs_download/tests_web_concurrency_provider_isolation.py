@@ -92,6 +92,7 @@ class TianTianJieXiProviderConcurrencyTests(TestCase):
         payload = {
             "title": "cached",
             "video_url": "https://v16.tiktokcdn.com/cached.mp4",
+            "_tiantian_request_kind": "video",
         }
         cache.set(build_payload_cache_key(source_key), payload, timeout=60)
 
