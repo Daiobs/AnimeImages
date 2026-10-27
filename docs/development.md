@@ -174,6 +174,39 @@ git status --short --branch
 
 ## Before Draft PR
 
+### Anonymous Platform Matrix
+
+`tools/production_smoke.py` accepts a private JSON sample list (`chmod 600`, not
+committed) with `version: 1` and `samples`. Each sample has a unique `id`, `platform`,
+`kind` (`image`, `gallery`, or `video`), `url`, and optional `max_bytes`. Keep full
+source links only in this input file; the tool's plan and reports contain hosts
+and fingerprints, not links, tokens, titles or cookies.
+
+```bash
+python tools/production_smoke.py --list --samples-file "$SAMPLES_FILE"
+# Run only after Human confirms the sample list and target.
+python tools/production_smoke.py --run --samples-file "$SAMPLES_FILE" \
+  --base-url http://127.0.0.1:8000 --max-file-bytes 268435456 \
+  --output "$PRIVATE_OUTPUT_DIR" --round local-matrix
+```
+
+The same confirmed file can later target the production HTTPS origin, under the
+task's authorization. Each sample gets one anonymous parse and its checked video
+default or ordinary image group. Parse preferences come from the anonymous home
+page; route preparation uses `intent=download`. Ordinary images use the page's
+direct photo branch; upstream-bound images first consume the authorized route
+items. The tool does not turn ordinary photos into server archives. Images retain
+the existing 50 MiB cap and groups the 128 MiB aggregate cap. No failure retries, automatic
+resource substitution, transport fallback or resuming an existing round occur.
+
+Reports distinguish the declared download route from the HTTP harness transport.
+They retain media hosts before preparation, redirect hosts, failure stage, safe
+remote error codes, bytes and verified container types. An unexposed Provider is
+`not_exposed`, not guessed; correlate the safe request ID with existing read-only
+logs if needed. HTTP complete-file evidence does not prove browser navigation,
+CORS, Service Worker delivery or the browser's download manager. A size limit or
+missing Content-Length is not a passed complete-download check.
+
 Use risk-proportional focused tests, then the repository-wide gates required by the task. A normal application PR should include at least:
 
 ```bash

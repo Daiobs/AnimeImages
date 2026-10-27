@@ -67,6 +67,18 @@ def card(index, kind="image", **extra):
     return '<div class="asset-card" ' + ' '.join(f'data-{k}="{escape(str(v))}"' for k, v in values.items()) + '></div>'
 
 
+def image_item(index, **extra):
+    return {"type": "image", "url": f"https://cdn.example/{index}.png?token={SECRET}",
+            "browser_direct_fetch_safe": True, "requires_cookie": False, "requires_merge": False,
+            "download_strategy": "browser_direct", "fallback_strategy": "none", **extra}
+
+
+def image_route(*items, **extra):
+    return ("POST", "/media/download-images/", response({
+        "status": "routed", "route_type": "direct", "download_strategy": "browser_direct_images",
+        "items": list(items), **extra}))
+
+
 def parsed(html, **extra):
     return {"status": "success", "html": html, "has_results": True, "base_filename": "example", **extra}
 
@@ -111,12 +123,18 @@ class ProductionSmokeTests(SimpleTestCase):
         cls.ffprobe = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
         ffmpeg = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
         cls.video = None
+        cls.silent_video = None
         if Path(ffmpeg).is_file() and Path(cls.ffprobe).is_file():
             path = Path(cls.assets.name) / "fixture.mp4"
             subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=size=32x24:rate=5",
                             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=8000", "-t", "0.4",
                             "-c:v", "mpeg4", "-c:a", "aac", str(path)], check=True, capture_output=True, timeout=30)
             cls.video = path.read_bytes()
+            silent = Path(cls.assets.name) / "silent.mp4"
+            subprocess.run([ffmpeg, "-v", "error", "-i", str(path), "-map", "0:v:0",
+                            "-c:v", "copy", "-an", str(silent)],
+                           check=True, capture_output=True, timeout=30)
+            cls.silent_video = silent.read_bytes()
         image = io.BytesIO()
         Image.new("RGB", (3, 2), "red").save(image, format="PNG")
         cls.png = image.getvalue()
@@ -127,6 +145,11 @@ class ProductionSmokeTests(SimpleTestCase):
         super().tearDownClass()
 
     def setUp(self):
+        for target in ("socket.create_connection", "socket.socket.connect",
+                       "socket.socket.connect_ex", "requests.adapters.HTTPAdapter.send"):
+            guard = mock.patch(target, side_effect=AssertionError("real network forbidden"))
+            guard.start()
+            self.addCleanup(guard.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = smoke.create_round(Path(self.temp.name) / "private", "test-round")
@@ -189,6 +212,26 @@ class ProductionSmokeTests(SimpleTestCase):
         self.assertTrue(all(urlsplit(r.url).hostname == "site.example" for r in wire.requests))
         self.assertNotIn(SECRET, (self.directory / "bilibili/summary.json").read_text())
 
+    def test_silent_video_saves_completely_and_passes_real_container_inspection(self):
+        self.need_video()
+        runner, wire = self.runner([
+            ("GET", "/results/", response(parsed(picker()))),
+            ("POST", "/media/service-selected-format/", response({"status": "success", "item": item()})),
+            ("GET", "/video.mp4", media(self.silent_video)),
+        ])
+        result = runner.run_sample("silent", "https://public.example/silent", kind="video")
+        self.assertEqual(result["status"], "passed", result)
+        saved = result["download"]
+        self.assertEqual(saved["audio_tracks"], 0)
+        self.assertEqual(saved["video_tracks"], 1)
+        self.assertEqual((saved["width"], saved["height"]), (32, 24))
+        self.assertIn("mp4", saved["container"])
+        self.assertTrue(saved["length_matches"])
+        self.assertEqual(saved["bytes"], len(self.silent_video))
+        self.assertEqual((self.directory / "silent/video.media").read_bytes(), self.silent_video)
+        self.assertEqual((result["parse_attempts"], result["media_http_attempts"]), (1, 1))
+        self.assertFalse(wire.steps)
+
     def test_youtube_reads_home_hidden_default_not_availability(self):
         runner, wire = self.runner([("GET", "/results/", response({"status": "success", "has_results": False}))])
         result = runner.run_sample("youtube", dict(smoke.SAMPLES)["youtube"])
@@ -208,7 +251,9 @@ class ProductionSmokeTests(SimpleTestCase):
             self.assertEqual(zipped.namelist(), ["image_01.png", "image_02.png"])
             self.assertIsNone(zipped.testzip())
             self.assertTrue(all(i.compress_type == zipfile.ZIP_STORED for i in zipped.infolist()))
-        self.assertEqual(len(wire.requests), 4)
+        self.assertEqual([urlsplit(request.url).path for request in wire.requests],
+                         ["/", "/results/", "/1.png", "/2.png"])
+        self.assertFalse(wire.steps)
 
     def test_image_error_container_is_not_saved_as_html_or_full_pass(self):
         runner, _ = self.runner([
@@ -579,13 +624,15 @@ class ProductionSmokeTests(SimpleTestCase):
         self.assertEqual(len(parses), 4)
         self.assertFalse(any("youtube.com" in parse_qs(urlsplit(r.url).query)["q"][0] for r in parses))
 
-    def test_dry_run_exposes_explicit_exclusion_and_keeps_fixed_link(self):
+    def test_dry_run_exposes_explicit_exclusion_without_source_urls(self):
         for flags, count in (([], 5), (["--youtube-not-public"], 4)):
             output = io.StringIO()
             with mock.patch.object(requests.Session, "request", side_effect=AssertionError("network forbidden")), contextlib.redirect_stdout(output):
                 self.assertEqual(smoke.main(["--dry-run", *flags]), 0)
             plan = json.loads(output.getvalue())
-            self.assertEqual(plan["samples"]["youtube"], dict(smoke.SAMPLES)["youtube"])
+            youtube = next(row for row in plan["samples"] if row["id"] == "youtube")
+            self.assertEqual(youtube["source_host"], "www.youtube.com")
+            self.assertNotIn(dict(smoke.SAMPLES)["youtube"], output.getvalue())
             self.assertEqual(len(plan["required_samples"]), count)
             self.assertEqual(plan["youtube_not_public"], bool(flags))
             self.assertEqual(len(plan["excluded"]), int(bool(flags)))
