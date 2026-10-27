@@ -106,18 +106,23 @@ class MailSnapshot:
 def resolve_mail_channel():
     errors = []
     try:
-        row = stored_channel()
+        # Roll back failed reads before returning to a caller's transaction.
+        with transaction.atomic():
+            row = stored_channel()
+            source = row.source if row else "env"
+            recipients = ()
+            if source == "database":
+                from xhs_download.models import ProviderHealthTestSetting
+                # Checks run before migrate; unrelated columns may not exist yet.
+                recipients = ProviderHealthTestSetting.objects.filter(singleton_key=1).values_list(
+                    "email_recipients", flat=True,
+                ).first() or []
     except DatabaseError:
         return MailSnapshot("unavailable", "", "", (), {}, ("CONFIG_STORE_UNAVAILABLE",))
-    source = row.source if row else "env"
     options = {}
-    recipients = ()
     backend = ""
     sender = ""
     if source == "database":
-        from xhs_download.models import ProviderHealthTestSetting
-        health = ProviderHealthTestSetting.objects.filter(singleton_key=1).first()
-        recipients = health.email_recipients if health else []
         sender = row.from_email
         if not sender:
             errors.append("FROM_REQUIRED")
