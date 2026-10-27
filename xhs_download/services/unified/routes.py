@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Platforms whose unified path exists (entry.PLATFORM_PARSERS); a switched-on
 # row for any other platform is ignored rather than routed to nothing.
-IMPLEMENTED_PLATFORMS = frozenset({"douyin"})
+IMPLEMENTED_PLATFORMS = frozenset({"douyin", "xiaohongshu"})
 
 _cooldowns = {}
 _cooldowns_lock = threading.Lock()
