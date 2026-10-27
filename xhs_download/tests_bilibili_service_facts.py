@@ -169,7 +169,8 @@ class BilibiliServiceFactsTests(SimpleTestCase):
         provider.cache_payload(source_key_for_url(SOURCE), old)
         other_source = "https://www.douyin.com/video/1234567890123456789"
         other_key = source_key_for_url(other_source)
-        provider.cache_payload(other_key, old)
+        other_payload = dict(old, _tiantian_request_kind="video")
+        provider.cache_payload(other_key, other_payload)
         for stale in (old, dict(old), TianTianJieXiResultNormalizer.normalize_payload(dict(old))):
             with self.assertRaisesMessage(ValueError, "bilibili_service_facts_refresh_required"):
                 build_service_result(stale, SOURCE)
@@ -182,8 +183,8 @@ class BilibiliServiceFactsTests(SimpleTestCase):
         self.post.assert_called_once()
         self.assertEqual(first.metadata["bilibili_service_identity_basis"], "payload_identity")
         self.assertEqual(second.metadata["bilibili_service_identity_basis"], "payload_identity")
-        self.assertEqual(cache.get(build_payload_cache_key(other_key)), old)
-        self.assertEqual(provider.parse(other_source), old)
+        self.assertEqual(cache.get(build_payload_cache_key(other_key)), other_payload)
+        self.assertEqual(provider.parse(other_source), other_payload)
         self.post.assert_called_once()
 
     def test_refresh_cannot_sign_wrong_identity_from_new_client_response(self):

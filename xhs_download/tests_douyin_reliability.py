@@ -317,6 +317,7 @@ class DouyinUltraAttemptAccountingTests(SimpleTestCase):
         source_url = f"https://www.douyin.com/video/{AWEME_ID}"
         source_key = source_key_for_url(source_url)
         payload = {
+            "_tiantian_request_kind": "video",
             "videos": [
                 {
                     "url": MEDIA_URL,

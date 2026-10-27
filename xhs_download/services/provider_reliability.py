@@ -190,7 +190,10 @@ def record_provider_attempt(
     media_host="",
     expected_bytes=0,
     failure_class=ProviderFailureClass.NOT_APPLICABLE,
+    diagnostic_detail="",
 ):
+    from .provider_lab.contracts import safe_error_detail
+
     fields = {
         "event": "provider_attempt_completed",
         "provider": safe_provider_name(provider),
@@ -217,5 +220,9 @@ def record_provider_attempt(
             ProviderFailureClass.UNKNOWN,
         ),
     }
-    logger.info("provider_attempt_completed", extra=fields)
+    detail = safe_error_detail(diagnostic_detail)
+    message = "provider_attempt_completed"
+    if detail:
+        message += f" diagnostic_detail={detail}"
+    logger.info(message, extra=fields)
     return fields

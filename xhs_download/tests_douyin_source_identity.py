@@ -31,10 +31,7 @@ AWEME_ID = "7669858827638845160"
 CANONICAL_URL = f"https://www.douyin.com/video/{AWEME_ID}"
 SOURCE_IDENTITY = f"douyin:{AWEME_ID}"
 MEDIA_URL = "https://v26-default.365yg.com/controlled-video.mp4"
-TIANTIAN_REQUEST_URL = (
-    "https://www.douyin.com/user/self"
-    f"?from_tab_name=main&modal_id={AWEME_ID}&showTab=record"
-)
+TIANTIAN_REQUEST_URL = CANONICAL_URL
 
 
 class FakeMonotonicClock:
@@ -648,7 +645,7 @@ class TianTianDouyinIdentityTests(SimpleTestCase):
     def test_tiantian_request_url_rejects_invalid_aweme_identity(self):
         self.assertEqual(build_tiantian_douyin_request_url("not-an-id"), "")
 
-    def test_fresh_wrapper_attempt_calls_tiantian_once_with_modal_representation(self):
+    def test_fresh_wrapper_attempt_calls_tiantian_once_with_video_representation(self):
         payload = {
             "title": "controlled title",
             "cover": "https://p3.douyinpic.com/cover.jpeg",
@@ -698,7 +695,10 @@ class TianTianDouyinIdentityTests(SimpleTestCase):
         validator = lambda value: bool(value.get("videos"))
 
         first = provider.parse(
-            "https://v.douyin.com/SAFE_TEST/",
+            select_tiantian_request_url(DouyinParseContext(
+                url="https://v.douyin.com/SAFE_TEST/", resolved_url=CANONICAL_URL,
+                aweme_id=AWEME_ID,
+            )),
             timeout_seconds=0.5,
             source_identity=SOURCE_IDENTITY,
             payload_validator=validator,
