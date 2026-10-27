@@ -7,7 +7,7 @@
 {% else %}
 <section class="ytdlp-picker{% if not ytdlp_picker.is_audio %} original-video-picker{% endif %}" data-ytdlp-picker data-picker-media
          data-provider="{{ ytdlp_picker.provider_id }}" data-selection-schema="{{ ytdlp_picker.selection_schema }}"
-         data-selection-url="{% if ytdlp_picker.service_picker %}{% url 'service_selected_format' %}{% else %}{% url 'ytdlp_selected_format' %}{% endif %}"
+         data-selection-url="{% if ytdlp_picker.selection_url %}{{ ytdlp_picker.selection_url }}{% elif ytdlp_picker.service_picker %}{% url 'service_selected_format' %}{% else %}{% url 'ytdlp_selected_format' %}{% endif %}"
          data-first-id="{{ ytdlp_picker.first.candidate_id }}" data-first-token="{{ ytdlp_picker.first.resource_token }}"
          {% if ytdlp_picker.preview %}data-preview-id="{{ ytdlp_picker.preview.candidate_id }}"{% endif %}>
     <div class="quality-media-preview">

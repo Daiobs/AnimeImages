@@ -1,5 +1,5 @@
 {% load ytdlp_picker %}
-{% ytdlp_presentation row.upstream_candidates row.upstream_route row.video_items row.display_title row.base_filename as ytdlp_picker %}
+{% ytdlp_presentation row.upstream_candidates row.upstream_route row.video_items row.display_title row.base_filename row.unified_picker as ytdlp_picker %}
 {% remaining_picker_videos ytdlp_picker row.video_items as remaining_video_items %}
 <article class="batch-result-card batch-status-card-{{ row.status }}"
          data-status="{{ row.status }}"

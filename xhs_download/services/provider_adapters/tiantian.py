@@ -261,8 +261,11 @@ class TianTianAdapter(Adapter[dict]):
     name = NAME
     platforms = ("*",)
 
-    def __init__(self, *, session=None):
+    def __init__(self, *, session=None, attempt_controller=None, source_identity=None):
         self.session = session
+        # Request-path callers keep the existing per-user quota and shared cache key.
+        self.attempt_controller = attempt_controller
+        self.source_identity = source_identity
 
     def fetch(self, source_url, budget):
         from ..common import XhsDownloadError, XhsProviderTimeoutError
@@ -282,8 +285,13 @@ class TianTianAdapter(Adapter[dict]):
         try:
             # Preserve existing serial admission, cache, rate limit and budget.
             # The return value is intentionally discarded: it is normalized.
+            options = {}
+            if self.attempt_controller is not None:
+                options["attempt_controller"] = self.attempt_controller
+            if self.source_identity:
+                options["source_identity"] = self.source_identity
             provider.parse(source_url, timeout_seconds=budget,
-                           deadline_monotonic=time.monotonic() + budget)
+                           deadline_monotonic=time.monotonic() + budget, **options)
         except (XhsDownloadError, XhsProviderTimeoutError, ProviderResultInvalidError, RuntimeError, OSError) as error:
             if (getattr(error, "diagnostic_detail", "") == "SERVICE_RESPONSE_REJECTED"
                     and observed and not isinstance(observed[-1], dict)):
