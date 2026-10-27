@@ -170,6 +170,7 @@ assert.equal(descriptor.url, item.url);
         self.assertEqual(rejected.status_code, 400, rejected.content)
         self.assertEqual(rejected.json()["error_code"], "PROVIDER_MANIFEST_REJECTED")
 
+    @override_settings(DOWNLOAD_RATE_LIMIT_PER_MINUTE=6)
     def test_prepare_rejects_other_akamai_hosts_schemes_ports_and_separate_tracks(self):
         for url in (
             MEDIA.replace("upos-hz", "hz"), MEDIA.replace("upos-hz", "evil-upos-hz"),
@@ -179,6 +180,7 @@ assert.equal(descriptor.url, item.url);
             MEDIA.replace(".mp4", ".m4s"), MEDIA.replace(".mp4", ".mpd"), MEDIA.replace(".mp4", ".m3u8"),
         ):
             with self.subTest(url=url):
+                cache.clear()
                 response = self.prepare({"type": "video", "url": url})
                 self.assertEqual(response.status_code, 400, response.content)
                 self.assertEqual(response.json()["error_code"], "DOWNLOAD_HANDOFF_INVALID")
