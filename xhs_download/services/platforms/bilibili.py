@@ -13,6 +13,7 @@ from ..assets import MediaAsset, ParseResult
 from ..candidates import MediaCandidate, dedupe_candidates
 from ..pipeline_shadow_capture import capture_enabled, capture_error, capture_raw
 from ..common import (
+    BILIBILI_MEDIA_HOST_SUFFIXES,
     XhsDownloadError,
     XhsParseError,
     XhsProviderTimeoutError,
@@ -26,7 +27,6 @@ from .base import BasePlatformAdapter, PlatformCapabilities, ProviderPolicy
 
 
 BILIBILI_PAGE_HOST_SUFFIXES = ("bilibili.com", "b23.tv")
-BILIBILI_MEDIA_HOST_SUFFIXES = ("bilivideo.com", "bilivideo.cn", "hdslb.com")
 ANONYMOUS_COOKIE_NAMES = frozenset({"buvid3", "buvid4", "b_nut"})
 ANONYMOUS_COOKIE_TTL = 600
 WBI_KEY_TTL = 3600
