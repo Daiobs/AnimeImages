@@ -23,6 +23,7 @@ from .models import (
     DownloadAuditEvent,
     DownloadRequestLog,
     ParseRequestLog,
+    PipelineRoute,
     PipelineShadowDailyCount,
     PolicyControlRecord,
     PolicyLearningRun,
@@ -341,6 +342,24 @@ class ProviderHealthTestSettingAdmin(admin.ModelAdmin):
                     before_snapshot=before, after_snapshot=after,
                 )
             return before != after
+
+
+@admin.register(PipelineRoute)
+class PipelineRouteAdmin(admin.ModelAdmin):
+    """Per-platform switch to the unified pipeline; rows come from migrations."""
+
+    list_display = ("platform", "enabled", "policy", "budget_seconds", "upgrade_window_seconds", "updated_at")
+    list_editable = ("enabled",)
+    fields = ("platform", "enabled", "order", "policy", "floor_provider", "budget_seconds",
+              "upgrade_window_seconds", "platform_names", "cooldown_base_seconds", "cooldown_max_seconds",
+              "updated_at")
+    readonly_fields = ("platform", "updated_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(PipelineShadowDailyCount)

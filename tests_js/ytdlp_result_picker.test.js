@@ -567,3 +567,36 @@ test("selected WebM audio rejects video, HTML, wrong containers and unknown trac
         }));
     }
 });
+
+test("unified pickers download an ordinary video item without a selection binding", async () => {
+    const radio = {value: "u720", dataset: {token: "signed-u720", kind: "video", formatId: "video:1:1",
+        canDownload: "true", canLegacy: "false", legacyAssetId: ""}};
+    const unifiedRoot = {dataset: {selectionUrl: "/media/service-selected-format/", provider: "unified",
+        selectionSchema: picker.UNIFIED_SCHEMA}, querySelector: () => radio};
+    const selection = picker.selected(unifiedRoot);
+    const media = {type: "video", url: "https://v11-cold-src.douyinvod.com/obj/720.mp4", filename: "作品.mp4",
+        size_bytes: 15, size_is_estimate: false, browser_direct_fetch_safe: true, cors_expected: true,
+        requires_merge: false, requires_cookie: false, request_context_status: "no_known_requirement",
+        source_platform: "douyin", unified_provider: "native", asset_id: "unified:douyin:7634213610894689787:video:1:1",
+        candidate_id: "u720", selected_format_id: "video:1:1", unified_schema: picker.UNIFIED_SCHEMA,
+        selection_delivery: "ordinary"};
+    const calls = [], saves = [];
+    const environment = {documentObject, windowObject: win, fetchImpl: async (url, options) => {
+        assert.equal(url, "http://localhost:8000/media/service-selected-format/");
+        calls.push(JSON.parse(options.body));
+        return {ok: true, json: async () => ({status: "success", item: media})};
+    }};
+    assert.equal(await picker.descriptor(unifiedRoot, selection, "download", environment), media);
+    assert.deepEqual(calls, [{candidate_id: "u720", resource_token: "signed-u720", action: "download"}]);
+    await ordinary.download(media, {fetchImpl: async url => {
+        assert.equal(url, media.url); return response("unified-bytes", url);
+    }, handoffBlob: async (blob, filename) => saves.push([await blob.text(), filename])});
+    assert.deepEqual(saves, [["unified-bytes", "作品.mp4"]]);
+    const changes = [{candidate_id: "other"}, {selected_format_id: "video:1:2"}, {unified_schema: picker.SCHEMA},
+        {selection_delivery: "direct"}, {selection_schema: picker.UNIFIED_SCHEMA}, {browser_upstream_bound: true},
+        {browser_direct_fetch_safe: false}, {requires_merge: true}, {requires_cookie: true},
+        {request_context_status: "required"}, {type: "audio"}, {filename: ""}, {filename: "a\nb.mp4"},
+        {url: "http://v11-cold-src.douyinvod.com/obj/720.mp4"}];
+    for (const change of changes) assert.throws(() => picker.validateUnifiedItem({...media, ...change}, selection));
+    assert.throws(() => picker.validateUnifiedItem(media, {...selection, schema: SERVICE_SCHEMA}));
+});

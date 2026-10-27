@@ -42,6 +42,7 @@ SAMPLES = (
     ("bilibili", "https://www.bilibili.com/video/BV1J4JX6PEMV/"),
     ("youtube", "https://www.youtube.com/watch?v=jNQXAC9IVRw"),
 )
+UNIFIED_SCHEMA = "unified_selected_format_v1"
 IMAGE_LIMIT = 50 * 1024 * 1024
 ZIP_LIMIT = 128 * 1024 * 1024
 VIDEO_LIMIT = 1024 * 1024 * 1024
@@ -526,6 +527,18 @@ class SmokeRunner:
         require(result.get("status") == "success" and isinstance(result.get("item"), dict), "DESCRIPTOR_FAILED")
         item = result["item"]
         self.resource(item, report)
+        if root.get("data-selection-schema") == UNIFIED_SCHEMA:
+            # Unified pickers return an ordinary browser video item, like a video card.
+            require(action == "download" and item.get("candidate_id") == radio.get("value")
+                    and item.get("selected_format_id") == radio.get("data-format-id")
+                    and item.get("unified_schema") == UNIFIED_SCHEMA and item.get("selection_delivery") == "ordinary"
+                    and item.get("type") == "video" and "selection_schema" not in item
+                    and item.get("browser_direct_fetch_safe") is True and item.get("requires_merge") is False
+                    and item.get("requires_cookie") is False, "UNIFIED_ITEM_MISMATCH")
+            report["selection"] = {"label": label(radio.get("data-label")), "action": action,
+                                   "resource_sha256": digest(item["url"])}
+            self.policy(item, report)
+            return item, action
         require(item.get("candidate_id") == radio.get("value") and item.get("selected_format_id") == radio.get("data-format-id")
                 and item.get("selection_schema") == root.get("data-selection-schema")
                 and item.get("provider") == root.get("data-provider") and item.get("type") == "video", "SELECTION_BINDING_MISMATCH")

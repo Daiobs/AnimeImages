@@ -97,7 +97,8 @@ def parse_sample(request, source_url, platform, continuation):
         if authorized_services(request, source_url, reserve_limits=False):
             options["bilibili_service_authorizer"] = lambda: authorized_services(request, source_url)
     try:
-        return parse_media_page(source_url, **options)
+        from .unified.entry import with_unified
+        return with_unified(parse_media_page)(source_url, **options)
     except DouyinContinuationPendingError as pending:
         return complete_continuation(pending, request, continuation)
 
@@ -114,12 +115,18 @@ def default_resource(result, request):
     presentation = ytdlp_presentation(
         display["upstream_candidates"], (result.metadata or {}).get("upstream_route"),
         display["video_items"], display["display_title"], display["base_filename"],
+        display.get("unified_picker"),
     )
     if presentation:
         for group in presentation.get("groups", [presentation]):
             selected = group.get("selected")
             if not selected or not (selected.get("can_download") or selected.get("can_legacy_download")):
                 continue
+            if group.get("unified"):
+                from .unified.presentation import download_item, resolve_selection
+                item = download_item(resolve_selection(selected["resource_token"], selected["candidate_id"]))
+                asset = next((asset for asset in result.assets if asset.url == item["url"]), None)
+                return item, asset, selected
             record = resolve_candidate_record(selected["resource_token"], selected["candidate_id"])
             provider = record["provider_id"]
             service = provider in service_format_selection.PROVIDERS

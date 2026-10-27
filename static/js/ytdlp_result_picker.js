@@ -10,6 +10,7 @@
 }(typeof window !== "undefined" ? window : globalThis, function () {
     "use strict";
     const SCHEMA = "ytdlp_selected_format_v1";
+    const UNIFIED_SCHEMA = "unified_selected_format_v1";
     const PAGE_SIZE = 6;
     const controllers = new WeakMap();
     let instanceSequence = 0;
@@ -109,6 +110,21 @@
         sourceHttps(item.url);
         return item;
     }
+    // Unified pickers hand back an ordinary video item, the same kind as the
+    // existing video cards: the browser fetches the public file itself.
+    function validateUnifiedItem(item, selection) {
+        if (!item || selection.schema !== UNIFIED_SCHEMA || item.unified_schema !== UNIFIED_SCHEMA
+                || item.selection_delivery !== "ordinary"
+                || item.selection_schema !== undefined || item.browser_upstream_bound !== undefined
+                || item.candidate_id !== selection.id || item.type !== selection.kind || item.type !== "video"
+                || typeof item.selected_format_id !== "string" || item.selected_format_id !== selection.formatId
+                || item.browser_direct_fetch_safe !== true || item.requires_merge !== false
+                || item.requires_cookie !== false || item.request_context_status === "required"
+                || typeof item.filename !== "string" || !item.filename.trim()
+                || /[\u0000-\u001f\u007f]/.test(item.filename)) throw new Error("返回格式与本次选择不一致，未开始下载。");
+        sourceHttps(item.url);
+        return item;
+    }
     function validateLinkItem(item, selection) {
         if (!item || item.selection_schema !== (selection.schema || SCHEMA) || item.provider !== (selection.provider || "yt_dlp_generic")
                 || item.candidate_id !== selection.id || item.type !== selection.kind
@@ -150,6 +166,7 @@
             }
             return {candidate, check: payload.check};
         }
+        if (selection.schema === UNIFIED_SCHEMA && action === "download") return validateUnifiedItem(payload.item, selection);
         return validateItem(payload.item, selection, action === "legacy" ? "legacy_manifest" : "direct");
     }
     async function resolveLink(root, selection, environment, signal) {
@@ -710,7 +727,7 @@
             observer.observe(documentObject.body, {childList: true, subtree: true});
         }
     }
-    return Object.freeze({SCHEMA, PAGE_SIZE, selected, sourceHttps, sourceLink, sameOriginPath,
-        csrf, validateItem, validateLinkItem, descriptor, resolveLink, mount, attach,
+    return Object.freeze({SCHEMA, UNIFIED_SCHEMA, PAGE_SIZE, selected, sourceHttps, sourceLink, sameOriginPath,
+        csrf, validateItem, validateUnifiedItem, validateLinkItem, descriptor, resolveLink, mount, attach,
         mediaRoots, mediaSelected, selectMedia, snapshotMedia, downloadMedia, legacyMediaNodes});
 }));

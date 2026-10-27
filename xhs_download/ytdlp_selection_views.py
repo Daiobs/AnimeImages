@@ -228,4 +228,9 @@ def ytdlp_selected_format_view(request, *, service=False):
 
 
 def service_selected_format_view(request):
+    # Unified pickers share this Nginx-exposed path. Their references carry a
+    # salt of their own, so neither kind of token validates as the other.
+    from .unified_views import is_unified_request, unified_selected_format_view
+    if is_unified_request(request):
+        return unified_selected_format_view(request)
     return ytdlp_selected_format_view(request, service=True)

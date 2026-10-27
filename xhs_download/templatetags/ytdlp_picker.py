@@ -10,7 +10,11 @@ def _video_key(item):
 
 
 @register.simple_tag
-def ytdlp_presentation(candidates, route=None, legacy_videos=None, display_title=None, base_filename=None):
+def ytdlp_presentation(candidates, route=None, legacy_videos=None, display_title=None, base_filename=None,
+                       unified_picker=None):
+    if isinstance(unified_picker, dict) and unified_picker.get('unified'):
+        # Built from the unified Work; every video item of the result is in it.
+        return unified_picker
     preferences = route.get('format_preferences', {}) if isinstance(route, dict) else {}
     if candidates and candidates[0].get('provider_id') in {'tiantianjiexi_generic', 'kukutool_generic', 'tiantianjiexi', 'kukutool'}:
         from xhs_download.services.service_format_selection import build_service_picker
@@ -53,7 +57,7 @@ def ytdlp_presentation(candidates, route=None, legacy_videos=None, display_title
 def remaining_picker_videos(presentation, legacy_videos):
     if not presentation:
         return legacy_videos or []
-    if not presentation.get('service_picker'):
+    if presentation.get('unified') or not presentation.get('service_picker'):
         return []
     groups = presentation.get('groups') or [presentation]
     represented = {c.get('legacy_asset_id') for group in groups for c in group['videos']

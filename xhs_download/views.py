@@ -223,6 +223,8 @@ from .services.provider_recovery import (
     refresh_tiantianjiexi_download_item,
 )
 from .services.registry import get_adapter_for_url, parse_media_page
+from .services.unified.entry import with_unified
+from .services.unified.presentation import picker_with_covers as unified_picker_with_covers
 from .services.provider_manifest import build_provider_manifest_token
 from .services.observability import (
     provider_runtime_snapshot,
@@ -3841,6 +3843,14 @@ def build_result_display_context(
                 or ""
             )[:20]
         )
+    video_items = [
+        build_video_item(
+            asset,
+            result,
+            probe_missing_size=probe_missing_video_sizes,
+        )
+        for asset in result.video_assets
+    ]
     display = {
         "platform": result.platform,
         "platform_name": (
@@ -3869,14 +3879,8 @@ def build_result_display_context(
             )
             for index, asset in enumerate(result.image_assets)
         ],
-        "video_items": [
-            build_video_item(
-                asset,
-                result,
-                probe_missing_size=probe_missing_video_sizes,
-            )
-            for asset in result.video_assets
-        ],
+        "video_items": video_items,
+        "unified_picker": unified_picker_with_covers(result_metadata.get("unified_picker"), video_items),
         "metadata": result_metadata,
         "upstream_candidates": result_metadata.get("upstream_candidates", []),
         "returned_count": result_metadata.get("returned_count"),
@@ -4415,6 +4419,8 @@ def apply_search_result_to_context(
                 "超高清解析暂不可用，已返回普通清晰度。",
                 f"XHS 超高清增强已安全回退 Native；阶段={fallback_reason}。",
             )
+    for notice in result_metadata.get("unified_notices") or ():
+        set_result_provider_notice(context, notice)
     if provider_notice_override is not None:
         context["provider_notice"] = provider_notice_override
     context["post_type"] = display_context["post_type"]
@@ -4433,6 +4439,7 @@ def apply_search_result_to_context(
     context["unexpanded_scope"] = display_context.get("unexpanded_scope", {})
     context["candidates_truncated"] = display_context.get("candidates_truncated", 0)
     context["video_items"] = display_context["video_items"]
+    context["unified_picker"] = display_context.get("unified_picker")
 
     if (
         enable_xhs_livephoto_staff_preview
@@ -4768,7 +4775,7 @@ def build_search_results_context(request, platform_key="home"):
                 ),
                 consume=consume_fixed_window,
             )
-        result = parse_media_page(query, **parse_options)
+        result = with_unified(parse_media_page)(query, **parse_options)
         livephoto_pair_client_identity = ""
         if (
             enable_xhs_livephoto_staff_preview
@@ -5156,7 +5163,7 @@ def build_batch_result_row(
         per_link_timeout_seconds=per_link_timeout_seconds,
         deadline=deadline,
         stage_tracker=stage_tracker,
-        parser=parse_media_page,
+        parser=with_unified(parse_media_page),
         display_context_builder=build_batch_display_context,
         request_country_code_builder=get_request_country_code,
         query_uses_third_party_provider_func=query_uses_third_party_provider,

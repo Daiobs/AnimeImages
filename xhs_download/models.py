@@ -1086,6 +1086,58 @@ class PipelineShadowDailyCount(models.Model):
         verbose_name_plural = "管线影子每日计数"
 
 
+class PipelineRoute(models.Model):
+    """One platform's unified-pipeline chain (docs/architecture/unified-pipeline.md §2.3).
+
+    Defaults come from data migrations. ``enabled`` is the per-platform switch:
+    off keeps the platform on its existing path.
+    """
+
+    POLICY_CHOICES = (
+        ("first_success", "first_success：第一个成功的结果"),
+        ("floor_and_upgrade", "floor_and_upgrade：保底并行，首选优先"),
+    )
+
+    platform = models.CharField(max_length=64, unique=True, verbose_name="平台")
+    enabled = models.BooleanField(default=False, verbose_name="使用统一管线")
+    order = models.JSONField(default=list, blank=True, verbose_name="Provider 顺序")
+    policy = models.CharField(max_length=24, choices=POLICY_CHOICES, default="first_success",
+                              verbose_name="策略")
+    budget_seconds = models.FloatField(
+        default=8.0, validators=(MinValueValidator(1.0), MaxValueValidator(30.0)),
+        verbose_name="前台预算（秒）")
+    floor_provider = models.CharField(max_length=64, blank=True, default="", verbose_name="保底 Provider")
+    upgrade_window_seconds = models.FloatField(
+        default=8.0, validators=(MinValueValidator(1.0), MaxValueValidator(60.0)),
+        verbose_name="升级窗口（秒）", help_text="不小于前台预算；当前请求在窗口结束前给出最终结果。")
+    platform_names = models.JSONField(default=list, blank=True, verbose_name="平台显示名")
+    cooldown_base_seconds = models.PositiveIntegerField(
+        default=10, validators=(MinValueValidator(1), MaxValueValidator(600)),
+        verbose_name="冷却基础时长（秒）", help_text="Provider 返回 unavailable 后的冷却，按连续失败次数翻倍。")
+    cooldown_max_seconds = models.PositiveIntegerField(
+        default=300, validators=(MinValueValidator(1), MaxValueValidator(3600)),
+        verbose_name="冷却上限（秒）", help_text="内核另有 1 小时硬上限；成功一次即清零。")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        ordering = ("platform",)
+        verbose_name = "统一管线路由"
+        verbose_name_plural = "统一管线路由"
+
+    def __str__(self):
+        return self.platform
+
+    def clean(self):
+        order = self.order if isinstance(self.order, list) else None
+        if not order or not all(isinstance(name, str) and name for name in order) or len(set(order)) != len(order):
+            raise ValidationError({"order": "顺序必须是不重复的 Provider 名称列表。"})
+        if self.policy == "floor_and_upgrade":
+            if self.floor_provider not in order:
+                raise ValidationError({"floor_provider": "保底 Provider 必须在顺序里。"})
+            if self.upgrade_window_seconds < self.budget_seconds:
+                raise ValidationError({"upgrade_window_seconds": "升级窗口不能小于前台预算。"})
+
+
 class MailChannelSetting(models.Model):
     singleton_key = models.PositiveSmallIntegerField(default=1, unique=True, editable=False)
     source = models.CharField(max_length=12, default="env", choices=(("env", "环境配置"), ("database", "后台配置")))
