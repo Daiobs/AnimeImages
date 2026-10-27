@@ -41,6 +41,15 @@ in CI is a failure. `CONTRACT_NGINX_BINARY` can point to an existing executable.
 - INV-02 uses TianTian through the Bilibili fallback as the representative recovery
   path. Timeout/disconnect are simulated after a POST send; they do not prove a remote
   terminal state. Recovery uses natural, bounded expiry without admin intervention.
+- `test_bilibili_akamai_media.py` exercises INV-03/04/05 through public Bilibili
+  results, download preparation and the existing browser descriptor consumer. Only HTTPS
+  `upos-<lowercase-label>-mirrorakam.akamaized.net` on port 443 is added to the media
+  policy. Native and authorized service results retain their original URL and
+  manifest; other Akamai hosts, schemes, ports and separate-track paths are rejected.
+  Server-only preparation no longer reports an invalid handoff for approved media;
+  it still rejects a browser-eligible route rather than creating a server transfer.
+  Companion unit tests retain per-hop public DNS checks and TLS address pinning.
+  HTTP is replaced at the final network boundary; this is not a live Akamai save.
 - INV-03 checks highest default, exact alternative resource/token, SW streaming with
   a bound selection, legacy Worker messaging, and the existing unsupported-browser
   Blob compatibility path. Bilibili Native and service HTTPS complete files use

@@ -26,6 +26,7 @@ from .common import (
     _ObservedSingleHopSession,
     clean_filename,
     host_matches,
+    is_allowed_bilibili_akamai_media_url,
     request_get_with_retry,
     validate_media_url,
     validate_public_download_url,
@@ -139,7 +140,7 @@ def get_media_headers(url, platform=None):
         return DOUYIN_HEADERS
 
     hostname = (urlparse(url or "").hostname or "").lower()
-    if host_matches(hostname, BILIBILI_MEDIA_HOST_SUFFIXES):
+    if host_matches(hostname, BILIBILI_MEDIA_HOST_SUFFIXES) or is_allowed_bilibili_akamai_media_url(url):
         return BILIBILI_HEADERS
     if is_allowed_douyin_media_hostname(hostname):
         return DOUYIN_HEADERS
@@ -154,7 +155,7 @@ def validate_bilibili_video_completeness(url, media_type):
         return
     parsed = urlparse(url or "")
     if (
-        host_matches(parsed.hostname, BILIBILI_MEDIA_HOST_SUFFIXES)
+        (host_matches(parsed.hostname, BILIBILI_MEDIA_HOST_SUFFIXES) or is_allowed_bilibili_akamai_media_url(url))
         and parsed.path.lower().endswith((".m4s", ".mpd", ".m3u8"))
     ):
         raise XhsDownloadError(

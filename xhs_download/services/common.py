@@ -46,6 +46,8 @@ MEDIA_HOST_SUFFIXES = (
     "bilivideo.cn",
     "hdslb.com",
 )
+BILIBILI_MEDIA_HOST_SUFFIXES = ("bilivideo.com", "bilivideo.cn", "hdslb.com")
+BILIBILI_AKAMAI_AUTHORITY = re.compile(r"upos-[a-z0-9-]+-mirrorakam\.akamaized\.net(?::443)?")
 URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
 TRAILING_URL_CHARS = "，,。；;！!？?）)]】》"
 
@@ -127,6 +129,17 @@ def host_matches(hostname, allowed_suffixes):
     return any(hostname == suffix or hostname.endswith(f".{suffix}") for suffix in allowed_suffixes)
 
 
+def is_allowed_bilibili_akamai_media_url(url):
+    """Match the complete authority, never the shared Akamai tenant suffix."""
+    if not isinstance(url, str) or re.search(r"[\\\x00-\x20\x7f]", url):
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and BILIBILI_AKAMAI_AUTHORITY.fullmatch(parsed.netloc) is not None
+
+
 def is_blocked_hostname(hostname):
     hostname = (hostname or "").strip().lower()
     if not hostname:
@@ -173,7 +186,12 @@ def validate_external_url(url, allowed_suffixes, message="不允许请求该 URL
         raise XhsSecurityError(message)
     if is_blocked_hostname(parsed.hostname):
         raise XhsSecurityError(message)
-    if not host_matches(parsed.hostname, allowed_suffixes):
+    # Only the existing media scopes inherit this exception, not page/API or
+    # unrelated platform scopes. Every request still checks and pins public DNS.
+    if not host_matches(parsed.hostname, allowed_suffixes) and not (
+        tuple(allowed_suffixes) in (MEDIA_HOST_SUFFIXES, BILIBILI_MEDIA_HOST_SUFFIXES)
+        and is_allowed_bilibili_akamai_media_url(url)
+    ):
         raise XhsSecurityError(message)
     return url
 

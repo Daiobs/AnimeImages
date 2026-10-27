@@ -5,7 +5,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from ..assets import MediaAsset, ParseResult
-from ..common import clean_filename, host_matches
+from ..common import clean_filename, validate_external_url
 from ..provider_manifest import build_provider_manifest_token, provider_manifest_is_valid
 from ..quality import QualityProbe
 from .bilibili import BILIBILI_HEADERS, BILIBILI_MEDIA_HOST_SUFFIXES, normalize_bilibili_url
@@ -37,11 +37,11 @@ def validate_media_url(url):
     """Projection-only host policy; the download consumer still checks DNS."""
     parsed = urlsplit(str(url or ""))
     if (parsed.scheme not in {"http", "https"} or not parsed.path.strip("/")
-            or not host_matches(parsed.hostname, BILIBILI_MEDIA_HOST_SUFFIXES)
             or parsed.username is not None or parsed.password is not None
             or parsed.port not in (None, 443 if parsed.scheme == "https" else 80) or parsed.fragment
             or "\\" in url or any(ord(c) <= 32 or ord(c) == 127 for c in url)):
         raise ValueError("bilibili_service_media_invalid")
+    validate_external_url(url, BILIBILI_MEDIA_HOST_SUFFIXES, "bilibili_service_media_invalid")
     return url
 
 
