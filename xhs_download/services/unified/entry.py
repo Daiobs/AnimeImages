@@ -23,8 +23,16 @@ def _douyin(url, route, **options):
                  attempt_controller=options.get("ultra_attempt_controller"))
 
 
+def _xiaohongshu(url, route, **options):
+    from .xiaohongshu import parse
+
+    return parse(url, route, prefer_ultra_hd=bool(options.get("prefer_ultra_hd")),
+                 attempt_controller=options.get("ultra_attempt_controller"),
+                 service_ids=options.get("xhs_service_provider_ids") or ())
+
+
 # Each platform's Providers and facts live in its own module; this only registers them.
-PLATFORM_PARSERS = {"douyin": _douyin}
+PLATFORM_PARSERS = {"douyin": _douyin, "xiaohongshu": _xiaohongshu}
 
 
 def parse_unified(url, route, **options):

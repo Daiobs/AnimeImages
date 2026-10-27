@@ -57,7 +57,11 @@ def ytdlp_presentation(candidates, route=None, legacy_videos=None, display_title
 def remaining_picker_videos(presentation, legacy_videos):
     if not presentation:
         return legacy_videos or []
-    if presentation.get('unified') or not presentation.get('service_picker'):
+    if presentation.get('unified'):
+        # Live-photo motion stays a card beside the photos; pickers hold the rest.
+        represented = set(presentation.get('represented_urls') or ())
+        return [item for item in legacy_videos or [] if item.get('video_url') not in represented]
+    if not presentation.get('service_picker'):
         return []
     groups = presentation.get('groups') or [presentation]
     represented = {c.get('legacy_asset_id') for group in groups for c in group['videos']

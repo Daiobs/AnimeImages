@@ -3,7 +3,8 @@
 Photos become the existing image cards. Each video item becomes one quality
 picker listing the displayed result's variants; the picker's selection
 endpoint hands the browser an ordinary video item, so saving goes through the
-existing browser download (Service Worker streaming, then blob).
+existing browser download (Service Worker streaming, then blob). The motion of
+a live photo stays a video card beside the photos, not a picker of its own.
 
 Selection records stay on the server; the page only holds signed references.
 """
@@ -134,12 +135,18 @@ def _token(candidate_id, bundle_id):
     return signing.dumps({"id": candidate_id, "bundle": bundle_id}, salt=SALT)
 
 
+def grouped_item_ids(work):
+    return {item_id for group in work.groups for item_id in group.item_ids}
+
+
 def build_picker(work, fallback_extensions, *, now=None):
-    """Picker groups (one per video item) plus the server-side selection records."""
+    """Picker groups (one per ungrouped video item) plus the server-side selection records."""
     now = time.time() if now is None else now
     bundle_id = uuid4().hex
     records, groups, defaults = {}, [], []
-    video_items = sorted((item for item in work.items if item.kind is Kind.VIDEO), key=lambda item: item.index)
+    grouped = grouped_item_ids(work)
+    video_items = sorted((item for item in work.items if item.kind is Kind.VIDEO and item.item_id not in grouped),
+                         key=lambda item: item.index)
     for position, item in enumerate(video_items, 1):
         variants = distinct_variants(item)
         if not variants:
@@ -190,6 +197,7 @@ def build_picker(work, fallback_extensions, *, now=None):
     presentation = dict(groups[0]) if len(groups) == 1 else {**groups[0], "groups": groups}
     presentation["video_group_count"] = len(groups)
     presentation["video_resource_count"] = len(groups)
+    presentation["represented_urls"] = [variant.url for _item, variant in defaults]
     presentation["selection_url"] = reverse("service_selected_format")
     for group in groups:
         group["selection_url"] = presentation["selection_url"]
@@ -209,11 +217,13 @@ def picker_with_covers(picker, video_items):
     for index, group in enumerate(groups):
         group.pop("groups", None)
         group["cover_video"] = video_items[index] if index < len(video_items) else None
+    represented = picker.get("represented_urls", [])
     if len(groups) == 1 and "groups" not in picker:
-        return {**groups[0], "video_resource_count": picker.get("video_resource_count", 1)}
+        return {**groups[0], "video_resource_count": picker.get("video_resource_count", 1),
+                "represented_urls": represented}
     return {**groups[0], "groups": groups, "video_group_count": picker.get("video_group_count", len(groups)),
             "video_resource_count": picker.get("video_resource_count", len(groups)),
-            "selection_url": picker.get("selection_url")}
+            "selection_url": picker.get("selection_url"), "represented_urls": represented}
 
 
 def present(work, *, platform_adapter, provider_label, fallback_extensions, attempts=(), notices=(),
@@ -232,9 +242,26 @@ def present(work, *, platform_adapter, provider_label, fallback_extensions, atte
         assets.append(MediaAsset(media_type="image", url=variant.url, preview_url=variant.url,
                                  ext=variant.container, **common))
     picker, _records, defaults = build_picker(work, fallback_extensions)
-    for item, variant in defaults:
+    grouped = grouped_item_ids(work)
+    motions = [(item, item.default_variant if item.default_variant in distinct_variants(item)
+                else (distinct_variants(item) or [None])[0])
+               for item in sorted(work.items, key=lambda item: item.index)
+               if item.kind is Kind.VIDEO and item.item_id in grouped]
+    # A live photo's motion shows its own still as the cover.
+    still = {}
+    for group in work.groups:
+        stills = [work_item for work_item in work.items if work_item.item_id in group.item_ids
+                  and work_item.kind is Kind.IMAGE and work_item.default_variant is not None]
+        for item_id in group.item_ids:
+            if stills:
+                still[item_id] = stills[0].default_variant.url
+    # Picker defaults first: picker_with_covers pairs groups with these cards in order.
+    for item, variant in [*defaults, *motions]:
+        if variant is None:
+            continue
+        cover = still.get(item.item_id, work.cover_url)
         assets.append(MediaAsset(
-            media_type="video", url=variant.url, cover_url=work.cover_url, cover_preview_url=work.cover_url,
+            media_type="video", url=variant.url, cover_url=cover, cover_preview_url=cover,
             quality_label=quality_label(variant), size_bytes=int(variant.size_bytes or 0),
             size_is_estimate=not variant.size_exact, ext=variant.container, **common))
     if not assets:
