@@ -1,13 +1,16 @@
 import json
+from io import StringIO
 from unittest.mock import Mock, patch
 
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core import mail
+from django.core.management import call_command
 from django.core.mail import EmailMessage, EmailMultiAlternatives
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
+from django.db.migrations.recorder import MigrationRecorder
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 import requests
@@ -309,6 +312,34 @@ class MailChannelTests(TestCase):
         self.assertFalse(snapshot.complete)
         self.assertEqual(snapshot.source, "unavailable")
 
+    def test_recipient_store_failure_is_reported_without_env_fallback(self):
+        self.client.post('/admin/mail-settings/', self.data())
+
+        def fail_recipient_read(execute, sql, params, many, context):
+            if 'xhs_download_providerhealthtestsetting' in sql:
+                return execute('SELECT missing_mail_column FROM xhs_download_providerhealthtestsetting',
+                               None, False, context)
+            return execute(sql, params, many, context)
+
+        with connection.execute_wrapper(fail_recipient_read):
+            snapshot = resolve_mail_channel()
+            issues = check_provider_validation_email_configuration(None)
+        self.assertEqual(snapshot.source, 'unavailable')
+        self.assertEqual(snapshot.errors, ('CONFIG_STORE_UNAVAILABLE',))
+        self.assertFalse(snapshot.complete)
+        self.assertEqual(snapshot.recipients, ())
+        self.assertTrue(any('CONFIG_STORE_UNAVAILABLE' in issue.msg for issue in issues))
+        self.assertTrue(MailChannelSetting.objects.exists())
+
+    def test_missing_recipient_row_remains_a_configuration_error(self):
+        self.client.post('/admin/mail-settings/', self.data())
+        ProviderHealthTestSetting.objects.all().delete()
+        snapshot = resolve_mail_channel()
+        self.assertEqual(snapshot.source, 'database')
+        self.assertEqual(snapshot.recipients, ())
+        self.assertTrue(any('RECIPIENTS_REQUIRED' in issue.msg for issue in
+                            check_provider_validation_email_configuration(None)))
+
     def test_inactive_admin_denied(self):
         self.user.is_active = False
         self.user.save(update_fields=["is_active"])
@@ -379,6 +410,43 @@ class BrevoTests(TestCase):
 
 
 class MailMigrationTests(TransactionTestCase):
+    @override_settings(
+        MAIL_CONFIG_ENCRYPTION_KEY=KEY,
+        PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED=True,
+        PROVIDER_VALIDATION_ADMIN_REPORT_URL='https://example.test/admin/provider-health-tests/',
+    )
+    def test_real_migrate_from_0031_with_database_mail_checks(self):
+        executor = MigrationExecutor(connection)
+        initial_leaf_nodes = executor.loader.graph.leaf_nodes()
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(initial_leaf_nodes))
+        before = [('xhs_download', '0031_separate_download_audit_events')]
+        executor.migrate(before)
+        apps = executor.loader.project_state(before).apps
+        health = apps.get_model('xhs_download', 'ProviderHealthTestSetting')
+        channel = apps.get_model('xhs_download', 'MailChannelSetting')
+        health.objects.create(singleton_key=1, email_recipients=['alerts@example.test'])
+        channel.objects.create(
+            singleton_key=1, source='database', provider='smtp',
+            from_email='sender@example.test', smtp_host='smtp.example.test',
+            smtp_port=587, smtp_security='starttls', smtp_username='sender',
+            smtp_password_encrypted=encrypt(SECRET),
+        )
+        target = ('xhs_download', '0032_pipeline_shadow_storage')
+        self.assertNotIn(target, MigrationRecorder(connection).applied_migrations())
+        with connection.cursor() as cursor:
+            columns = connection.introspection.get_table_description(cursor, health._meta.db_table)
+        self.assertNotIn('public_shadow_enabled', {column.name for column in columns})
+
+        # call_command defaults to skipping checks; the deploy CLI does not.
+        with patch('django.core.mail.backends.smtp.EmailBackend.open') as smtp_open:
+            call_command('migrate', interactive=False, skip_checks=False,
+                         stdout=StringIO(), stderr=StringIO())
+            call_command('check', stdout=StringIO(), stderr=StringIO())
+            smtp_open.assert_not_called()
+        self.assertIn(target, MigrationRecorder(connection).applied_migrations())
+        self.assertFalse(ProviderHealthTestSetting.objects.get().public_shadow_enabled)
+        self.assertEqual(resolve_mail_channel().recipients, ('alerts@example.test',))
+
     def test_existing_data_reverse_reapply(self):
         old = [("xhs_download", "0025_provider_daily_validation")]
         new = [("xhs_download", "0026_mail_channel_setting")]

@@ -243,6 +243,38 @@ Before switching databases:
 2. Run migrations on a staging database.
 3. Verify upload and media paths.
 
+### Before Each Migration Release
+
+Rehearse the real management commands before stopping production. Successful
+`MigrationExecutor` tests alone do not cover the system checks that run before
+`manage.py migrate`.
+
+1. Read the current production migration state and startup-check switches using
+   read-only access. Record only switch names/values and the mail configuration
+   source, never credentials. At minimum compare
+   `PROVIDER_VALIDATION_EMAIL_DELIVERY_ENABLED` and `MailChannelSetting.source`.
+2. On the daily local 8000 checkout, after confirming it is idle, use the original
+   interpreter and candidate code. Rehearse `manage.py migrate` and
+   `manage.py check` with those switches and configuration source matching
+   production. A mail-disabled local run is not equivalent to database-backed
+   production mail. Use local credentials, do not copy production secrets, and
+   do not send test mail or trigger Daily/Provider work. Restore temporary local
+   settings afterwards.
+3. Also exercise the real `migrate` command against an isolated PostgreSQL
+   database at the previous release's migration state with every database-reading
+   startup check enabled. Do not reverse the daily or production database for
+   this rehearsal. The 0031-to-0032 database-mail regression is
+   `xhs_download.tests_mail_channel.MailMigrationTests.test_real_migrate_from_0031_with_database_mail_checks`;
+   it uses `call_command('migrate', skip_checks=False)` and then `check`, without
+   sending email. `call_command` otherwise skips checks by default.
+4. Record the code SHA, starting/ending migrations, matched switches, command
+   results and restoration in the current release progress log. An already
+   migrated local database only proves a no-op command run; it does not replace
+   the previous-schema rehearsal. Never suppress checks to pass the release gate.
+
+These are preflight commands, not authorization to publish. A failed rehearsal
+blocks production apply until the cause is fixed and the same scenario passes.
+
 ## Media Files
 
 User uploads and downloaded files live under `media/` locally. For production, use persistent storage or object storage. Do not rely on ephemeral container disk for important uploads.
