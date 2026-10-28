@@ -126,8 +126,14 @@ class UnifiedDouyinHttpContracts(TestCase):
         self.adapters["tiantianjiexi"] = FakeService(SERVICE_RAW)
         root = self.picker(ultra_hd="1")
         radios = root.select('[data-picker-radio][data-kind="video"]')
-        self.assertEqual([r["data-label"] for r in radios], ["原画"])
+        # A single-quality winner lists the Native floor's qualities below it, each with its own links.
+        self.assertEqual([r["data-label"] for r in radios], ["原画", "720p", "540p"])
+        self.assertTrue(radios[0].has_attr("checked"))
         self.assertEqual([(a.provider, a.outcome) for a in self.runs[0].attempts][-1], ("tiantianjiexi", "success"))
+        # TianTian gives no size; one first-byte request during the parse measures it.
+        self.assertIn(("GET", "https://v26-qingtao.douyinvod.com/obj/original.mp4", None, "bytes=0-0"),
+                      self.media_requests)
+        self.assertIn("724.4 KiB", root.select_one('[data-picker-radio][data-kind="video"]').find_parent().get_text())
         link = self.select(radios[0], "link").json()["item"]["url"]
         self.assertEqual(link, "https://v26-qingtao.douyinvod.com/obj/original.mp4")
 
@@ -173,7 +179,8 @@ class UnifiedDouyinHttpContracts(TestCase):
         self.adapters["tiantianjiexi"] = FakeService(SERVICE_RAW)
         root = self.picker(ultra_hd="1")
         self.assertNotIn(("tiantianjiexi", "cooling_down"), [(a.provider, a.outcome) for a in self.runs[1].attempts])
-        self.assertEqual([r["data-label"] for r in root.select('[data-picker-radio][data-kind="video"]')], ["原画"])
+        self.assertEqual([r["data-label"] for r in root.select('[data-picker-radio][data-kind="video"]')],
+                         ["原画", "720p", "540p"])
 
     def test_staff_see_the_chain_and_every_link_in_the_technical_panel(self):
         from django.contrib.auth import get_user_model

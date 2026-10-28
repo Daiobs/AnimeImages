@@ -441,3 +441,45 @@ class ReviewedHostTests(SimpleTestCase):
         raw["data"]["videos"] = [{"url": "https://v3-dy-a-x.ixigua.example/obj/original.mp4"}]
         work = replace(ServiceTianTianAdapter().map(raw, SOURCE), platform="douyin", provider="tiantianjiexi")
         self.assertEqual(douyin_media_only(work).items, ())
+
+
+class EnrichTests(SimpleTestCase):
+    def test_sizes_are_measured_for_files_without_one_and_unknown_stays_unknown(self):
+        from dataclasses import replace
+        from .services.unified.enrich import with_measured_sizes
+        work = native_work()
+        item = work.items[0]
+        unsized = tuple(replace(v, size_bytes=None, size_exact=False) for v in item.variants)
+        work = replace(work, items=(replace(item, variants=unsized),))
+        answered = unsized[0].url
+
+        def request(url, **options):
+            self.assertEqual(options["headers"]["Range"], "bytes=0-0")
+            if url != answered:
+                raise requests.Timeout("slow")
+            return FakeResponse(206, {"Content-Range": "bytes 0-0/72993146"})
+
+        measured = with_measured_sizes(work, request=request)
+        sizes = {v.url: (v.size_bytes, v.size_exact) for v in measured.items[0].variants}
+        self.assertEqual(sizes[answered], (72993146, True))
+        self.assertTrue(all(size is None for url, (size, _exact) in sizes.items() if url != answered))
+        sized = native_work()
+        self.assertIs(with_measured_sizes(sized, request=None), sized)  # nothing to measure, no request
+
+    def test_floor_qualities_join_only_a_single_quality_winner(self):
+        from dataclasses import replace
+        from .services.unified.enrich import with_floor_qualities
+        floor = replace(native_work(), provider="native")
+        winner_item = replace(floor.items[0], variants=(replace(floor.items[0].variants[0], variant_id="video:1:o",
+                              url="https://v26-qingtao.douyinvod.com/obj/original.mp4", quality_label="原画",
+                              is_original=True, size_bytes=None, size_exact=False),))
+        winner = replace(floor, provider="tiantianjiexi", items=(winner_item,))
+        merged = with_floor_qualities(winner, floor)
+        urls = [v.url for v in merged.items[0].variants]
+        self.assertEqual(urls[0], "https://v26-qingtao.douyinvod.com/obj/original.mp4")
+        self.assertEqual(set(urls[1:]), {v.url for v in floor.items[0].variants})
+        self.assertTrue(all(v.variant_id.startswith("native:") for v in merged.items[0].variants[1:]))
+        self.assertIs(with_floor_qualities(floor, floor), floor)
+        several = replace(floor, provider="kukutool")
+        self.assertIs(with_floor_qualities(several, replace(winner, provider="native")), several)
+

@@ -19,6 +19,7 @@ from ..provider_adapters.kukutool import KukutoolAdapter
 from ..provider_adapters.xiaohongshu import XiaohongshuAdapter as NativeXhsAdapter
 from . import routes
 from .errors import UnifiedParseError, failure_error
+from .enrich import with_measured_sizes
 from .presentation import present, technical_details
 from .runner import run_chain
 from .tiantian import CachedTianTianAdapter, https_media, service_video_facts
@@ -214,7 +215,7 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None, service
                 int((time.monotonic() - started) * 1000))
     if run.shown is None:
         raise failure_error(run.failure, "小红书")
-    work = kept = xhs_media_only(run.shown)
+    work = kept = with_measured_sizes(xhs_media_only(run.shown))
     mode = live_photo_mode(route)
     if mode == STILL_ONLY:
         work = without_motions(work)
