@@ -240,12 +240,15 @@ class PublicHTTP:
             require(bool(re.fullmatch(pattern, parsed.path)), "UNEXPECTED_CONTROL_PATH")
         return absolute
 
-    def send(self, method, value, phase, *, data=None, params=None, media=False):
+    def send(self, method, value, phase, *, data=None, params=None, media=False, origin=None):
         url = public_url(value) if media else self.site_path(value)
         headers = {"Accept-Encoding": "identity", "User-Agent": "DokiTool-Anonymous-HTTP-Smoke/1.0"}
         session = self.media if media else self.site
         if media:
             session.cookies.clear()
+            if origin:
+                # As the page's fetch would send it, so CORS answers are what a browser gets.
+                headers["Origin"] = origin
         else:
             for cookie in list(session.cookies):
                 if cookie.name != "csrftoken":
@@ -355,14 +358,22 @@ def media_magic(prefix, kind):
             or prefix[:4] == b"RIFF" and prefix[8:12] == b"AVI ")
 
 
-def receive(http, url, path, kind, *, site=False, method="GET", data=None, max_bytes=VIDEO_LIMIT):
+def receive(http, url, path, kind, *, site=False, method="GET", data=None, max_bytes=VIDEO_LIMIT, cors_origin=None):
+    """Download one file. With ``cors_origin``, every hop must allow that origin, as a browser fetch requires."""
     record = {"bytes": 0, "declared_bytes": None, "length_matches": False, "hosts": []}
     response = None
     try:
         for redirect in range(6):
             record["hosts"].append(hostname(url))
-            response = http.send(method, url, "media", data=data, media=not site)
-            if response.status_code not in {301, 302, 303, 307, 308}:
+            response = http.send(method, url, "media", data=data, media=not site, origin=cors_origin)
+            redirect_status = response.status_code in {301, 302, 303, 307, 308}
+            if cors_origin and not site and (redirect_status or response.status_code == 200):
+                # A browser fetch needs the origin allowed on every redirect hop and on the file.
+                allowed = (response.headers.get("Access-Control-Allow-Origin") or "").strip()
+                if allowed not in {"*", cors_origin}:
+                    record["cors_blocked_host"] = hostname(url)
+                    raise SmokeError("BROWSER_CORS_BLOCKED")
+            if not redirect_status:
                 break
             require(not site and method == "GET" and redirect < 5, "MEDIA_REDIRECT_REJECTED")
             target = urljoin(url, response.headers.get("Location", ""))
@@ -639,7 +650,9 @@ class SmokeRunner:
                 report["stage"] = "media"
                 require(not item.get("requires_merge") and not item.get("requires_cookie"), "IMAGE_CONTEXT_REQUIRED")
                 require(total < ZIP_LIMIT, "IMAGE_GROUP_SIZE_LIMIT")
-                row.update(receive(self.http, item["url"], path, "image", max_bytes=min(max_bytes, IMAGE_LIMIT, ZIP_LIMIT - total)))
+                # The page's photo archive fetches each image cross-origin.
+                row.update(receive(self.http, item["url"], path, "image", max_bytes=min(max_bytes, IMAGE_LIMIT, ZIP_LIMIT - total),
+                                   cors_origin=self.http.base))
                 total += row["bytes"]
                 if row.get("error_code"):
                     row["failure_stage"] = "media"
@@ -727,7 +740,11 @@ class SmokeRunner:
                 raise SmokeError("UNSUPPORTED_DOWNLOAD_ROUTE")
         path = directory / ("video.zip" if kind == "zip" else "video.media")
         report["stage"] = "media"
-        saved = receive(self.http, url, path, kind, site=site, method=method, data=data, max_bytes=max_bytes)
+        # A browser fetches these files (streaming, blob); a native download is a navigation.
+        cors = (self.http.base if report["transport"] == "http_direct_media"
+                and item.get("download_strategy") != "browser_native" else None)
+        saved = receive(self.http, url, path, kind, site=site, method=method, data=data, max_bytes=max_bytes,
+                        cors_origin=cors)
         report["download"] = saved
         require(not saved.get("error_code"), saved.get("error_code", "MEDIA_FAILED"))
         if report["transport"] == "http_server_attachment":

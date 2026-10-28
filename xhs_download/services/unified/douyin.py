@@ -8,10 +8,11 @@ from dataclasses import replace
 import logging
 import time
 from types import MappingProxyType
+from urllib.parse import urlsplit
 
 from django.conf import settings
 
-from ..pipeline import Failure, FailureKind
+from ..pipeline import Failure, FailureKind, Kind
 from ..provider_adapters.douyin import DouyinAdapter as NativeDouyinAdapter
 from ..provider_adapters.kukutool import KukutoolSidecarAdapter
 from . import routes
@@ -77,6 +78,29 @@ def douyin_media_only(work):
         if variants:
             items.append(replace(item, variants=variants))
     return replace(work, items=tuple(items), cover_url=work.cover_url if allowed(work.cover_url) else "")
+
+
+# Douyin's API domains answer a video link with a redirect that grants no CORS, so a
+# browser cannot fetch through them (seen 2026-10-28: api-play.amemv.com). A file
+# reachable only there is not offered; one with a CDN mirror keeps the mirror.
+API_REDIRECT_SUFFIXES = ("amemv.com", "snssdk.com")
+
+
+def without_api_redirect_links(work):
+    """Video links a browser can fetch: drop Douyin API redirect addresses."""
+    def browser_link(url):
+        host = (urlsplit(url).hostname or "").lower()
+        return not any(host == suffix or host.endswith("." + suffix) for suffix in API_REDIRECT_SUFFIXES)
+
+    items = []
+    for item in work.items:
+        if item.kind is Kind.VIDEO:
+            variants = tuple(variant for variant in item.variants if browser_link(variant.url))
+            if not variants:
+                continue
+            item = replace(item, variants=variants)
+        items.append(item)
+    return replace(work, items=tuple(items))
 
 
 def browser_cover(work, raw):
@@ -171,7 +195,13 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None):
     # TianTian may win before Native finishes; give Native a moment so its qualities can join.
     floor = await_floor(results, config) if wants_floor(run.shown, run, config) else floor_work(results, config)
     shown = with_floor_qualities(run.shown, floor)
-    work, hidden = with_quality_tiers(with_measured_sizes(douyin_media_only(shown)))
+    allowed = douyin_media_only(shown)
+    readable = without_api_redirect_links(allowed)
+    kept_urls = {variant.url for item in readable.items for variant in item.variants}
+    api_hidden = {variant.url: "未展示：抖音 API 跳转地址，浏览器无法跨域读取"
+                  for item in allowed.items for variant in item.variants if variant.url not in kept_urls}
+    work, hidden = with_quality_tiers(with_measured_sizes(readable))
+    hidden = {**api_hidden, **hidden}
     if not work.items:
         raise UnifiedParseError("抖音解析失败，请稍后重试。", "DOUYIN_NO_ALLOWED_MEDIA")
     notices = []

@@ -646,7 +646,7 @@ class ProductionSmokeMatrixBehaviorTests(OfflineMatrixCase):
         self.assert_private_report(runner.directory, result)
 
     def test_video_size_header_rejects_before_reading_any_body(self):
-        body = response(b"", headers={"Content-Length": "65"})
+        body = response(b"", headers={"Content-Length": "65", "Access-Control-Allow-Origin": "*"})
         body.iter_content = mock.Mock(side_effect=AssertionError("oversized body must not be read"))
         runner, wire = self.runner([
             ("GET", "/results/", response(parsed(picker()))),
@@ -673,7 +673,7 @@ class ProductionSmokeMatrixBehaviorTests(OfflineMatrixCase):
             yield b"x" * 16
             raise AssertionError("remaining file must not be consumed")
 
-        body = response(b"")
+        body = response(b"", headers={"Access-Control-Allow-Origin": "*"})
         body.iter_content = mock.Mock(return_value=chunks())
         runner, wire = self.runner([("GET", "/results/", response(parsed(card(1)))),
                                     ("GET", "/1.png", body)])
@@ -797,6 +797,7 @@ class ProductionSmokeMatrixHTTPTests(OfflineMatrixCase):
             self.assertFalse(wire.steps)
             for request in wire.requests:
                 if urlsplit(request.url).hostname == "cdn.example":
-                    for header in ("Authorization", "Cookie", "X-CSRFToken", "Origin", "Referer"):
+                    for header in ("Authorization", "Cookie", "X-CSRFToken", "Referer"):
                         self.assertNotIn(header, request.headers)
+                    self.assertEqual(request.headers["Origin"], "https://site.example")
             self.assert_private_report(runner.directory, later)

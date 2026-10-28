@@ -34,8 +34,12 @@ def response(body, status=200, headers=None):
     return result
 
 
-def media(body, length=True):
-    return response(body, headers={"Content-Length": str(len(body))} if length else {})
+def media(body, length=True, cors=True):
+    # A CDN the page may read: browser-fetched media must allow the site's origin.
+    headers = {"Content-Length": str(len(body))} if length else {}
+    if cors:
+        headers["Access-Control-Allow-Origin"] = "*"
+    return response(body, headers=headers)
 
 
 def picker(legacy=False, provider="tiantianjiexi", schema="service_selected_format_v1"):
@@ -170,7 +174,8 @@ class ProductionSmokeTests(SimpleTestCase):
 
     def test_checked_default_not_first_and_csrf_no_cookie_to_media(self):
         self.need_video()
-        redirect = response(b"", 302, {"Location": "https://other.example/final.mp4", "Set-Cookie": "cdn-secret=" + SECRET})
+        redirect = response(b"", 302, {"Location": "https://other.example/final.mp4", "Set-Cookie": "cdn-secret=" + SECRET,
+                                       "Access-Control-Allow-Origin": "*"})
         runner, wire = self.runner([
             ("GET", "/results/", response(parsed(picker()))),
             ("POST", "/media/service-selected-format/", response({"status": "success", "item": item()})),
@@ -184,8 +189,10 @@ class ProductionSmokeTests(SimpleTestCase):
         self.assertIn("csrftoken=cookie-csrf", request.headers["Cookie"])
         self.assertEqual(request.headers["Origin"], "https://site.example")
         for request in wire.requests[3:]:
-            for header in ("Cookie", "Authorization", "X-CSRFToken", "Referer", "Origin"):
+            for header in ("Cookie", "Authorization", "X-CSRFToken", "Referer"):
                 self.assertNotIn(header, request.headers)
+            # Only what a browser fetch sends: the site's origin, for the CDN's CORS answer.
+            self.assertEqual(request.headers["Origin"], "https://site.example")
         self.assertEqual(result["download"]["video_tracks"], 1)
         self.assertEqual(result["download"]["audio_tracks"], 1)
         self.assertEqual(result["parse_attempts"], 1)
@@ -637,6 +644,18 @@ class ProductionSmokeTests(SimpleTestCase):
             self.assertEqual(plan["youtube_not_public"], bool(flags))
             self.assertEqual(len(plan["excluded"]), int(bool(flags)))
             self.assertEqual(plan["network_requests"], 0)
+
+    def test_a_cdn_that_refuses_cross_origin_reads_fails_like_a_browser(self):
+        redirect = response(b"", 302, {"Location": "https://cdn.example/final.png"})
+        wire = Wire([("GET", "/1.png", redirect)], self.directory / "attempts.jsonl")
+        wire.requests = [None] * sum(self.journal.counts.values())
+        http = smoke.PublicHTTP("https://site.example", self.journal, session_factory=wire.factory)
+        try:
+            saved = smoke.receive(http, "https://api.example/1.png", self.directory / "cors.png", "image",
+                                  cors_origin="https://site.example")
+        finally:
+            http.close()
+        self.assertEqual((saved["error_code"], saved["cors_blocked_host"]), ("BROWSER_CORS_BLOCKED", "api.example"))
 
     def test_length_mismatch_and_wrong_video_container(self):
         for body, declared, code in [(b"<html>" + SECRET.encode(), 20, "WRONG_MEDIA_CONTAINER"),
