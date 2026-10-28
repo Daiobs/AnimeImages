@@ -146,3 +146,19 @@ class UnifiedXhsHttpContracts(TestCase):
         self.assertIsNone(soup.select_one("[data-xhs-livephoto-preview]"))
         self.assertEqual(soup.select('.asset-card[data-type="video"]'), [])
         self.assertEqual(len(soup.select('.asset-card[data-type="image"]')), 2)
+
+    def test_caption_and_technical_details_follow_the_media(self):
+        from django.contrib.auth import get_user_model
+        self.page = deepcopy(LIVE)
+        self.page["note"]["noteDetailMap"][ID]["note"]["desc"] = "实况正文 #话题[话题]#"
+        staff = get_user_model().objects.create_user(username="layout-staff", password="unused", is_staff=True)
+        self.client.force_login(staff)
+        body = self.page_for().select_one(".result-card .card-body")
+        order = [node for node in body.find_all(True)
+                 if node.has_attr("data-result-caption") or "ytdlp-technical" in (node.get("class") or [])
+                 or "asset-grid" in (node.get("class") or [])]
+        kinds = ["media" if "asset-grid" in (n.get("class") or []) else
+                 "caption" if n.has_attr("data-result-caption") else "technical" for n in order]
+        self.assertEqual(kinds[-2:], ["caption", "technical"])
+        self.assertNotIn("media", kinds[kinds.index("caption"):])
+

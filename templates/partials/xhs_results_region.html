@@ -98,9 +98,7 @@
         </div>
 
         <div class="card-body note-preview-bg">
-            {% include "partials/result_caption.html" %}
             {% if ytdlp_picker %}{% include "partials/ytdlp_result_picker.html" %}{% endif %}
-            {% include "partials/upstream_candidates.html" %}
             {% if is_mobile_request %}
                 <div class="alert alert-info small mb-3">
                     <i class="bi bi-phone me-1"></i>
@@ -331,6 +329,10 @@
                     {% endfor %}
                 </div>
             {% endif %}
+
+            {# Text and staff details follow the media, the same on every platform. #}
+            {% include "partials/result_caption.html" %}
+            {% include "partials/upstream_candidates.html" %}
         </div>
 
         <div {% if ytdlp_picker and not remaining_video_items and not image_items %}hidden{% endif %}

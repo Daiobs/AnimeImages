@@ -1394,9 +1394,10 @@
             }
 
             window.requestAnimationFrame(() => {
+                // The work itself, not the notice above it; notices alone keep the anchor.
                 const target = (
-                    resultsRegion.querySelector(".results-scroll-anchor")
-                    || resultsRegion.querySelector(".result-card")
+                    resultsRegion.querySelector(".result-card")
+                    || resultsRegion.querySelector(".results-scroll-anchor")
                     || resultsRegion
                 );
                 target.scrollIntoView({behavior: "smooth", block: "start"});
