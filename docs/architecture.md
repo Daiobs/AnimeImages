@@ -1,6 +1,6 @@
 # Architecture
 
-本文按应用快照 `c2b8ac51cfb87d4c030d321bf763080708db9593` 核对稳定结构。当前 main 须重新 fetch；生产及历史证据统一见 [当前版本状态](current-version-status.md)，不从合并推断部署。
+本文按应用快照 `258d348dd47b2a2bc74f68f61700a278eac6f87e` 核对稳定结构。当前 main 须重新 fetch；生产及历史证据统一见 [当前版本状态](current-version-status.md)，不从合并推断部署。
 
 ## 系统定位
 
@@ -12,9 +12,9 @@ Provider Lab 也是 monolith 内的模块，可以启动隔离的 external repos
 flowchart LR
     U[Browser] --> D[Django monolith]
     D --> R[Platform Registry]
-    R --> X[XHS fixed route]
-    R --> Y[Douyin fixed route]
-    R --> B[Bilibili Native]
+    R --> S{Pipeline route switch}
+    S -->|on| P[Unified pipeline: Douyin / XHS / Bilibili]
+    S -->|off| X[Existing fixed routes]
     R --> G[Optional generic providers]
     D --> L[Staff Provider Lab]
     L --> W[Isolated repository workers]
@@ -52,7 +52,8 @@ flowchart LR
 HTTP input
   -> URL/text normalization
   -> platform registry
-  -> mature adapter / admitted default or saved host route
+  -> switched-on pipeline route: unified pipeline (see below)
+  -> otherwise mature adapter / admitted default or saved host route
   -> candidate admission
   -> ParseResult / MediaAsset normalization
   -> display context
@@ -69,6 +70,30 @@ HTTP input
 - Download governance：签发受约束 descriptor/manifest/token；不接受任意客户端 URL。
 - Browser controllers：普通媒体传输、归档、进度和保存交付。
 - Management commands：诊断与有界离线检查，不进入普通页面请求。
+
+## 统一管线
+
+抖音、小红书和 B 站按后台“统一管线路由”（`PipelineRoute`，每个平台一行）逐个切换。规则以[统一管线契约](architecture/unified-pipeline.md)为准；开关用法和用户可见变化见[切换说明](unified-pipeline-switch.md)。
+
+```text
+with_unified(parse_media_page)
+  -> routes.load_route(platform)         # 开关关闭或读表失败：走原路径
+  -> platform module (douyin / xiaohongshu / bilibili)
+       Provider adapters: fetch raw -> map to Work (items, variants, groups, field sources)
+  -> runner: ChainRun (first_success / floor_and_upgrade, budget, cooldowns)
+  -> platform media policy (*_media_only)
+  -> presentation: Work -> existing ParseResult + unified picker + selection records
+  -> results page; downloads through the existing selection endpoint
+```
+
+- 内核在 `xhs_download/services/pipeline/`：结果模型、ChainRun、交付规则、文件名，L2，改动须 Human 审阅。
+- 平台实现在 `xhs_download/services/unified/`：
+  - `routes`、`runner`、`entry`；
+  - `presentation`：结果页与选择器；
+  - `transport`：下载时挑能跨域读取的镜像；
+  - 各平台模块，以及 `xhs_livephoto`：小红书实况的三种保存方式。
+- 选择器记录存在缓存里，引用为签名令牌，30 分钟内有效且不超过 CDN 链接过期时间。下载返回普通浏览器条目，由现有 Service Worker 流式保存；服务器不转发媒体。
+- 旧路径保留到各平台开关稳定运行后再删除。
 
 ## Platform Registry
 
@@ -135,7 +160,17 @@ ParseHub XHS Runtime 是正式 XHS 图片路线的一个可选供应方。它与
 
 Live Photo relationship 只接受同一 item 内的明确 still、motion 和 marker/owner 证据，不使用数组位置、URL 相似性或 `firstNoteId` 猜测。
 
-Active Staff Single 数据流：
+统一管线“实况照片”模式数据流（所有访客）：
+
+```text
+Native same-item pairs (Work groups)
+  -> unified xhs_livephoto: original JPEG still + h264 motion on a verified host
+  -> existing LivePhoto result shape and preview context
+  -> pair / motion tokens bound to the issuing browser (30 minutes)
+  -> cards, one-shot playback, pair or selection archive
+```
+
+开关关闭时的原路径（Active Staff Single）数据流：
 
 ```text
 Native exact-note snapshot
@@ -157,8 +192,12 @@ selected ordinary stills and/or Live Photo pairs
 
 边界：
 
-- Anonymous Single：flat static images，无 motion URL、badge 或 controller。
-- Active Staff Single：badge、one-shot playback、still + motion archive。
+- 统一管线开关打开时，单作品页按后台“实况保存方式”展示：
+  - 实况照片：所有访客都有 badge、one-shot playback 和 still + motion archive；
+  - 照片和视频分开：照片卡片，动态作为同序号的视频卡片；
+  - 只保存照片：只有照片卡片。
+  - 图片和视频一起选时由浏览器打成一个 ZIP。
+- 开关关闭时的原路径：Anonymous Single 为 flat static images；Active Staff Single 有 badge、one-shot playback、still + motion archive。
 - Batch：flat static images，无 motion item、pair token 或 pair archive。
 - Provider Health：不启用 Staff Live Photo pipeline。
 
