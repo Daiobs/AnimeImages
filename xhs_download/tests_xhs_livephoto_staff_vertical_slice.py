@@ -1024,27 +1024,27 @@ class XhsLivePhotoStaffPresentationTests(SimpleTestCase):
         self.assertNotIn("xhs_livephoto_preview.js", html)
         self.assertNotIn("data-livephoto-loader", html)
 
-    def test_anonymous_shell_never_loads_pair_or_playback_javascript(self):
+    def test_anonymous_shell_loads_pair_and_playback_javascript_only_for_livephoto_cards(self):
         public_request = RequestFactory().get("/xhs/")
         public_request.user = AnonymousUser()
-        html = render_to_string(
-            "xhs_download.html",
-            {
-                "static_asset_version": "test",
-                "image_items": [],
-                "video_items": [],
-                "error_message": "",
-                "platform_notice": "",
-                "provider_notice": "",
-                "show_xhs_livephoto_preview": True,
-            },
-            request=public_request,
-        )
-
-        self.assertNotIn("xhs_livephoto_pair_download.js", html)
-        self.assertNotIn("data-livephoto-pair-loader", html)
-        self.assertNotIn("xhs_livephoto_preview.js", html)
-        self.assertNotIn("data-livephoto-loader", html)
+        for shown in (False, True):
+            with self.subTest(show_xhs_livephoto_preview=shown):
+                html = render_to_string(
+                    "xhs_download.html",
+                    {
+                        "static_asset_version": "test",
+                        "image_items": [],
+                        "video_items": [],
+                        "error_message": "",
+                        "platform_notice": "",
+                        "provider_notice": "",
+                        "show_xhs_livephoto_preview": shown,
+                    },
+                    request=public_request,
+                )
+                for marker in ("xhs_livephoto_pair_download.js", "data-livephoto-pair-loader",
+                               "xhs_livephoto_preview.js", "data-livephoto-loader"):
+                    self.assertEqual(marker in html, shown, marker)
 
     def test_staff_shell_loads_preview_javascript(self):
         html = render_to_string(

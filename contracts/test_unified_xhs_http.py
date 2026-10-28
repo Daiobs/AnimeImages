@@ -30,6 +30,14 @@ VIDEO = {"note": {"noteDetailMap": {ID: {"note": {
     "noteId": ID, "type": "video", "title": "视频契约", "video": {"media": {"stream": {"h264": [{
         "masterUrl": "http://sns-video-v4.xhscdn.com/stream/hd.mp4", "qualityType": "HD",
         "width": 720, "height": 1280, "size": 9554309, "videoCodec": "h264", "audioCodec": "aac"}]}}}}}}}}
+LIVE_MOTION = "http://sns-video-v4.xhscdn.com/stream/live/1.mp4"
+LIVE = {"note": {"noteDetailMap": {ID: {"note": {
+    "noteId": ID, "type": "normal", "title": "实况契约", "imageList": [
+        {"urlDefault": f"http://sns-webpic-qc.xhscdn.com/202610271234/0123abcd/{TOKEN}!nd_dft_wlteh_webp_3",
+         "width": 1080, "height": 1440, "livePhoto": True,
+         "stream": {"h264": [{"masterUrl": LIVE_MOTION, "size": 385650}]}},
+        {"urlDefault": "http://sns-webpic-qc.xhscdn.com/202610271234/0123abcd/1040g2sg31bbcdefghijabcdefghijabcdefghij"
+                       "!nd_dft_wlteh_webp_3", "width": 1080, "height": 1440, "livePhoto": False}]}}}}}
 SERVICE = {"code": 200, "data": {"title": "视频契约", "desc": "视频契约", "videos": [{"url": "https://sns-video-hw.xhscdn.com/normal.mp4", "streams": [
     {"url": "https://sns-video-hw.xhscdn.com/normal.mp4", "qualityLabel": "正常", "size": 9554309},
     {"url": "https://sns-video-hw.xhscdn.com/original", "qualityLabel": "原画", "size": 129382759}]}],
@@ -100,3 +108,41 @@ class UnifiedXhsHttpContracts(TestCase):
             "candidate_id": radios[0]["value"], "resource_token": radios[0]["data-token"], "action": "link",
         }), content_type="application/json").json()["item"]["url"]
         self.assertEqual(link, "https://sns-video-v4.xhscdn.com/stream/hd.mp4")
+
+    def test_live_photos_are_livephoto_cards_for_every_viewer(self):
+        self.page = LIVE
+        soup = self.page_for()
+        grid = soup.select_one("[data-xhs-livephoto-preview]")
+        self.assertIsNotNone(grid)
+        self.assertFalse(grid.has_attr("data-xhs-livephoto-staff-preview"))
+        cards = grid.select(".asset-card")
+        self.assertEqual([c["data-logical-type"] for c in cards], ["livephoto", "image"])
+        self.assertEqual(soup.select('.asset-card[data-type="video"]'), [])
+        pair = self.client.post(reverse("media_xhs_livephoto_pair_descriptor"),
+                                json.dumps({"pair_token": cards[0]["data-livephoto-pair-token"]}),
+                                content_type="application/json").json()
+        self.assertEqual((pair["still"]["url"], pair["motion"]["url"]),
+                         (f"https://ci.xiaohongshu.com/{TOKEN}?imageView2/format/jpg",
+                          LIVE_MOTION.replace("http:", "https:")))
+        motion = self.client.post(reverse("media_xhs_livephoto_motion_descriptor"),
+                                  json.dumps({"motion_token": cards[0]["data-livephoto-motion-token"]}),
+                                  content_type="application/json")
+        self.assertEqual(motion.status_code, 200)
+
+    def test_separate_mode_numbers_each_motion_after_its_photo(self):
+        self.page = LIVE
+        PipelineRoute.objects.filter(platform="xiaohongshu").update(live_photo_mode="separate")
+        soup = self.page_for()
+        self.assertIsNone(soup.select_one("[data-xhs-livephoto-preview]"))
+        videos = soup.select('.asset-card[data-type="video"]')
+        self.assertEqual([(v["data-display-ordinal"], v["data-download-filename"].rsplit("_", 1)[1]) for v in videos],
+                         [("1", "01.mp4")])
+        self.assertEqual(len(soup.select('.asset-card[data-type="image"]')), 2)
+
+    def test_still_only_mode_offers_the_photos_alone(self):
+        self.page = LIVE
+        PipelineRoute.objects.filter(platform="xiaohongshu").update(live_photo_mode="still_only")
+        soup = self.page_for()
+        self.assertIsNone(soup.select_one("[data-xhs-livephoto-preview]"))
+        self.assertEqual(soup.select('.asset-card[data-type="video"]'), [])
+        self.assertEqual(len(soup.select('.asset-card[data-type="image"]')), 2)

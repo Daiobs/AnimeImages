@@ -259,6 +259,71 @@ test("pure original images use Browser Photo while mixed or server-required sele
 });
 
 
+test("Xiaohongshu videos the browser can read join a selection ZIP but never travel alone", () => {
+    const image = {type: "image", logical_type: "image", url: "https://ci.xiaohongshu.com/one"};
+    const motion = {
+        type: "video",
+        logical_type: "video",
+        url: "https://sns-video-v4.xhscdn.com/motion.mp4",
+        source_platform: "xiaohongshu",
+        browser_direct_fetch_safe: true,
+    };
+    assert.equal(photo.supportsSelection([image, motion], "original"), true);
+    assert.equal(photo.supportsSelection([motion, {...motion, url: "https://sns-video-v4.xhscdn.com/two.mp4"}],
+        "original"), true);
+    assert.equal(photo.supportsSelection([motion], "original"), false);
+    assert.equal(photo.supportsSelection([image, {...motion, source_platform: "douyin"}], "original"), false);
+    assert.equal(photo.supportsSelection([image, {...motion, browser_direct_fetch_safe: false}], "original"), false);
+    assert.equal(photo.supportsSelection([image, {...motion, requires_merge: true}], "original"), false);
+    assert.equal(photo.supportsSelection([image, {...motion, url: "http://sns-video-v4.xhscdn.com/m.mp4"}],
+        "original"), false);
+});
+
+
+test("a photo and video selection packs one ZIP numbered by the photos", async () => {
+    let saved = null;
+    const items = [
+        {type: "image", logical_type: "image", url: "https://ci.xiaohongshu.com/still-1", display_ordinal: 1,
+            source_platform: "xiaohongshu"},
+        {type: "video", logical_type: "video", url: "https://sns-video-v4.xhscdn.com/motion-1.mp4",
+            display_ordinal: 1, source_platform: "xiaohongshu", browser_direct_fetch_safe: true},
+        {type: "video", logical_type: "video", url: "https://sns-video-v4.xhscdn.com/motion-2.mp4",
+            display_ordinal: 1, source_platform: "xiaohongshu", browser_direct_fetch_safe: true},
+    ];
+    const bodies = new Map([["still-1", SIGNATURES.jpeg], ["motion-1", MP4_BYTES], ["motion-2", MP4_BYTES]]);
+    const result = await photo.createLogicalSelectionArchive(items, {
+        baseFilename: "作品",
+        async fetchImpl(url) {
+            const key = Array.from(bodies.keys()).find((candidate) => url.includes(candidate));
+            return fakeResponse([bodies.get(key)], {contentType: key.startsWith("motion") ? "video/mp4" : "image/jpeg"});
+        },
+        async handoff(blob, filename) { saved = {blob, filename}; },
+    });
+    const entries = await parseStoreZip(saved.blob);
+    assert.equal(saved.filename, "作品_selected.zip");
+    assert.equal(result.entryCount, 3);
+    assert.deepEqual(entries.map((entry) => entry.name), ["01.jpg", "01.mp4", "01_03.mp4"]);
+    assert.deepEqual(entries.map((entry) => entry.data), [SIGNATURES.jpeg, MP4_BYTES, MP4_BYTES]);
+});
+
+
+test("a selection ZIP refuses a video that is not an MP4 without handing off", async () => {
+    let saved = null;
+    await assert.rejects(photo.createLogicalSelectionArchive([
+        {type: "image", logical_type: "image", url: "https://ci.xiaohongshu.com/still-1",
+            source_platform: "xiaohongshu"},
+        {type: "video", logical_type: "video", url: "https://sns-video-v4.xhscdn.com/page.mp4",
+            source_platform: "xiaohongshu", browser_direct_fetch_safe: true},
+    ], {
+        async fetchImpl(url) {
+            return fakeResponse([url.includes("still") ? SIGNATURES.jpeg : Buffer.from("<html></html>")]);
+        },
+        async handoff(blob, filename) { saved = {blob, filename}; },
+    }), (error) => photo.safeErrorCode(error) === "BROWSER_LIVEPHOTO_MOTION_INVALID");
+    assert.equal(saved, null);
+});
+
+
 test("Single pure-image routing has no silent server fallback when Browser Photo is unavailable", () => {
     const source = fs.readFileSync(
         path.join(__dirname, "../static/js/xhs_download.js"),

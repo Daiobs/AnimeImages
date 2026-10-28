@@ -147,12 +147,15 @@
         };
 
         if (type === "video") {
+            // A live photo's motion carries its photo's number.
+            const displayOrdinal = Number.parseInt(card.dataset.displayOrdinal || "0", 10) || 0;
             return {
                 type: "video",
                 logical_type: "video",
                 url: card.dataset.url,
                 cover_url: card.dataset.coverUrl || "",
                 size_bytes: sizeBytes,
+                ...(displayOrdinal ? {display_ordinal: displayOrdinal} : {}),
                 ...providerFields,
             };
         }
@@ -974,6 +977,13 @@
                             && item.pair_token
                             && item.descriptor_url
                         )
+                        || (
+                            item.logical_type === "video"
+                            && sourceItems.length > 1
+                            && item.source_platform === "xiaohongshu"
+                            && item.browser_direct_fetch_safe === true
+                            && item.url
+                        )
                     )
                     && !item.requires_cookie
                     && !item.requires_merge
@@ -986,7 +996,10 @@
             return Boolean(
                 sourceItems.length
                 && sourceItems.every((item) => (
-                    item && ["image", "livephoto"].includes(item.logical_type || item.type)
+                    item && (
+                        ["image", "livephoto"].includes(item.logical_type || item.type)
+                        || ((item.logical_type || item.type) === "video" && item.source_platform === "xiaohongshu")
+                    )
                 ))
                 && sourceItems.some((item) => (
                     item.logical_type === "livephoto"
@@ -1119,6 +1132,7 @@
                 .sort((left, right) => left.display_ordinal - right.display_ordinal);
             const livePhotoItems = items.filter((item) => item.logical_type === "livephoto");
             const includesLivePhoto = livePhotoItems.length > 0;
+            const includesVideo = items.some((item) => item.logical_type === "video");
             const zeroRelay = selectionRequiresZeroRelay(items);
             activePhotoController = new AbortController();
             const previewApi = window.AnimeImagesXhsLivePhotoPreview;
@@ -1159,7 +1173,7 @@
                     );
                     return;
                 }
-                const result = includesLivePhoto
+                const result = includesLivePhoto || includesVideo
                     ? await browserPhotoApi.createLogicalSelectionArchive(items, {
                         baseFilename: payload.base_filename,
                         signal: activePhotoController.signal,

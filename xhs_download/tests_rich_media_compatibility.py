@@ -239,6 +239,8 @@ class RichMediaCurrentProviderBoundaryTests(SimpleTestCase):
             "xhs_download/services/platforms/xhs_livephoto_builder.py",
             "xhs_download/services/platforms/xhs_livephoto_staff_builder.py",
             "xhs_download/services/platforms/xiaohongshu.py",
+            # The same LivePhoto shape for the unified pipeline's 实况照片 mode.
+            "xhs_download/services/unified/xhs_livephoto.py",
         }
         for path in production_files:
             tree = ast.parse(path.read_text(encoding="utf-8"))

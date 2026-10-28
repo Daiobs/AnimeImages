@@ -1140,6 +1140,9 @@ def build_xhs_livephoto_preview_context(
                 str(item_record.get("motion_asset_id") or "")
             )
             group_id = str(item_record.get("group_id") or "")
+            # Unified results know when their media links expire.
+            not_after = item_record.get("media_not_after")
+            expiry = {"not_after": float(not_after)} if not_after else {}
             if (
                 item["playback_status"] == "ready"
                 and (
@@ -1161,6 +1164,7 @@ def build_xhs_livephoto_preview_context(
                         source_item_ordinal=expected_ordinal,
                         motion_asset=motion_asset,
                         client_identity=client_identity,
+                        **expiry,
                     ).token
                 except Exception as error:
                     error_code = str(getattr(error, "error_code", ""))
@@ -1192,6 +1196,7 @@ def build_xhs_livephoto_preview_context(
                         motion_asset=motion_asset,
                         base_filename=result.base_filename,
                         client_identity=client_identity,
+                        **expiry,
                     ).token
                 except Exception as error:
                     error_code = str(getattr(error, "error_code", ""))
