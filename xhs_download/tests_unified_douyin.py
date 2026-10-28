@@ -398,3 +398,29 @@ class CooldownSettingsTests(SimpleTestCase):
         fresh = routes.cooldowns(route(cooldown_base_seconds=5, cooldown_max_seconds=8))
         self.assertIsNot(fresh, book)
         self.assertFalse(fresh.cooling("tiantianjiexi", 1))
+
+
+class ReviewedHostTests(SimpleTestCase):
+    """Production, 2026-10-28: TianTian answered from the reviewed exact host and
+    the page dropped the only video, because presentation re-checked a suffix list."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_reviewed_exact_douyin_host_reaches_the_picker(self):
+        raw = deepcopy(TIANTIAN_RAW)
+        raw["data"]["videos"] = [{"url": "https://v3-dy-a-x.ixigua.com/obj/original?mime_type=video_mp4"}]
+        work = replace(ServiceTianTianAdapter().map(raw, SOURCE), platform="douyin", provider="tiantianjiexi")
+        kept = douyin_media_only(work)
+        result = present(kept, platform_adapter=PLATFORM, provider_label="天天解析",
+                         fallback_extensions={"video": "mp4"})
+        self.assertIsNotNone(result)
+        choice = result.metadata["unified_picker"]["videos"][0]
+        self.assertEqual(resolve_selection(choice["resource_token"], choice["candidate_id"])["url"],
+                         "https://v3-dy-a-x.ixigua.com/obj/original?mime_type=video_mp4")
+
+    def test_hosts_outside_the_douyin_policy_still_never_reach_the_page(self):
+        raw = deepcopy(TIANTIAN_RAW)
+        raw["data"]["videos"] = [{"url": "https://v3-dy-a-x.ixigua.example/obj/original.mp4"}]
+        work = replace(ServiceTianTianAdapter().map(raw, SOURCE), platform="douyin", provider="tiantianjiexi")
+        self.assertEqual(douyin_media_only(work).items, ())

@@ -130,3 +130,16 @@ class PlatformPresentationTests(SimpleTestCase):
                          fallback_extensions={"video": "mp4"})
         self.assertEqual((result.platform, result.post_type, result.metadata["caption"]),
                          ("bilibili", "video", "统一管线 B 站"))
+
+
+class AkamaiMirrorPresentationTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
+    def test_akamai_mirror_is_offered_when_it_is_the_only_link(self):
+        raw = native_raw()
+        raw["playurl"]["data"]["durl"][0]["url"] = "https://upos-hz-mirrorakam.akamaized.net/upgcxcode/hd.mp4"
+        work = replace(bilibili_media_only(NativeAdapter().map(raw, SOURCE)), platform="bilibili", provider="native")
+        picker, records, _ = build_picker(work, {"video": "mp4"})
+        self.assertEqual([r["url"] for r in records.values()],
+                         ["https://upos-hz-mirrorakam.akamaized.net/upgcxcode/hd.mp4"])
