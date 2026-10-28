@@ -13,7 +13,6 @@ import logging
 import threading
 import time
 from types import MappingProxyType
-from urllib.parse import urlsplit
 
 from ..pipeline import Failure, FailureKind, Kind, Variant, Work
 from ..provider_adapters.kukutool import KukutoolAdapter
@@ -22,7 +21,7 @@ from . import routes
 from .errors import UnifiedParseError, failure_error
 from .presentation import present
 from .runner import run_chain
-from .tiantian import CachedTianTianAdapter, service_video_facts
+from .tiantian import CachedTianTianAdapter, https_media, service_video_facts
 
 logger = logging.getLogger(__name__)
 
@@ -67,21 +66,9 @@ def with_original_images(work):
 
 def with_https_media(work):
     """XHS pages list http:// media links; the existing XHS path asks for https."""
-    from ..common import host_matches
     from ..platforms.xiaohongshu import XHS_MEDIA_HOST_SUFFIXES
 
-    items, sources = [], dict(work.field_sources)
-    for item in work.items:
-        variants = []
-        for variant in item.variants:
-            parts = urlsplit(variant.url)
-            if parts.scheme == "http" and host_matches((parts.hostname or "").lower(), XHS_MEDIA_HOST_SUFFIXES):
-                variant = replace(variant, url=parts._replace(scheme="https").geturl())
-                key = f"items.{item.item_id}.variants.{variant.variant_id}.url"
-                sources[key] = sources.get(key, "") + ":https"
-            variants.append(variant)
-        items.append(replace(item, variants=tuple(variants)))
-    return replace(work, items=tuple(items), field_sources=MappingProxyType(sources))
+    return https_media(work, XHS_MEDIA_HOST_SUFFIXES)
 
 
 def is_ordinary_video(work):

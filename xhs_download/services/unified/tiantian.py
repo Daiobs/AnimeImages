@@ -58,19 +58,13 @@ class CachedTianTianAdapter(TianTianAdapter):
         return raw
 
 
-def service_video_facts(work):
-    """TianTian responses, as the existing Douyin and XHS paths read them.
-
-    Beside a video, the images are the work's cover, not photos; and a video
-    whose links carry no quality facts is the original upload ("原始上传画质"),
-    its links being mirrors of that one file.
-    """
+def service_cover_images(work):
+    """Beside a video, a TianTian response's images are the work's cover, not photos."""
     if not any(item.kind is Kind.VIDEO for item in work.items):
         return work
     sources = dict(work.field_sources)
     cover = work.cover_url
-    items = []
-    removed = []
+    items, removed = [], []
     for item in work.items:
         if item.kind is Kind.IMAGE:
             if not cover and item.default_variant is not None:
@@ -78,6 +72,22 @@ def service_video_facts(work):
                 sources["cover_url"] = sources["cover"] = "adapter:service_cover_image"
             removed.append(f"items.{item.item_id}.")
             continue
+        items.append(item)
+    sources = {key: value for key, value in sources.items() if not any(key.startswith(prefix) for prefix in removed)}
+    return replace(work, items=tuple(items), cover_url=cover, field_sources=MappingProxyType(sources))
+
+
+def service_video_facts(work):
+    """TianTian responses, as the existing Douyin and XHS paths read them.
+
+    Beside a video, the images are the work's cover, not photos; and a video
+    whose links carry no quality facts is the original upload ("原始上传画质"),
+    its links being mirrors of that one file.
+    """
+    work = service_cover_images(work)
+    sources = dict(work.field_sources)
+    items = []
+    for item in work.items:
         if item.kind is Kind.VIDEO and not any(variant.quality_label or variant.height or variant.is_original
                                                for variant in item.variants):
             item = replace(item, variants=tuple(replace(variant, is_original=True) for variant in item.variants))
@@ -85,5 +95,23 @@ def service_video_facts(work):
                 sources[f"items.{item.item_id}.variants.{variant.variant_id}.is_original"] = (
                     "adapter:service_unlabeled_video")
         items.append(item)
-    sources = {key: value for key, value in sources.items() if not any(key.startswith(prefix) for prefix in removed)}
-    return replace(work, items=tuple(items), cover_url=cover, field_sources=MappingProxyType(sources))
+    return replace(work, items=tuple(items), field_sources=MappingProxyType(sources))
+
+
+def https_media(work, host_suffixes):
+    """Platform pages list http:// media links; the existing paths ask for https."""
+    from urllib.parse import urlsplit
+    from ..common import host_matches
+
+    items, sources = [], dict(work.field_sources)
+    for item in work.items:
+        variants = []
+        for variant in item.variants:
+            parts = urlsplit(variant.url)
+            if parts.scheme == "http" and host_matches((parts.hostname or "").lower(), host_suffixes):
+                variant = replace(variant, url=parts._replace(scheme="https").geturl())
+                key = f"items.{item.item_id}.variants.{variant.variant_id}.url"
+                sources[key] = sources.get(key, "") + ":https"
+            variants.append(variant)
+        items.append(replace(item, variants=tuple(variants)))
+    return replace(work, items=tuple(items), field_sources=MappingProxyType(sources))

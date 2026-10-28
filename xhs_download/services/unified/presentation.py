@@ -123,8 +123,13 @@ def delivery_facts(item, variant):
     return True, "", delivery
 
 
+def _epoch(value):
+    """Variant expiry is a datetime; records keep epoch seconds."""
+    return value.timestamp() if value is not None else None
+
+
 def _record_ttl(variants, now):
-    expiries = [variant.expires_at for variant in variants if variant.expires_at]
+    expiries = [_epoch(variant.expires_at) for variant in variants if variant.expires_at]
     ttl = RECORD_TTL_SECONDS
     if expiries:
         ttl = min(ttl, int(min(expiries) - now))
@@ -164,7 +169,7 @@ def build_picker(work, fallback_extensions, *, now=None):
                 "kind": item.kind.value, "url": variant.url, "mirrors": mirrors(item, variant),
                 "filename": download_name(work, item, variant, fallback_extensions),
                 "size_bytes": int(variant.size_bytes or 0), "size_exact": bool(variant.size_exact),
-                "label": quality_label(variant), "expires_at": variant.expires_at,
+                "label": quality_label(variant), "expires_at": _epoch(variant.expires_at),
                 "method": delivery.method.value, "fallback": delivery.fallback.value if delivery.fallback else "",
                 "rule": delivery.rule, "can_download": can_download,
             }
@@ -271,6 +276,9 @@ def present(work, *, platform_adapter, provider_label, fallback_extensions, atte
     description = "" if work.description.strip() == work.title.strip() else work.description
     metadata = {
         "title": work.title, "description": "\n".join(part for part in (description, topics) if part),
+        # Marks separated work text for the shared display (see build_result_display_context).
+        "caption": "\n".join(part for part in (work.title, description) if part),
+        "topics": list(work.topics),
         "author_name": work.author, "cover_url": work.cover_url, "work_id": work.work_id,
         "selected_provider": work.provider, "source_provider": work.provider, "provider_label": provider_label,
         "unified_pipeline": True, "unified_completeness": work.completeness.value,

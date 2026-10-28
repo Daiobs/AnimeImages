@@ -31,8 +31,14 @@ def _xiaohongshu(url, route, **options):
                  service_ids=options.get("xhs_service_provider_ids") or ())
 
 
+def _bilibili(url, route, **options):
+    from .bilibili import parse
+
+    return parse(url, route, authorize=options.get("bilibili_service_authorizer"))
+
+
 # Each platform's Providers and facts live in its own module; this only registers them.
-PLATFORM_PARSERS = {"douyin": _douyin, "xiaohongshu": _xiaohongshu}
+PLATFORM_PARSERS = {"douyin": _douyin, "xiaohongshu": _xiaohongshu, "bilibili": _bilibili}
 
 
 def parse_unified(url, route, **options):
