@@ -120,6 +120,7 @@
                              data-source-platform="{{ item.source_platform|default:'' }}"
                              data-url="{{ item.video_url }}"
                              data-download-filename="{{ item.filename }}"
+                             {% if item.display_ordinal %}data-display-ordinal="{{ item.display_ordinal }}"{% endif %}
                              data-cover-url="{{ item.cover_url|default:'' }}"
                              data-size-bytes="{{ item.size_bytes|default:0 }}"
                              data-size-is-estimate="{{ item.size_is_estimate|yesno:'true,false' }}"
@@ -182,9 +183,9 @@
 
                 <div
                     class="asset-grid"
-                    {% if show_xhs_livephoto_staff_preview %}
+                    {% if show_xhs_livephoto_preview %}
                         data-xhs-livephoto-preview
-                        data-xhs-livephoto-staff-preview
+                        {% if show_xhs_livephoto_staff_preview %}data-xhs-livephoto-staff-preview{% endif %}
                         data-pair-script-url="{% static 'js/xhs_livephoto_pair_download.js' %}?v={{ static_asset_version }}"
                         data-preview-script-url="{% static 'js/xhs_livephoto_preview.js' %}?v={{ static_asset_version }}"
                     {% endif %}
@@ -230,7 +231,7 @@
                                  {% endif %}
                              {% endif %}
                         >
-                            {% if show_xhs_livephoto_staff_preview %}
+                            {% if show_xhs_livephoto_preview %}
                                 <button
                                     type="button"
                                     class="asset-check asset-select-control"

@@ -93,15 +93,15 @@ class NginxMediaApplicationGuardTests(SimpleTestCase):
                 self.assertEqual(response.status_code, 403)
                 self.assertIn("text/html", response["Content-Type"])
 
-    def test_livephoto_requires_staff_even_with_valid_csrf(self):
-        for path, token, code in (
-            (NEW_MEDIA_PATHS[1], "motion_token", "XHS_LIVEPHOTO_PLAYBACK_STAFF_REQUIRED"),
-            (NEW_MEDIA_PATHS[2], "pair_token", "XHS_LIVEPHOTO_PAIR_STAFF_REQUIRED"),
+    def test_livephoto_rejects_an_invalid_token_with_valid_csrf(self):
+        for path, token in (
+            (NEW_MEDIA_PATHS[1], "motion_token"),
+            (NEW_MEDIA_PATHS[2], "pair_token"),
         ):
             with self.subTest(path=path):
                 response = self.post_with_csrf(path, {token: "invalid-token"})
-                self.assertEqual(response.status_code, 403)
-                self.assertEqual(response.json()["error_code"], code)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error_code"], "XHS_LIVEPHOTO_PAIR_INVALID")
                 self.assertIn("no-store", response["Cache-Control"])
 
     def test_candidate_routes_reject_missing_or_invalid_resource_credentials(self):

@@ -352,7 +352,7 @@ class PipelineRouteAdmin(admin.ModelAdmin):
     list_editable = ("enabled",)
     fields = ("platform", "enabled", "order", "policy", "floor_provider", "budget_seconds",
               "upgrade_window_seconds", "platform_names", "cooldown_base_seconds", "cooldown_max_seconds",
-              "updated_at")
+              "live_photo_mode", "updated_at")
     readonly_fields = ("platform", "updated_at")
 
     def has_add_permission(self, request):

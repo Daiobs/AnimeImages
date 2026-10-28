@@ -236,7 +236,7 @@ def present(work, *, platform_adapter, provider_label, fallback_extensions, atte
     """The existing ParseResult shape for one unified Work."""
     common = {"platform": work.platform, "headers": platform_adapter.headers,
               "media_host_suffixes": platform_adapter.media_host_suffixes}
-    assets = []
+    assets, numbers = [], {}
     for item in sorted(work.items, key=lambda item: item.index):
         if item.kind is not Kind.IMAGE:
             continue
@@ -246,25 +246,30 @@ def present(work, *, platform_adapter, provider_label, fallback_extensions, atte
             continue
         assets.append(MediaAsset(media_type="image", url=variant.url, preview_url=variant.url,
                                  ext=variant.container, **common))
+        numbers[item.item_id] = len(assets)
     picker, _records, defaults = build_picker(work, fallback_extensions)
     grouped = grouped_item_ids(work)
     motions = [(item, item.default_variant if item.default_variant in distinct_variants(item)
                 else (distinct_variants(item) or [None])[0])
                for item in sorted(work.items, key=lambda item: item.index)
                if item.kind is Kind.VIDEO and item.item_id in grouped]
-    # A live photo's motion shows its own still as the cover.
-    still = {}
+    # A live photo's motion shows its own still as the cover and shares its number (§4).
+    still, number = {}, {}
     for group in work.groups:
         stills = [work_item for work_item in work.items if work_item.item_id in group.item_ids
                   and work_item.kind is Kind.IMAGE and work_item.default_variant is not None]
         for item_id in group.item_ids:
             if stills:
                 still[item_id] = stills[0].default_variant.url
+                number[item_id] = numbers.get(stills[0].item_id)
+    video_numbers = {}
     # Picker defaults first: picker_with_covers pairs groups with these cards in order.
     for item, variant in [*defaults, *motions]:
         if variant is None:
             continue
         cover = still.get(item.item_id, work.cover_url)
+        if number.get(item.item_id):
+            video_numbers[variant.url] = number[item.item_id]
         assets.append(MediaAsset(
             media_type="video", url=variant.url, cover_url=cover, cover_preview_url=cover,
             quality_label=quality_label(variant), size_bytes=int(variant.size_bytes or 0),
@@ -287,6 +292,9 @@ def present(work, *, platform_adapter, provider_label, fallback_extensions, atte
     }
     if picker:
         metadata["unified_picker"] = picker
+    if video_numbers:
+        # Read by the result page's video cards (views.build_video_item).
+        metadata["video_display_ordinals"] = video_numbers
     if work.duration_seconds is not None and math.isfinite(work.duration_seconds):
         metadata["duration_seconds"] = work.duration_seconds
     has_video = any(asset.media_type == "video" for asset in assets)

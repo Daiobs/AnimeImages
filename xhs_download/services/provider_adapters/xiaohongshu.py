@@ -205,13 +205,15 @@ def _scoped(facts, url):
 def _streams(parent, origin, context):
     streams = _mapping(parent, "stream")
     resources = []
-    for ordinal, variants in enumerate(streams.values()):
+    for ordinal, (codec, variants) in enumerate(streams.items()):
         if type(variants) is not list:
             raise ValueError("INVALID_STREAMS")
+        # The row's codec key (h264, h265, ...) names it, so a consumer can tell codecs apart.
+        row_path = f".stream.{codec}" if re.fullmatch(r"[a-z0-9_]{1,16}", str(codec)) else f".stream[{ordinal}]"
         for index, row in enumerate(variants):
             if type(row) is not dict:
                 raise ValueError("INVALID_STREAM")
-            path = origin + f".stream[{ordinal}][{index}]"
+            path = origin + f"{row_path}[{index}]"
             addresses = [(row["masterUrl"], path + ".masterUrl")] if row.get("masterUrl") else []
             backups = row.get("backupUrls") or []
             if type(backups) is not list:

@@ -1076,6 +1076,21 @@
         return bound.url;
     }
 
+    // A Xiaohongshu video the browser can read whole, such as a live photo's motion
+    // shown as its own card: it joins the photos in one ZIP.
+    function isBrowserArchiveVideo(item) {
+        let url;
+        try { url = new URL(String(item && item.url || "")); } catch (error) { return false; }
+        return Boolean(
+            logicalItemType(item) === "video"
+            && item.source_platform === "xiaohongshu"
+            && url.protocol === "https:"
+            && (item.browser_direct_fetch_safe === true || item.browserDirectFetchSafe === true)
+            && item.requires_merge !== true && item.requiresMerge !== true
+            && item.requires_cookie !== true && item.requiresCookie !== true
+        );
+    }
+
     function supportsSelection(items, saveFormat) {
         const sourceItems = Array.isArray(items) ? items : [];
         return Boolean(
@@ -1088,6 +1103,10 @@
                 }
                 if (item.requires_merge === true || item.requiresMerge === true) {
                     return false;
+                }
+                if (logicalType === "video") {
+                    // A lone video keeps the video download; videos only join a ZIP.
+                    return sourceItems.length > 1 && isBrowserArchiveVideo(item);
                 }
                 if (logicalType === "livephoto") {
                     return Boolean(
@@ -1521,6 +1540,32 @@
                         chunks: result.chunks,
                         crc: result.crc,
                     });
+                    meter.completeItem(true);
+                    meter.emit("fetching");
+                    continue;
+                }
+                if (logicalType === "video") {
+                    if (!isBrowserArchiveVideo(item)) {
+                        throw photoError("BROWSER_PHOTO_INVALID_ITEM", "视频下载信息无效，请重新解析。");
+                    }
+                    meter.emit("fetching_motion");
+                    const result = await fetchMotion({...item, url: String(item.url).trim()}, {
+                        index,
+                        fetchImpl,
+                        itemMaxBytes: motionMaxBytes,
+                        archiveMaxBytes,
+                        aggregate,
+                        meter,
+                        controller,
+                        signal: controller.signal,
+                        idleTimeoutMs,
+                    });
+                    // A motion shares its photo's number; an unnumbered video takes its place.
+                    const taken = new Set(entries.map((entry) => entry.filename));
+                    const filename = taken.has(`${ordinal}.mp4`)
+                        ? `${ordinal}_${String(index + 1).padStart(2, "0")}.mp4`
+                        : `${ordinal}.mp4`;
+                    entries.push({filename, chunks: result.chunks, crc: result.crc});
                     meter.completeItem(true);
                     meter.emit("fetching");
                     continue;

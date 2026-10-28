@@ -3758,6 +3758,8 @@ def build_video_item(asset, result, *, probe_missing_size=True):
     extension = str(asset.ext or "").lower().lstrip(".")
     if extension not in {"mp4", "webm", "mov", "m4v", "mkv", "avi", "flv", "ogv"}:
         extension = "bin" if upstream else "mp4"
+    # A live photo's motion shares its still's number (unified presentation).
+    number = ((result.metadata or {}).get("video_display_ordinals") or {}).get(asset.url)
     return {
         **asset.to_download_item(),
         **build_asset_strategy_fields(asset, result),
@@ -3767,6 +3769,8 @@ def build_video_item(asset, result, *, probe_missing_size=True):
             "filename": f"{result.base_filename or 'video'}.{extension}",
             "upstream_browser_action": asset.source_platform == "upstream" and asset.provider in UPSTREAM_PROVIDER_IDS,
             } if upstream else {}),
+        **({"display_ordinal": number, "filename": f"{result.base_filename or 'video'}_{number:02d}.{extension}"}
+           if isinstance(number, int) and number > 0 else {}),
         "video_url": asset.url,
         "cover_url": asset.cover_url,
         "size_bytes": size_bytes,
@@ -4443,29 +4447,41 @@ def apply_search_result_to_context(
     context["video_items"] = display_context["video_items"]
     context["unified_picker"] = display_context.get("unified_picker")
 
+    preview_context = None
     if (
-        enable_xhs_livephoto_staff_preview
+        (enable_xhs_livephoto_preview or enable_xhs_livephoto_staff_preview)
         and result.platform == "xiaohongshu"
         and result.rich_media is not None
     ):
         from .services.platforms.xhs_livephoto_builder import (
+            XhsLivePhotoPreviewError,
             build_xhs_livephoto_preview_context,
         )
 
-        preview_context = build_xhs_livephoto_preview_context(
-            result,
-            client_identity=client_identity,
-        )
-        context["image_items"] = merge_xhs_livephoto_items_into_image_cards(
-            context["image_items"],
-            preview_context,
-        )
-        # Motion members remain descriptor-only for the Staff preview surface.
+        try:
+            preview_context = build_xhs_livephoto_preview_context(
+                result,
+                client_identity=client_identity,
+            )
+            image_items = merge_xhs_livephoto_items_into_image_cards(
+                context["image_items"],
+                preview_context,
+            )
+        except (XhsLivePhotoPreviewError, ValueError) as error:
+            if not enable_xhs_livephoto_preview:
+                raise
+            # The unified result still lists every photo and motion as plain cards.
+            logger.warning("xhs_livephoto_public_preview_fallback", extra={"error_code": str(error)[:96]})
+            preview_context = None
+    if preview_context is not None:
+        context["image_items"] = image_items
+        # Motion members remain descriptor-only on the LivePhoto cards.
         context["video_items"] = []
         context["xhs_livephoto_preview"] = preview_context
         context["show_xhs_livephoto_preview"] = True
-        context["xhs_livephoto_staff_preview"] = preview_context
-        context["show_xhs_livephoto_staff_preview"] = True
+        if enable_xhs_livephoto_staff_preview:
+            context["xhs_livephoto_staff_preview"] = preview_context
+            context["show_xhs_livephoto_staff_preview"] = True
     elif (
         enable_xhs_livephoto_staff_preview
         and (
@@ -4778,9 +4794,13 @@ def build_search_results_context(request, platform_key="home"):
                 consume=consume_fixed_window,
             )
         result = with_unified(parse_media_page)(query, **parse_options)
+        # The admin's 实况照片 mode (unified pipeline) shows the LivePhoto cards to everyone.
+        enable_xhs_livephoto_preview = bool(
+            (result.metadata or {}).get("xhs_live_photo_mode") == "livephoto"
+        )
         livephoto_pair_client_identity = ""
         if (
-            enable_xhs_livephoto_staff_preview
+            (enable_xhs_livephoto_preview or enable_xhs_livephoto_staff_preview)
             and result.platform == "xiaohongshu"
             and result.rich_media is not None
         ):
@@ -4792,7 +4812,7 @@ def build_search_results_context(request, platform_key="home"):
             result,
             platform_key=platform_key,
             prefer_ultra_hd=prefer_ultra_hd,
-            enable_xhs_livephoto_preview=False,
+            enable_xhs_livephoto_preview=enable_xhs_livephoto_preview,
             enable_xhs_livephoto_staff_preview=enable_xhs_livephoto_staff_preview,
             client_identity=livephoto_pair_client_identity,
         )
@@ -5589,23 +5609,7 @@ def proxy_image_view(request):
 @require_POST
 @csrf_protect
 def xhs_livephoto_motion_descriptor_view(request):
-    user = request.user
-    if not (
-        getattr(user, "is_authenticated", False)
-        and getattr(user, "is_active", False)
-        and getattr(user, "is_staff", False)
-    ):
-        response = JsonResponse(
-            {
-                "ok": False,
-                "error_code": "XHS_LIVEPHOTO_PLAYBACK_STAFF_REQUIRED",
-                "message": "该实况资源仅向当前管理员会话开放。",
-            },
-            status=403,
-        )
-        response["Cache-Control"] = "no-store"
-        response["X-Content-Type-Options"] = "nosniff"
-        return response
+    # Open to every viewer: the token is bound to the browser that rendered it.
     if len(request.body) > 8192:
         response = JsonResponse(
             {
@@ -5699,23 +5703,7 @@ def xhs_livephoto_motion_descriptor_view(request):
 @require_POST
 @csrf_protect
 def xhs_livephoto_pair_descriptor_view(request):
-    user = request.user
-    if not (
-        getattr(user, "is_authenticated", False)
-        and getattr(user, "is_active", False)
-        and getattr(user, "is_staff", False)
-    ):
-        response = JsonResponse(
-            {
-                "ok": False,
-                "error_code": "XHS_LIVEPHOTO_PAIR_STAFF_REQUIRED",
-                "message": "该实况资源仅向当前管理员会话开放。",
-            },
-            status=403,
-        )
-        response["Cache-Control"] = "no-store"
-        response["X-Content-Type-Options"] = "nosniff"
-        return response
+    # Open to every viewer: the token is bound to the browser that rendered it.
     if len(request.body) > 8192:
         response = JsonResponse(
             {

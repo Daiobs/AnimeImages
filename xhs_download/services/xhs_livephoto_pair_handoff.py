@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -31,7 +32,8 @@ from .platforms.xhs_image_download_authority import (
 
 XHS_LIVEPHOTO_PAIR_TOKEN_SALT = "xhs_download.xhs_livephoto_pair.v1"
 XHS_LIVEPHOTO_MOTION_TOKEN_SALT = "xhs_download.xhs_livephoto_motion.v1"
-XHS_LIVEPHOTO_PAIR_TTL_SECONDS = 120
+# As long as a unified selection record (30 minutes); a record never outlives its media links.
+XHS_LIVEPHOTO_PAIR_TTL_SECONDS = 1800
 XHS_LIVEPHOTO_PAIR_MAX_USES = 16
 XHS_LIVEPHOTO_PAIR_MAX_CACHE_BYTES = 48 * 1024
 XHS_LIVEPHOTO_PAIR_STILL_MAX_BYTES = 50 * 1024 * 1024
@@ -136,17 +138,16 @@ def _safe_base_filename(value: str) -> str:
 
 
 def get_xhs_livephoto_pair_client_identity(request) -> str:
-    """Bind a handoff to an active Staff user, browser, and network identity."""
+    """Bind a handoff to the browser and network identity, and to the signed-in user."""
 
     user = getattr(request, "user", None)
     user_id = getattr(user, "pk", None)
     if not (
         getattr(user, "is_authenticated", False)
         and getattr(user, "is_active", False)
-        and getattr(user, "is_staff", False)
         and user_id is not None
     ):
-        raise _error(code="XHS_LIVEPHOTO_PAIR_CLIENT_MISMATCH", status=403)
+        user_id = "anonymous"
     get_token(request)
     csrf_secret = str(request.META.get("CSRF_COOKIE") or "")
     network_identity = get_client_identity(request)
@@ -307,7 +308,10 @@ def _issue_record_token(record: dict, *, salt: str, cache_key) -> str:
         raise _error(code="XHS_LIVEPHOTO_PAIR_RECORD_TOO_LARGE")
     ticket_id = uuid4().hex
     binding = _record_binding(record)
-    cache.set(cache_key(ticket_id), record, timeout=XHS_LIVEPHOTO_PAIR_TTL_SECONDS)
+    timeout = math.ceil(float(record["expires_at"]) - time.time())
+    if timeout <= 0:
+        raise _error("资源已失效，请重新解析。", code="XHS_LIVEPHOTO_PAIR_EXPIRED", status=410)
+    cache.set(cache_key(ticket_id), record, timeout=timeout)
     return signing.dumps(
         {"ticket_id": ticket_id, "binding": binding},
         salt=salt,
@@ -388,6 +392,13 @@ def _load_record_token(
     return record, remaining
 
 
+def _expires_at(issued_at: float, not_after) -> float:
+    """The TTL from now, never past the media links' own expiry."""
+
+    expires_at = issued_at + XHS_LIVEPHOTO_PAIR_TTL_SECONDS
+    return min(expires_at, float(not_after)) if not_after else expires_at
+
+
 def issue_xhs_livephoto_pair_token(
     *,
     source_identity: str,
@@ -397,6 +408,7 @@ def issue_xhs_livephoto_pair_token(
     motion_asset: MediaAsset,
     base_filename: str,
     client_identity: str,
+    not_after: float | None = None,
 ) -> XhsLivePhotoPairToken:
     source_identity = str(source_identity or "")
     client_identity = str(client_identity or "")
@@ -411,7 +423,7 @@ def issue_xhs_livephoto_pair_token(
         "motion": _asset_record(motion_asset, expected_type="video"),
         "base_filename": _safe_base_filename(base_filename),
         "client_identity": client_identity[:256],
-        "expires_at": issued_at + XHS_LIVEPHOTO_PAIR_TTL_SECONDS,
+        "expires_at": _expires_at(issued_at, not_after),
     }
     _validated_record(record)
     token = _issue_record_token(
@@ -472,6 +484,7 @@ def issue_xhs_livephoto_motion_token(
     source_item_ordinal: int,
     motion_asset: MediaAsset,
     client_identity: str,
+    not_after: float | None = None,
 ) -> XhsLivePhotoMotionToken:
     source_identity = str(source_identity or "")
     client_identity = str(client_identity or "")
@@ -483,7 +496,7 @@ def issue_xhs_livephoto_motion_token(
         "source_item_ordinal": source_item_ordinal,
         "motion": _asset_record(motion_asset, expected_type="video"),
         "client_identity": client_identity[:256],
-        "expires_at": time.time() + XHS_LIVEPHOTO_PAIR_TTL_SECONDS,
+        "expires_at": _expires_at(time.time(), not_after),
     }
     _validated_motion_record(record)
     token = _issue_record_token(

@@ -22,6 +22,7 @@ from .errors import UnifiedParseError, failure_error
 from .presentation import present
 from .runner import run_chain
 from .tiantian import CachedTianTianAdapter, https_media, service_video_facts
+from .xhs_livephoto import LIVEPHOTO, STILL_ONLY, as_live_photos, live_photo_mode, without_motions
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,9 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None, service
     if run.shown is None:
         raise failure_error(run.failure, "小红书")
     work = xhs_media_only(run.shown)
+    mode = live_photo_mode(route)
+    if mode == STILL_ONLY:
+        work = without_motions(work)
     notices = []
     if attempt_controller is not None and getattr(attempt_controller, "denied", False):
         notices.append("超清解析请求过于频繁，本次返回普通清晰度。")
@@ -225,4 +229,6 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None, service
     )
     if result is None:
         raise UnifiedParseError("小红书解析失败，请稍后重试。", "XHS_NO_PRESENTABLE_MEDIA")
+    if mode == LIVEPHOTO and work.groups:
+        return as_live_photos(work, result) or result
     return result

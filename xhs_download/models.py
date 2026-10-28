@@ -1097,6 +1097,11 @@ class PipelineRoute(models.Model):
         ("first_success", "first_success：第一个成功的结果"),
         ("floor_and_upgrade", "floor_and_upgrade：保底并行，首选优先"),
     )
+    LIVE_PHOTO_MODES = (
+        ("livephoto", "实况照片：照片和动态一起保存"),
+        ("separate", "照片和视频分开"),
+        ("still_only", "只保存照片"),
+    )
 
     platform = models.CharField(max_length=64, unique=True, verbose_name="平台")
     enabled = models.BooleanField(default=False, verbose_name="使用统一管线")
@@ -1117,6 +1122,9 @@ class PipelineRoute(models.Model):
     cooldown_max_seconds = models.PositiveIntegerField(
         default=300, validators=(MinValueValidator(1), MaxValueValidator(3600)),
         verbose_name="冷却上限（秒）", help_text="内核另有 1 小时硬上限；成功一次即清零。")
+    live_photo_mode = models.CharField(
+        max_length=16, choices=LIVE_PHOTO_MODES, default="livephoto", verbose_name="实况保存方式",
+        help_text="目前只对小红书生效；只在 Native 给出同一项的照片和动态时按实况照片展示。")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
 
     class Meta:

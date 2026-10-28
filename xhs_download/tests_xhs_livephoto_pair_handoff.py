@@ -17,6 +17,7 @@ from .services.xhs_livephoto_pair_handoff import (
     XHS_LIVEPHOTO_MOTION_TOKEN_SALT,
     XHS_LIVEPHOTO_PAIR_TOKEN_SALT,
     XHS_LIVEPHOTO_PAIR_MAX_USES,
+    XHS_LIVEPHOTO_PAIR_TTL_SECONDS,
     XhsLivePhotoPairHandoffError,
     _cache_key,
     _record_binding,
@@ -177,7 +178,8 @@ class XhsLivePhotoPairHandoffTests(SimpleTestCase):
         self.assertEqual(raised.exception.error_code, "XHS_LIVEPHOTO_PAIR_EXPIRED")
 
     def test_signed_token_max_age_and_cached_record_expiry_are_enforced(self):
-        with patch("django.core.signing.time.time", return_value=time.time() + 121):
+        with patch("django.core.signing.time.time",
+                   return_value=time.time() + XHS_LIVEPHOTO_PAIR_TTL_SECONDS + 1):
             with self.assertRaises(XhsLivePhotoPairHandoffError) as signed_expiry:
                 load_xhs_livephoto_pair_descriptor(
                     self.token,
@@ -443,7 +445,7 @@ class XhsLivePhotoPairDescriptorViewTests(TestCase):
                 )
                 self.assertEqual(response.status_code, 403)
 
-    def test_anonymous_nonstaff_and_inactive_staff_cannot_use_stolen_token(self):
+    def test_other_viewers_cannot_use_a_token_issued_to_this_client(self):
         anonymous = Client()
         anonymous.cookies["csrftoken"] = self.client.cookies["csrftoken"].value
 
@@ -471,12 +473,12 @@ class XhsLivePhotoPairDescriptorViewTests(TestCase):
                 (
                     self.url,
                     {"pair_token": self.token},
-                    "XHS_LIVEPHOTO_PAIR_STAFF_REQUIRED",
+                    "XHS_LIVEPHOTO_PAIR_CLIENT_MISMATCH",
                 ),
                 (
                     self.motion_url,
                     {"motion_token": self.motion_token},
-                    "XHS_LIVEPHOTO_PLAYBACK_STAFF_REQUIRED",
+                    "XHS_LIVEPHOTO_PLAYBACK_CLIENT_MISMATCH",
                 ),
             ):
                 with self.subTest(client=client, url=url):
