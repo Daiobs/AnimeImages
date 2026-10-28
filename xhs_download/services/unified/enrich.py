@@ -131,13 +131,16 @@ def with_measured_sizes(work, *, request=request_get_with_retry, clock=time.mono
 
 
 QUALITY_TIERS = ("原画", "1080p", "720p", "540p")
+# Portrait Douyin videos often top out at 576×1024; that file belongs to the 540p tier
+# (Human, 2026-10-28) rather than leaving the picker.
+TIER_ALIASES = {"576p": "540p"}
 
 
 def _tier(variant):
     label = quality_label(variant)
     if variant.is_original or label == "原画":
         return "原画"
-    label = label.lower()
+    label = TIER_ALIASES.get(label.lower(), label.lower())
     return label if label in QUALITY_TIERS else None
 
 

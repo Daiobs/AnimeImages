@@ -498,8 +498,11 @@ class EnrichTests(SimpleTestCase):
                            width=width, height=height, size_bytes=size, size_exact=True, quality_label="", **extra)
 
         variants = (file("o", None, None, 72993146, is_original=True), file("a", 1280, 720, 4699750),
-                    file("b", 1280, 720, 10695000), file("c", 1024, 576, 4100000), file("d", 960, 540, 2800000))
+                    file("b", 1280, 720, 10695000), file("c", 1024, 576, 4100000), file("d", 960, 540, 2800000),
+                    file("e", 640, 360, 900000))
         work, hidden = with_quality_tiers(replace(base, items=(replace(base.items[0], variants=variants),)))
-        self.assertEqual([v.variant_id for v in work.items[0].variants], ["video:1:o", "video:1:b", "video:1:d"])
+        # 576p joins the 540p tier and, being larger, is the file kept there.
+        self.assertEqual([v.variant_id for v in work.items[0].variants], ["video:1:o", "video:1:b", "video:1:c"])
         self.assertEqual(hidden, {"https://v26.douyinvod.com/a.mp4": "未展示：同一清晰度已有更大的文件",
-                                  "https://v26.douyinvod.com/c.mp4": "未展示：不在清晰度档位内"})
+                                  "https://v26.douyinvod.com/d.mp4": "未展示：同一清晰度已有更大的文件",
+                                  "https://v26.douyinvod.com/e.mp4": "未展示：不在清晰度档位内"})
