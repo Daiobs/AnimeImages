@@ -12,6 +12,7 @@ viewer's browser reads it. When no link proved readable but one stayed
 unknown, the browser tries that link (§3 rule 6); only links that all answered
 without CORS are refused.
 """
+import logging
 import time
 from urllib.parse import urlsplit
 
@@ -19,6 +20,8 @@ import requests
 
 from ..common import HEADERS, XhsDNSResolutionError, XhsError, request_get_with_retry
 from ..quality import parse_content_range_total
+
+logger = logging.getLogger(__name__)
 
 PROBE_BUDGET_SECONDS = 6.0
 PER_LINK_TIMEOUT = (2.0, 3.0)
@@ -37,31 +40,40 @@ def browser_readable_link(record, origin, *, request=request_get_with_retry, clo
     deadline = clock() + PROBE_BUDGET_SECONDS
     headers = {key: value for key, value in HEADERS.items() if key.lower() not in {"referer", "cookie"}}
     headers.update({"Origin": origin, "Range": "bytes=0-0"})
-    unknown = None
+    unknown, seen = None, []
     for url in record.get("mirrors") or [record["url"]]:
+        host = urlsplit(url).hostname or ""
         if clock() >= deadline:
             unknown = unknown or url
+            seen.append(f"{host}:budget")
             break
         try:
             response = request(url, headers=headers, timeout=PER_LINK_TIMEOUT, retries=1, stream=True,
                                accepted_statuses=(200, 206), deadline_monotonic=deadline)
-        except (requests.Timeout, requests.ConnectionError, TimeoutError):
+        except (requests.Timeout, requests.ConnectionError, TimeoutError) as error:
             unknown = unknown or url
+            seen.append(f"{host}:{type(error).__name__}")
             continue
         except XhsDNSResolutionError as error:
             if error.temporary:
                 unknown = unknown or url
+            seen.append(f"{host}:dns")
             continue
-        except (XhsError, requests.RequestException, OSError, ValueError):
+        except (XhsError, requests.RequestException, OSError, ValueError) as error:
             # An answered status, or a link the server refuses to request.
+            seen.append(f"{host}:{getattr(error, 'http_status', None) or type(error).__name__}")
             continue
         try:
-            if response.status_code in {200, 206} and readable_by(response, origin):
+            readable = response.status_code in {200, 206} and readable_by(response, origin)
+            seen.append(f"{host}:{response.status_code}:{'cors' if readable else 'no-cors'}")
+            if readable:
                 size = (parse_content_range_total(response.headers.get("Content-Range"))
                         if response.status_code == 206 else 0)
                 return url, size or 0
         finally:
             response.close()
+    # Hosts and outcomes only, never links: why no link was proven readable.
+    logger.info("unified_mirror_check result=%s links=%s", "unknown" if unknown else "refused", ",".join(seen))
     return (unknown, 0) if unknown else None
 
 
