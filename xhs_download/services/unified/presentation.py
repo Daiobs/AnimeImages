@@ -65,12 +65,12 @@ def detail_label(variant):
 
 
 def host_allowed(variant):
-    host = (urlsplit(variant.url).hostname or "").lower()
-    if urlsplit(variant.url).scheme != "https" or not host:
-        return False
-    return not variant.host_policy or any(
-        host == suffix.lower().lstrip(".") or host.endswith("." + suffix.lower().lstrip("."))
-        for suffix in variant.host_policy)
+    """An https link with a host. Which hosts a platform serves from is decided
+    before presentation by its own media policy (douyin_media_only and the
+    like), which knows reviewed exact hosts and mirror patterns that a plain
+    suffix list does not (v3-dy-a-x.ixigua.com, Bilibili's Akamai mirrors)."""
+    parts = urlsplit(variant.url)
+    return parts.scheme == "https" and bool(parts.hostname)
 
 
 MAX_MIRRORS = 4
