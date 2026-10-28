@@ -234,13 +234,15 @@ def picker_with_covers(picker, video_items):
 TECHNICAL_ROW_LIMIT = 200
 
 
-def technical_details(shown, kept, *, policy, attempts, duration_ms):
+def technical_details(shown, kept, *, policy, attempts, duration_ms, hidden=None):
     """Staff facts for the result page's technical panel (hosts only, never links).
 
     The chain's attempts, then every link the shown Provider returned and why
     a link is or is not offered: ``kept`` is ``shown`` after the platform's
-    media policy, before the result page's save mode.
+    media policy, before the result page's save mode. ``hidden`` maps a link
+    the platform left out of the picker to its reason.
     """
+    hidden = hidden or {}
     kept_items = {item.item_id: item for item in kept.items}
     grouped = grouped_item_ids(kept)
     rows = []
@@ -253,7 +255,9 @@ def technical_details(shown, kept, *, policy, attempts, duration_ms):
         shown_variant = (kept_item.default_variant if kept_item and kept_item.default_variant in offered
                          else (offered or [None])[0])
         for variant in item.variants:
-            if variant.url not in kept_urls:
+            if variant.url in hidden:
+                status = hidden[variant.url]
+            elif variant.url not in kept_urls:
                 status = "平台媒体策略未放行"
             elif not host_allowed(variant):
                 status = "链接不是 https"

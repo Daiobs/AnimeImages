@@ -483,3 +483,20 @@ class EnrichTests(SimpleTestCase):
         several = replace(floor, provider="kukutool")
         self.assertIs(with_floor_qualities(several, replace(winner, provider="native")), several)
 
+
+    def test_quality_tiers_keep_the_largest_file_per_tier_and_drop_other_heights(self):
+        from dataclasses import replace
+        from .services.unified.enrich import with_quality_tiers
+        base = native_work()
+        template = base.items[0].variants[0]
+
+        def file(name, width, height, size, **extra):
+            return replace(template, variant_id=f"video:1:{name}", url=f"https://v26.douyinvod.com/{name}.mp4",
+                           width=width, height=height, size_bytes=size, size_exact=True, quality_label="", **extra)
+
+        variants = (file("o", None, None, 72993146, is_original=True), file("a", 1280, 720, 4699750),
+                    file("b", 1280, 720, 10695000), file("c", 1024, 576, 4100000), file("d", 960, 540, 2800000))
+        work, hidden = with_quality_tiers(replace(base, items=(replace(base.items[0], variants=variants),)))
+        self.assertEqual([v.variant_id for v in work.items[0].variants], ["video:1:o", "video:1:b", "video:1:d"])
+        self.assertEqual(hidden, {"https://v26.douyinvod.com/a.mp4": "未展示：同一清晰度已有更大的文件",
+                                  "https://v26.douyinvod.com/c.mp4": "未展示：不在清晰度档位内"})
