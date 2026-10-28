@@ -298,7 +298,8 @@ def _body(soup, identity, page_url, *, include_media=True):
     author_node = root.select_one(".username, .author-container .name")
     title = title_node.get_text(" ", strip=True) if title_node else ""
     author = author_node.get_text(" ", strip=True) if author_node else ""
-    for node in root.select("script, style, template, noscript, nav, header, footer, button, #detail-title, .title, .username, .author-container"):
+    # The bottom line under the body holds the date and IP location ("2天前 四川"), not body text.
+    for node in root.select("script, style, template, noscript, nav, header, footer, button, #detail-title, .title, .username, .author-container, .bottom-container, .date"):
         node.decompose()
     resources, seen = [], set()
     for index, node in enumerate(root.find_all("img") if include_media else ()):

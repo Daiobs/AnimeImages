@@ -460,7 +460,7 @@ body {
 
 .result-caption {
     min-width: 0;
-    margin-bottom: 16px;
+    margin: 16px 0;
     color: var(--text-muted);
     font-size: .9rem;
     line-height: 1.6;

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 from django.core import signing
 from django.core.cache import cache
+import requests
 from django.db import DatabaseError
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, TestCase
@@ -27,6 +28,7 @@ from .services.unified.presentation import (
     SCHEMA, build_picker, download_item, link_item, picker_with_covers, present, resolve_selection,
 )
 from .services.unified.runner import run_chain
+from .services.common import XhsSecurityError
 from .services.unified.transport import browser_readable_link
 from .views import build_result_display_context
 
@@ -294,6 +296,21 @@ class TransportTests(SimpleTestCase):
 
         self.assertIsNone(browser_readable_link(self.RECORD, "https://download.example", request=request))
 
+    def test_a_link_the_check_cannot_reach_is_left_to_the_browser(self):
+        def request(url, **options):
+            if url.startswith("https://a."):
+                raise requests.Timeout("slow")
+            return FakeResponse(206, {"Content-Range": "bytes 0-0/72993146"})
+
+        self.assertEqual(browser_readable_link(self.RECORD, "https://download.example", request=request),
+                         ("https://a.douyinvod.com/x.mp4", 0))
+
+    def test_a_link_the_server_refuses_to_request_is_never_handed_over(self):
+        def request(url, **options):
+            raise XhsSecurityError("refused")
+
+        self.assertIsNone(browser_readable_link(self.RECORD, "https://download.example", request=request))
+
 
 class ResultPageTests(SimpleTestCase):
     def setUp(self):
@@ -424,3 +441,62 @@ class ReviewedHostTests(SimpleTestCase):
         raw["data"]["videos"] = [{"url": "https://v3-dy-a-x.ixigua.example/obj/original.mp4"}]
         work = replace(ServiceTianTianAdapter().map(raw, SOURCE), platform="douyin", provider="tiantianjiexi")
         self.assertEqual(douyin_media_only(work).items, ())
+
+
+class EnrichTests(SimpleTestCase):
+    def test_sizes_are_measured_for_files_without_one_and_unknown_stays_unknown(self):
+        from dataclasses import replace
+        from .services.unified.enrich import with_measured_sizes
+        work = native_work()
+        item = work.items[0]
+        unsized = tuple(replace(v, size_bytes=None, size_exact=False) for v in item.variants)
+        work = replace(work, items=(replace(item, variants=unsized),))
+        answered = unsized[0].url
+
+        def request(url, **options):
+            self.assertEqual(options["headers"]["Range"], "bytes=0-0")
+            if url != answered:
+                raise requests.Timeout("slow")
+            return FakeResponse(206, {"Content-Range": "bytes 0-0/72993146"})
+
+        measured = with_measured_sizes(work, request=request)
+        sizes = {v.url: (v.size_bytes, v.size_exact) for v in measured.items[0].variants}
+        self.assertEqual(sizes[answered], (72993146, True))
+        self.assertTrue(all(size is None for url, (size, _exact) in sizes.items() if url != answered))
+        sized = native_work()
+        self.assertIs(with_measured_sizes(sized, request=None), sized)  # nothing to measure, no request
+
+    def test_floor_qualities_join_only_a_single_quality_winner(self):
+        from dataclasses import replace
+        from .services.unified.enrich import with_floor_qualities
+        floor = replace(native_work(), provider="native")
+        winner_item = replace(floor.items[0], variants=(replace(floor.items[0].variants[0], variant_id="video:1:o",
+                              url="https://v26-qingtao.douyinvod.com/obj/original.mp4", quality_label="原画",
+                              is_original=True, size_bytes=None, size_exact=False),))
+        winner = replace(floor, provider="tiantianjiexi", items=(winner_item,))
+        merged = with_floor_qualities(winner, floor)
+        urls = [v.url for v in merged.items[0].variants]
+        self.assertEqual(urls[0], "https://v26-qingtao.douyinvod.com/obj/original.mp4")
+        self.assertEqual(set(urls[1:]), {v.url for v in floor.items[0].variants})
+        self.assertTrue(all(v.variant_id.startswith("native:") for v in merged.items[0].variants[1:]))
+        self.assertIs(with_floor_qualities(floor, floor), floor)
+        several = replace(floor, provider="kukutool")
+        self.assertIs(with_floor_qualities(several, replace(winner, provider="native")), several)
+
+
+    def test_quality_tiers_keep_the_largest_file_per_tier_and_drop_other_heights(self):
+        from dataclasses import replace
+        from .services.unified.enrich import with_quality_tiers
+        base = native_work()
+        template = base.items[0].variants[0]
+
+        def file(name, width, height, size, **extra):
+            return replace(template, variant_id=f"video:1:{name}", url=f"https://v26.douyinvod.com/{name}.mp4",
+                           width=width, height=height, size_bytes=size, size_exact=True, quality_label="", **extra)
+
+        variants = (file("o", None, None, 72993146, is_original=True), file("a", 1280, 720, 4699750),
+                    file("b", 1280, 720, 10695000), file("c", 1024, 576, 4100000), file("d", 960, 540, 2800000))
+        work, hidden = with_quality_tiers(replace(base, items=(replace(base.items[0], variants=variants),)))
+        self.assertEqual([v.variant_id for v in work.items[0].variants], ["video:1:o", "video:1:b", "video:1:d"])
+        self.assertEqual(hidden, {"https://v26.douyinvod.com/a.mp4": "未展示：同一清晰度已有更大的文件",
+                                  "https://v26.douyinvod.com/c.mp4": "未展示：不在清晰度档位内"})

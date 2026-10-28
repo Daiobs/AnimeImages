@@ -83,6 +83,17 @@ class XiaohongshuMappingTests(TestCase):
         self.assertEqual(work.items, before.items)
         self.assertEqual(work.groups, before.groups)
 
+    def test_dom_body_leaves_out_the_date_and_location_line(self):
+        raw = state({"noteId": ID, "type": "normal", "title": "Known current note", "imageList": [{"urlDefault": IMAGE}]})
+        body = ('<div class="note-content"><div id="detail-title" class="title">Known current note</div>'
+                '<div id="detail-desc" class="desc"><span class="note-text">Body text #tag</span></div>'
+                '<div class="bottom-container"><span class="date">2天前 四川</span></div></div>')
+        work = self.map({"page_state": raw, "html": html(body)})
+        self.assertIsInstance(work, Work)
+        self.assertIn("Body text", work.description)
+        self.assertNotIn("四川", work.description)
+        self.assertNotIn("2天前", work.description)
+
     def test_dom_fallback_inherits_current_note_media_constraints(self):
         raw = state({"noteId": ID, "type": "normal", "title": "Known current note", "requires_cookie": True, "ip_bound": True})
         work = self.map({"page_state": raw, "html": html('<div class="note-content"><img src="' + IMAGE + '"></div>')})

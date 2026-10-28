@@ -1,5 +1,6 @@
 {% if not ytdlp_picker or show_internal_diagnostics %}
-{% if ytdlp_picker %}<details class="ytdlp-technical"><summary>查看技术信息与全部原始候选</summary>{% endif %}
+{% if ytdlp_picker or show_internal_diagnostics and unified_diagnostics %}<details class="ytdlp-technical"><summary>查看技术信息与全部原始候选</summary>{% endif %}
+{% if show_internal_diagnostics and unified_diagnostics %}{% include "partials/unified_diagnostics.html" %}{% endif %}
 {% if upstream_route %}
 <p class="upstream-route-status" data-upstream-route-status>
     {% if upstream_route.mode == 'manual' %}手动路线{% elif upstream_route.mode == 'default' %}默认路线{% else %}上游路线{% endif %}
@@ -60,5 +61,5 @@
     {% if upstream_candidates|length > 64 %}<button type="button" class="btn btn-outline-secondary btn-sm" data-candidates-expand>再显示最多 64 项</button>{% endif %}
 </details>
 {% endif %}
-{% if ytdlp_picker %}</details>{% endif %}
+{% if ytdlp_picker or show_internal_diagnostics and unified_diagnostics %}</details>{% endif %}
 {% endif %}

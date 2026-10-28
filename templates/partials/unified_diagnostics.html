@@ -1,0 +1,32 @@
+{# Staff-only facts from the unified pipeline: the chain, then every link of the shown result (hosts only). #}
+<section class="unified-diagnostics" data-unified-diagnostics>
+    <p class="unified-diagnostics-chain">
+        统一管线 · 策略 {{ unified_diagnostics.policy }} · 展示 {{ unified_diagnostics.shown|default:"无" }} · 用时 {{ unified_diagnostics.duration_ms }} ms
+    </p>
+    <ul class="unified-diagnostics-attempts">
+        {% for attempt in unified_diagnostics.attempts %}
+            <li data-unified-attempt>{{ attempt.provider }}：{{ attempt.outcome }}{% if attempt.code %}（{{ attempt.code }}）{% endif %}</li>
+        {% endfor %}
+    </ul>
+    <div class="unified-diagnostics-table">
+        <table>
+            <thead>
+                <tr><th>内容项</th><th>清晰度</th><th>格式</th><th>分辨率</th><th>大小</th><th>主机</th><th>状态</th></tr>
+            </thead>
+            <tbody>
+                {% for row in unified_diagnostics.variants %}
+                    <tr data-unified-variant>
+                        <td>{{ row.item }}</td>
+                        <td>{{ row.label }}</td>
+                        <td>{{ row.container|default:"未知" }}</td>
+                        <td>{% if row.width or row.height %}{{ row.width|default:"?" }} × {{ row.height|default:"?" }}{% else %}未知{% endif %}</td>
+                        <td>{% if row.size_bytes %}{{ row.size_bytes|filesizeformat }}{% if not row.size_exact %}（约）{% endif %}{% else %}未知{% endif %}</td>
+                        <td>{{ row.host }}</td>
+                        <td>{{ row.status }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if unified_diagnostics.variants_truncated %}<p>另有 {{ unified_diagnostics.variants_truncated }} 个链接未列出。</p>{% endif %}
+</section>

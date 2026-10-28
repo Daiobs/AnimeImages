@@ -18,7 +18,7 @@ from ..pipeline import Failure, FailureKind, Kind, Work
 from ..provider_adapters.bilibili import BilibiliAdapter as NativeBilibiliAdapter
 from . import routes
 from .errors import UnifiedParseError, failure_error
-from .presentation import present
+from .presentation import present, technical_details
 from .runner import run_chain
 from .tiantian import CachedTianTianAdapter, https_media, service_cover_images
 
@@ -192,7 +192,10 @@ def parse(url, route, *, authorize=None):
     result = present(
         work, platform_adapter=platform_adapter, provider_label=PROVIDER_LABELS.get(work.provider, work.provider),
         fallback_extensions={"video": "mp4", "image": "jpg"}, attempts=attempts,
-        extra_metadata={"provider_total_duration_ms": int((time.monotonic() - started) * 1000)},
+        extra_metadata={"provider_total_duration_ms": int((time.monotonic() - started) * 1000),
+                        "unified_diagnostics": technical_details(
+                            run.shown, work, policy=config.policy.value, attempts=attempts,
+                            duration_ms=(time.monotonic() - started) * 1000)},
     )
     if result is None:
         raise UnifiedParseError("哔哩哔哩解析失败，请稍后重试。", "BILIBILI_NO_PRESENTABLE_MEDIA")

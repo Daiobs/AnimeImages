@@ -16,7 +16,10 @@ from ..provider_adapters.douyin import DouyinAdapter as NativeDouyinAdapter
 from ..provider_adapters.kukutool import KukutoolSidecarAdapter
 from . import routes
 from .errors import UnifiedParseError, failure_error as platform_failure_error
-from .presentation import present
+from .enrich import (
+    await_floor, floor_work, wants_floor, with_floor_qualities, with_measured_sizes, with_quality_tiers,
+)
+from .presentation import present, technical_details
 from .runner import run_chain
 from .tiantian import CachedTianTianAdapter, service_video_facts
 
@@ -153,7 +156,9 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None):
     platform_adapter, context, request_url = resolve_source(url)
     adapters = build_adapters(context, prefer_ultra_hd=prefer_ultra_hd, attempt_controller=attempt_controller)
     config = routes.chain_config(route, adapters)
-    run = run_chain(config, adapters, {name: request_url for name in adapters}, routes.cooldowns(route))
+    results = {}
+    run = run_chain(config, adapters, {name: request_url for name in adapters}, routes.cooldowns(route),
+                    results=results)
     attempts = [{"provider": attempt.provider, "outcome": attempt.outcome, "code": attempt.code}
                 for attempt in run.attempts]
     logger.info("unified_chain_finished platform=%s policy=%s shown=%s failure=%s attempts=%s duration_ms=%d",
@@ -163,7 +168,10 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None):
                 int((time.monotonic() - started) * 1000))
     if run.shown is None:
         raise failure_error(run.failure)
-    work = douyin_media_only(run.shown)
+    # TianTian may win before Native finishes; give Native a moment so its qualities can join.
+    floor = await_floor(results, config) if wants_floor(run.shown, run, config) else floor_work(results, config)
+    shown = with_floor_qualities(run.shown, floor)
+    work, hidden = with_quality_tiers(with_measured_sizes(douyin_media_only(shown)))
     if not work.items:
         raise UnifiedParseError("抖音解析失败，请稍后重试。", "DOUYIN_NO_ALLOWED_MEDIA")
     notices = []
@@ -173,7 +181,10 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None):
         work, platform_adapter=platform_adapter, provider_label=PROVIDER_LABELS.get(work.provider, work.provider),
         fallback_extensions={"video": "mp4", "image": "jpg"}, attempts=attempts, notices=notices,
         extra_metadata={"input_kind": context.input_kind, "aweme_identity_resolved": True,
-                        "provider_total_duration_ms": int((time.monotonic() - started) * 1000)},
+                        "provider_total_duration_ms": int((time.monotonic() - started) * 1000),
+                        "unified_diagnostics": technical_details(
+                            shown, work, policy=config.policy.value, attempts=attempts, hidden=hidden,
+                            duration_ms=(time.monotonic() - started) * 1000)},
     )
     if result is None:
         raise UnifiedParseError("抖音解析失败，请稍后重试。", "DOUYIN_NO_PRESENTABLE_MEDIA")
