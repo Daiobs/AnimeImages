@@ -16,7 +16,9 @@ from ..provider_adapters.douyin import DouyinAdapter as NativeDouyinAdapter
 from ..provider_adapters.kukutool import KukutoolSidecarAdapter
 from . import routes
 from .errors import UnifiedParseError, failure_error as platform_failure_error
-from .enrich import floor_work, with_floor_qualities, with_measured_sizes, with_quality_tiers
+from .enrich import (
+    await_floor, floor_work, wants_floor, with_floor_qualities, with_measured_sizes, with_quality_tiers,
+)
 from .presentation import present, technical_details
 from .runner import run_chain
 from .tiantian import CachedTianTianAdapter, service_video_facts
@@ -166,7 +168,9 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None):
                 int((time.monotonic() - started) * 1000))
     if run.shown is None:
         raise failure_error(run.failure)
-    shown = with_floor_qualities(run.shown, floor_work(results, config))
+    # TianTian may win before Native finishes; give Native a moment so its qualities can join.
+    floor = await_floor(results, config) if wants_floor(run.shown, run, config) else floor_work(results, config)
+    shown = with_floor_qualities(run.shown, floor)
     work, hidden = with_quality_tiers(with_measured_sizes(douyin_media_only(shown)))
     if not work.items:
         raise UnifiedParseError("抖音解析失败，请稍后重试。", "DOUYIN_NO_ALLOWED_MEDIA")

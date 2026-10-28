@@ -13,7 +13,7 @@ import time
 from types import MappingProxyType
 
 from ..common import HEADERS, request_get_with_retry
-from ..pipeline import Kind, validate_work
+from ..pipeline import Kind, Work, validate_work
 from ..quality import parse_content_range_total
 from .presentation import distinct_variants, grouped_item_ids, mirrors, quality_label
 
@@ -23,13 +23,32 @@ SIZE_LINK_TIMEOUT = (2.0, 3.0)
 SIZE_SOURCE = "probe:content_range"
 
 
+FLOOR_WAIT_SECONDS = 3.0
+
+
 def floor_work(results, config):
     """The floor Provider's Work from this run, normalized like a shown one, or None."""
     work = results.get(config.floor_provider) if config.floor_provider else None
-    if work is None:
+    if not isinstance(work, Work):
         return None
     work = replace(work, platform=config.platform, provider=config.floor_provider)
     return None if validate_work(work, platform_names=config.platform_names) else work
+
+
+def wants_floor(shown, run, config):
+    """A single-quality winner while the floor is still running: worth a short wait."""
+    item = _single_video(shown) if shown is not None else None
+    return bool(item is not None and config.floor_provider and shown.provider != config.floor_provider
+                and config.floor_provider in run.running
+                and len({quality_label(v) for v in distinct_variants(item)}) == 1)
+
+
+def await_floor(results, config, *, timeout=FLOOR_WAIT_SECONDS, clock=time.monotonic, sleep=time.sleep):
+    """Wait up to ``timeout`` for the floor's outcome (it finishes in the background)."""
+    deadline = clock() + timeout
+    while config.floor_provider not in results and clock() < deadline:
+        sleep(0.05)
+    return floor_work(results, config)
 
 
 def _single_video(work):

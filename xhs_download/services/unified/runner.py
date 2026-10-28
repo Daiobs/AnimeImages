@@ -10,7 +10,7 @@ import contextvars
 import queue
 import time
 
-from ..pipeline import ChainRun, Work, invoke
+from ..pipeline import ChainRun, invoke
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="unified-chain")
 
@@ -20,14 +20,15 @@ _SAFETY_MARGIN_SECONDS = 2.0
 
 
 def run_chain(config, adapters, source_urls, cooldowns, *, clock=time.monotonic, executor=None, results=None):
-    """Run the chain; ``results`` (a dict), when given, collects each Provider's Work as it arrives."""
+    """Run the chain; ``results`` (a dict), when given, collects each Provider's outcome as it arrives,
+    including those that finish after the run is done."""
     run = ChainRun(config, cooldowns)
     outcomes = queue.Queue()
     executor = executor or _EXECUTOR
 
     def finished(name, future):
         outcome = future.result()
-        if results is not None and isinstance(outcome, Work):
+        if results is not None:
             results[name] = outcome
         if run.done:
             # Late outcomes still count for cooldowns (INV-02).
