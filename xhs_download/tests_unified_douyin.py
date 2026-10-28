@@ -506,3 +506,18 @@ class EnrichTests(SimpleTestCase):
         self.assertEqual(hidden, {"https://v26.douyinvod.com/a.mp4": "未展示：同一清晰度已有更大的文件",
                                   "https://v26.douyinvod.com/d.mp4": "未展示：同一清晰度已有更大的文件",
                                   "https://v26.douyinvod.com/e.mp4": "未展示：不在清晰度档位内"})
+
+    def test_api_redirect_links_leave_and_files_keep_their_cdn_mirrors(self):
+        from dataclasses import replace
+        from .services.unified.douyin import without_api_redirect_links
+        base = native_work()
+        template = base.items[0].variants[0]
+        variants = (replace(template, variant_id="video:1:a", url="https://api-play.amemv.com/aweme/v1/play/?id=1"),
+                    replace(template, variant_id="video:1:b", url="https://v11-colds.douyinvod.com/b.mp4"),
+                    replace(template, variant_id="video:1:c", url="https://api-hl.amemv.com/aweme/v1/play/?id=2",
+                            size_bytes=1601315),
+                    replace(template, variant_id="video:1:d", url="https://aweme.snssdk.com/aweme/v1/play/?id=3"))
+        work = without_api_redirect_links(replace(base, items=(replace(base.items[0], variants=variants),)))
+        self.assertEqual([v.variant_id for v in work.items[0].variants], ["video:1:b"])
+        only_api = replace(base, items=(replace(base.items[0], variants=(variants[0],)),))
+        self.assertEqual(without_api_redirect_links(only_api).items, ())
