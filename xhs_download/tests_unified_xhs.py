@@ -106,6 +106,32 @@ class XhsPresentationTests(SimpleTestCase):
         self.assertEqual([v["video_url"] for v in remaining_picker_videos(picker, display["video_items"])],
                          ["https://sns-video-bd.xhscdn.com/motion.mp4"])
 
+    def test_topics_show_once_beside_the_description(self):
+        work = xhs_media_only(native(fixture("gallery")))
+        result = present(work, platform_adapter=PLATFORM, provider_label="小红书原生",
+                         fallback_extensions={"video": "mp4", "image": "jpg"})
+        display = build_result_display_context(result, probe_missing_video_sizes=False)
+        self.assertEqual(display["display_topics"], list(work.topics))
+        self.assertTrue(work.topics)
+        self.assertNotIn("#", display["display_description"])
+
+    def test_technical_rows_explain_every_link_of_the_shown_result(self):
+        from .services.unified.presentation import technical_details
+        shown = native(fixture("gallery"))
+        kept = xhs_media_only(shown)
+        details = technical_details(shown, kept, policy="floor_and_upgrade", duration_ms=12.6,
+                                    attempts=[{"provider": "native", "outcome": "success", "code": None}])
+        self.assertEqual((details["policy"], details["shown"], details["duration_ms"]),
+                         ("floor_and_upgrade", "native", 12))
+        self.assertEqual(details["attempts"], [{"provider": "native", "outcome": "success", "code": ""}])
+        rows = details["variants"]
+        self.assertEqual(len(rows), sum(len(item.variants) for item in shown.items))
+        self.assertTrue(all("://" not in row["host"] for row in rows))
+        statuses = {row["status"] for row in rows}
+        self.assertIn("展示为卡片", statuses)
+        self.assertTrue(statuses <= {"展示为卡片", "未展示：同一内容的其他版本", "同一文件的镜像",
+                                     "平台媒体策略未放行", "链接不是 https", "可下载"}, statuses)
+
 
 class StubOnce:
     def __init__(self, result):

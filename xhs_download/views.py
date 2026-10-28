@@ -4446,6 +4446,8 @@ def apply_search_result_to_context(
     context["candidates_truncated"] = display_context.get("candidates_truncated", 0)
     context["video_items"] = display_context["video_items"]
     context["unified_picker"] = display_context.get("unified_picker")
+    # Rendered only for staff, inside the technical panel (partials/upstream_candidates.html).
+    context["unified_diagnostics"] = result_metadata.get("unified_diagnostics") or {}
 
     preview_context = None
     if (

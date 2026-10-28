@@ -70,6 +70,8 @@ class UnifiedDouyinHttpContracts(TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.media_requests = []
+        self.unreachable = set()
+        self.cors = True
         self.stack.enter_context(offline_requests(self.send))
         self.stack.enter_context(patch("xhs_download.views.parse_media_page",
                                        side_effect=AssertionError("existing parse path used")))
@@ -83,11 +85,13 @@ class UnifiedDouyinHttpContracts(TestCase):
     def send(self, request, **options):
         self.media_requests.append((request.method, request.url, request.headers.get("Origin"),
                                     request.headers.get("Range")))
+        if request.url in self.unreachable:
+            raise requests.Timeout("no answer from this network")
         response = requests.Response()
         response.request, response.url, response.status_code = request, request.url, 206
         response._content_consumed, response._content = True, b"\0"
         response.headers.update({"Content-Type": "video/mp4", "Content-Range": "bytes 0-0/741828"})
-        if request.url != NO_CORS:
+        if request.url != NO_CORS and self.cors:
             response.headers["Access-Control-Allow-Origin"] = "*"
         return response
 
@@ -141,3 +145,51 @@ class UnifiedDouyinHttpContracts(TestCase):
         with self.assertRaises(AssertionError):
             self.client.get(reverse("results"), {"q": SOURCE})
         self.assertEqual(self.runs, [])
+
+    def test_a_link_the_server_check_cannot_reach_is_left_to_the_browser(self):
+        self.unreachable = {NO_CORS, CORS}
+        radios = self.picker().select('[data-picker-radio][data-kind="video"]')
+        with patch("xhs_download.services.provider_strategy.prepare_browser_transport", side_effect=lambda item: item):
+            response = self.select(radios[0], "download")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["item"]["url"], NO_CORS)
+
+    def test_links_that_all_answer_without_cors_are_still_refused(self):
+        self.cors = False
+        radios = self.picker().select('[data-picker-radio][data-kind="video"]')
+        response = self.select(radios[0], "download")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error_code"], "SELECTED_FORMAT_BROWSER_UNREADABLE")
+
+    def test_a_service_without_media_for_this_work_shows_native_with_a_notice_and_no_cooldown(self):
+        self.adapters["tiantianjiexi"] = FakeService(Failure(FailureKind.INVALID_RESULT, "TIANTIAN_NO_MEDIA"))
+        self.stack.enter_context(patch("xhs_download.views.ultra_hd_is_available", return_value=True))
+        response = self.client.get(reverse("results"), {"q": SOURCE, "ultra_hd": "1"})
+        page = BeautifulSoup(response.content, "html.parser")
+        labels = [r["data-label"] for r in page.select('[data-picker-radio][data-kind="video"]')]
+        self.assertEqual(labels, ["720p", "540p"])
+        self.assertEqual(page.select_one("[data-provider-notice-text]").get_text(strip=True),
+                         "本次未获取到超高清资源，已返回可用清晰度。")
+        self.adapters["tiantianjiexi"] = FakeService(SERVICE_RAW)
+        root = self.picker(ultra_hd="1")
+        self.assertNotIn(("tiantianjiexi", "cooling_down"), [(a.provider, a.outcome) for a in self.runs[1].attempts])
+        self.assertEqual([r["data-label"] for r in root.select('[data-picker-radio][data-kind="video"]')], ["原画"])
+
+    def test_staff_see_the_chain_and_every_link_in_the_technical_panel(self):
+        from django.contrib.auth import get_user_model
+        page = BeautifulSoup(self.client.get(reverse("results"), {"q": SOURCE}).content, "html.parser")
+        self.assertIsNone(page.select_one("[data-unified-diagnostics]"))
+        staff = get_user_model().objects.create_user(username="diagnostics-staff", password="unused", is_staff=True)
+        self.client.force_login(staff)
+        page = BeautifulSoup(self.client.get(reverse("results"), {"q": SOURCE}).content, "html.parser")
+        panel = page.select_one(".ytdlp-technical [data-unified-diagnostics]")
+        self.assertIsNotNone(panel)
+        self.assertEqual([li.get_text(strip=True) for li in panel.select("[data-unified-attempt]")], ["native：success"])
+        rows = [[td.get_text(strip=True) for td in tr.select("td")] for tr in panel.select("[data-unified-variant]")]
+        self.assertEqual([(row[1], row[5], row[6]) for row in rows], [
+            ("720p", "v11-cold-src.douyinvod.com", "可下载"),
+            ("720p", "v11-colds.douyinvod.com", "同一文件的镜像"),
+            ("540p", "v11-colds.douyinvod.com", "可下载"),
+        ])
+        self.assertNotIn("https://", panel.get_text())
+

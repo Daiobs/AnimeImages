@@ -201,6 +201,13 @@ class TianTianAdapterFetchTests(SimpleTestCase):
         self.assert_failure(result, FailureKind.UNAVAILABLE, "TIANTIAN_SERVICE_ERROR")
         self.post.assert_called_once()
 
+    def test_business_1_is_no_media_for_this_work_not_an_outage(self):
+        self.response.json.return_value = {"code": 1, "msg": "upstream-secret", "data": {}}
+
+        result = self.adapter.fetch(SOURCE_URL, budget=1)
+
+        self.assert_failure(result, FailureKind.INVALID_RESULT, "TIANTIAN_NO_MEDIA")
+
     def test_success_without_media_returns_invalid_result_instead_of_raising(self):
         self.response.json.return_value = {"code": 200, "data": {}}
 

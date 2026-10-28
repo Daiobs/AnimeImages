@@ -22,6 +22,9 @@ from .service_facts import (
 
 NAME = "tiantianjiexi_generic"
 _BUSINESS_FAILURES = {
+    # Code 1 answers one request without media (the provider has already retried);
+    # the next work may succeed, so it is not a service outage that cools TianTian down.
+    "1": Failure(FailureKind.INVALID_RESULT, "TIANTIAN_NO_MEDIA"),
     "1001": Failure(FailureKind.UNAVAILABLE, "TIANTIAN_SERVICE_ERROR"),
 }
 _MEDIA_KEYS = (*_URL_KEYS, "videos", "video", "images", "image_urls", "pics", "photos", "audioUrl", "audio_url", "audio", "music_url")

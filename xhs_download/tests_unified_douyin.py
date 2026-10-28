@@ -10,6 +10,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 from django.core import signing
 from django.core.cache import cache
+import requests
 from django.db import DatabaseError
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, TestCase
@@ -27,6 +28,7 @@ from .services.unified.presentation import (
     SCHEMA, build_picker, download_item, link_item, picker_with_covers, present, resolve_selection,
 )
 from .services.unified.runner import run_chain
+from .services.common import XhsSecurityError
 from .services.unified.transport import browser_readable_link
 from .views import build_result_display_context
 
@@ -291,6 +293,21 @@ class TransportTests(SimpleTestCase):
             if url.startswith("https://a."):
                 raise OSError("down")
             return FakeResponse(206, {"Access-Control-Allow-Origin": "https://other.example"})
+
+        self.assertIsNone(browser_readable_link(self.RECORD, "https://download.example", request=request))
+
+    def test_a_link_the_check_cannot_reach_is_left_to_the_browser(self):
+        def request(url, **options):
+            if url.startswith("https://a."):
+                raise requests.Timeout("slow")
+            return FakeResponse(206, {"Content-Range": "bytes 0-0/72993146"})
+
+        self.assertEqual(browser_readable_link(self.RECORD, "https://download.example", request=request),
+                         ("https://a.douyinvod.com/x.mp4", 0))
+
+    def test_a_link_the_server_refuses_to_request_is_never_handed_over(self):
+        def request(url, **options):
+            raise XhsSecurityError("refused")
 
         self.assertIsNone(browser_readable_link(self.RECORD, "https://download.example", request=request))
 

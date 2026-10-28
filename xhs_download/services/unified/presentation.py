@@ -231,6 +231,53 @@ def picker_with_covers(picker, video_items):
             "selection_url": picker.get("selection_url"), "represented_urls": represented}
 
 
+TECHNICAL_ROW_LIMIT = 200
+
+
+def technical_details(shown, kept, *, policy, attempts, duration_ms):
+    """Staff facts for the result page's technical panel (hosts only, never links).
+
+    The chain's attempts, then every link the shown Provider returned and why
+    a link is or is not offered: ``kept`` is ``shown`` after the platform's
+    media policy, before the result page's save mode.
+    """
+    kept_items = {item.item_id: item for item in kept.items}
+    grouped = grouped_item_ids(kept)
+    rows = []
+    for item in sorted(shown.items, key=lambda item: item.index):
+        kept_item = kept_items.get(item.item_id)
+        kept_urls = {variant.url for variant in kept_item.variants} if kept_item else set()
+        offered = distinct_variants(kept_item) if kept_item else []
+        # A photo or a live photo's motion is one card; a video lists every file in its picker.
+        card = kept_item is not None and (kept_item.kind is Kind.IMAGE or kept_item.item_id in grouped)
+        shown_variant = (kept_item.default_variant if kept_item and kept_item.default_variant in offered
+                         else (offered or [None])[0])
+        for variant in item.variants:
+            if variant.url not in kept_urls:
+                status = "平台媒体策略未放行"
+            elif not host_allowed(variant):
+                status = "链接不是 https"
+            elif variant not in offered:
+                status = "同一文件的镜像"
+            elif card:
+                status = "展示为卡片" if variant == shown_variant else "未展示：同一内容的其他版本"
+            else:
+                can_download, limitation, _delivery = delivery_facts(kept_item, variant)
+                status = "可下载" if can_download else f"不提供下载：{limitation}"
+            rows.append({
+                "item": f"{item.kind.value} {item.index + 1}", "label": quality_label(variant),
+                "container": variant.container, "width": variant.width, "height": variant.height,
+                "size_bytes": variant.size_bytes, "size_exact": variant.size_exact,
+                "host": urlsplit(variant.url).hostname or "", "status": status,
+            })
+    return {
+        "policy": policy, "shown": shown.provider, "duration_ms": int(duration_ms),
+        "attempts": [{"provider": a["provider"], "outcome": a["outcome"], "code": a.get("code") or ""}
+                     for a in attempts],
+        "variants": rows[:TECHNICAL_ROW_LIMIT], "variants_truncated": max(0, len(rows) - TECHNICAL_ROW_LIMIT),
+    }
+
+
 def present(work, *, platform_adapter, provider_label, fallback_extensions, attempts=(), notices=(),
             extra_metadata=None):
     """The existing ParseResult shape for one unified Work."""
@@ -276,7 +323,9 @@ def present(work, *, platform_adapter, provider_label, fallback_extensions, atte
             size_is_estimate=not variant.size_exact, ext=variant.container, **common))
     if not assets:
         return None
-    topics = " ".join(f"#{topic}" for topic in work.topics)
+    # The Douyin display reads topics out of the text (douyin_caption_presentation);
+    # the other platforms show metadata topics beside the description, so only once.
+    topics = " ".join(f"#{topic}" for topic in work.topics) if work.platform == "douyin" else ""
     # A one-line caption maps to the same title and description; show it once.
     description = "" if work.description.strip() == work.title.strip() else work.description
     metadata = {

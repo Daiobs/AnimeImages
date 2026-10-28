@@ -46,3 +46,8 @@
 .ytdlp-technical>summary{cursor:pointer;color:#667085;margin-bottom:8px}
 .ytdlp-picker :focus-visible,.ytdlp-technical>summary:focus-visible{outline:3px solid #b6c5ff;outline-offset:3px}
 @media(max-width:640px){.ytdlp-picker{grid-template-columns:minmax(0,1fr);gap:18px}.quality-preview-tile{aspect-ratio:4/3;max-height:360px}.ytdlp-format-option{padding:12px}.quality-preview-caption{font-size:12px}}
+.unified-diagnostics{margin-bottom:10px;color:#475467}
+.unified-diagnostics-attempts{margin:4px 0 8px;padding-left:18px}
+.unified-diagnostics-table{overflow-x:auto}
+.unified-diagnostics-table table{border-collapse:collapse;font-size:12px;min-width:100%}
+.unified-diagnostics-table th,.unified-diagnostics-table td{border-bottom:1px solid #e1e5eb;padding:4px 8px;text-align:left;white-space:nowrap}

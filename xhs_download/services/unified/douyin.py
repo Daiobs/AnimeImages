@@ -16,7 +16,7 @@ from ..provider_adapters.douyin import DouyinAdapter as NativeDouyinAdapter
 from ..provider_adapters.kukutool import KukutoolSidecarAdapter
 from . import routes
 from .errors import UnifiedParseError, failure_error as platform_failure_error
-from .presentation import present
+from .presentation import present, technical_details
 from .runner import run_chain
 from .tiantian import CachedTianTianAdapter, service_video_facts
 
@@ -173,7 +173,10 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None):
         work, platform_adapter=platform_adapter, provider_label=PROVIDER_LABELS.get(work.provider, work.provider),
         fallback_extensions={"video": "mp4", "image": "jpg"}, attempts=attempts, notices=notices,
         extra_metadata={"input_kind": context.input_kind, "aweme_identity_resolved": True,
-                        "provider_total_duration_ms": int((time.monotonic() - started) * 1000)},
+                        "provider_total_duration_ms": int((time.monotonic() - started) * 1000),
+                        "unified_diagnostics": technical_details(
+                            run.shown, work, policy=config.policy.value, attempts=attempts,
+                            duration_ms=(time.monotonic() - started) * 1000)},
     )
     if result is None:
         raise UnifiedParseError("抖音解析失败，请稍后重试。", "DOUYIN_NO_PRESENTABLE_MEDIA")

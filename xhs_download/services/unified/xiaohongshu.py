@@ -19,7 +19,7 @@ from ..provider_adapters.kukutool import KukutoolAdapter
 from ..provider_adapters.xiaohongshu import XiaohongshuAdapter as NativeXhsAdapter
 from . import routes
 from .errors import UnifiedParseError, failure_error
-from .presentation import present
+from .presentation import present, technical_details
 from .runner import run_chain
 from .tiantian import CachedTianTianAdapter, https_media, service_video_facts
 from .xhs_livephoto import LIVEPHOTO, STILL_ONLY, as_live_photos, live_photo_mode, without_motions
@@ -214,7 +214,7 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None, service
                 int((time.monotonic() - started) * 1000))
     if run.shown is None:
         raise failure_error(run.failure, "小红书")
-    work = xhs_media_only(run.shown)
+    work = kept = xhs_media_only(run.shown)
     mode = live_photo_mode(route)
     if mode == STILL_ONLY:
         work = without_motions(work)
@@ -225,7 +225,10 @@ def parse(url, route, *, prefer_ultra_hd=False, attempt_controller=None, service
         work, platform_adapter=platform_adapter, provider_label=PROVIDER_LABELS.get(work.provider, work.provider),
         fallback_extensions={"video": "mp4", "image": "jpg"}, attempts=attempts, notices=notices,
         extra_metadata={"note_id": work.work_id, "source_identity_verified": True,
-                        "provider_total_duration_ms": int((time.monotonic() - started) * 1000)},
+                        "provider_total_duration_ms": int((time.monotonic() - started) * 1000),
+                        "unified_diagnostics": technical_details(
+                            run.shown, kept, policy=config.policy.value, attempts=attempts,
+                            duration_ms=(time.monotonic() - started) * 1000)},
     )
     if result is None:
         raise UnifiedParseError("小红书解析失败，请稍后重试。", "XHS_NO_PRESENTABLE_MEDIA")

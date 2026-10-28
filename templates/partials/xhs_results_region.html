@@ -17,12 +17,13 @@
         </div>
     {% endif %}
 
-    {% if provider_notice and not ytdlp_picker %}
+    {% if provider_notice %}{% if not ytdlp_picker or unified_picker %}
+        {# A unified picker keeps the notice: it says whether 原画 came back this time. #}
         <div class="alert alert-info parse-inline-alert" data-provider-notice>
             <i class="bi bi-speedometer2 me-1"></i>
             <span data-provider-notice-text>{{ provider_notice }}</span>
         </div>
-    {% endif %}
+    {% endif %}{% endif %}
 
     {% if image_items or video_items or upstream_candidates %}
         <div class="card result-card {% if ytdlp_picker %}ytdlp-result-card{% endif %} result-theme-{{ result_theme|default:'home' }} border-0 shadow-sm mb-4">
