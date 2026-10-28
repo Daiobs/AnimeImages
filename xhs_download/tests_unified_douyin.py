@@ -294,7 +294,10 @@ class TransportTests(SimpleTestCase):
                 raise OSError("down")
             return FakeResponse(206, {"Access-Control-Allow-Origin": "https://other.example"})
 
-        self.assertIsNone(browser_readable_link(self.RECORD, "https://download.example", request=request))
+        with self.assertLogs("xhs_download.services.unified.transport", level="INFO") as logs:
+            self.assertIsNone(browser_readable_link(self.RECORD, "https://download.example", request=request))
+        self.assertIn("result=refused links=a.douyinvod.com:OSError,b.douyinvod.com:206:no-cors", logs.output[0])
+        self.assertNotIn("https://", logs.output[0])
 
     def test_a_link_the_check_cannot_reach_is_left_to_the_browser(self):
         def request(url, **options):
