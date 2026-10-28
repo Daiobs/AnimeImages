@@ -4287,6 +4287,8 @@ def apply_search_result_to_context(
         probe_missing_video_sizes=(
             getattr(result, "rich_media", None) is None
             and not (prefer_ultra_hd and result.platform == "douyin")
+            # Unified pickers carry their own size facts; their cards stay hidden.
+            and not result_metadata.get("unified_pipeline")
         ),
         preview_surface=(
             "staff_single"
