@@ -2,11 +2,84 @@
 
 ## Unreleased
 
-The entries below are merged in application snapshot
-`c2b8ac51cfb87d4c030d321bf763080708db9593` (#96-#100), but are not recorded as
-deployed. No version number or Release is assigned. The last recorded
-production application is `bf9f1255b006ea93b7a0cf766d28f1db6138113f`; see
-[current version status](docs/current-version-status.md) for release evidence.
+Nothing. main `258d348dd47b2a2bc74f68f61700a278eac6f87e` is the recorded
+production application; see [current version status](docs/current-version-status.md).
+
+## Recorded Production: 2026-10-28
+
+Production runs `258d348dd47b2a2bc74f68f61700a278eac6f87e` (#168), released at
+06:30-06:31 UTC through the existing managed release channel with migrations
+through 0036. Douyin, Xiaohongshu and Bilibili all serve from the unified
+pipeline. The post-release platform matrix matched the pre-release baseline.
+Releases since 2026-10-27 are listed in the
+[version status](docs/current-version-status.md#近期生产发布).
+
+### Unified pipeline step 3: per-platform switches (#164-#168)
+
+- Added the admin "统一管线路由" with one row per platform (migrations
+  0033-0035, each arriving off). Switching a row on sends that platform's new
+  parses through the kernel's ChainRun; switching it off returns to the
+  existing path at once. See [the switch guide](docs/unified-pipeline-switch.md).
+- Douyin (#164): TianTian → KuKuTool → Native with Native as the floor; the
+  page waits for the final result. Watermarked copies are dropped, and the
+  picker lists the winning upstream's qualities, best first.
+- Xiaohongshu (#165): full-size original JPEG photos; Native is read once per
+  request; TianTian only enhances ordinary video notes for 原画/超清 requests;
+  admitted services run only when Native fails.
+- Bilibili (#166): Native's other anonymous qualities are requested within the
+  same context (usually 720P and 360P); TianTian stays the admitted
+  availability fallback for the first part only.
+- Downloads from the unified picker return an ordinary browser item: the server
+  picks a CORS-readable mirror with a one-byte request, and the browser saves
+  through the existing Service Worker. The server never relays media.
+- Fixed presentation dropping hosts that a platform's media policy allows,
+  such as Douyin's reviewed `v3-dy-a-x.ixigua.com` and Bilibili's Akamai
+  mirrors (#167).
+- Xiaohongshu live photos follow the admin's save mode (#168, migration 0036):
+  实况照片 (default), 照片和视频分开 or 只保存照片. 实况照片 reuses the existing
+  LivePhoto cards, preview, pair download and browser ZIP for every viewer;
+  pair and motion tokens last 30 minutes and are bound to the issuing browser.
+  Photos and videos selected together are packed in one browser ZIP.
+
+### Unified pipeline contract and step 2 (#134-#163)
+
+- Confirmed the unified pipeline contract v1 with kernel contract tests (#134)
+  and amendments D-01-D-06 (#136, #138, #140, #142, #145, #154).
+- Added raw adapters and mappers for yt-dlp, gallery-dl, TianTian, KuKuTool,
+  ParseHub, videodl and the Bilibili, Douyin and Xiaohongshu Native paths
+  (#137, #139, #141, #143, #144, #148-#151), with required request context
+  (#146), a pinned Markdown dependency for ParseHub (#147) and aligned host
+  policies (#155).
+- Added shadow comparison storage, raw capture and an admin switch (#152, #153),
+  and scoped unified download grants (#156).
+- Added the anonymous platform matrix smoke (#162), old-schema migration
+  startup checks in CI (#160), and fixes for production smoke alignment (#157),
+  Douyin TianTian work type (#158), mail checks with pending migrations (#159)
+  and Bilibili Akamai mirrors (#163).
+
+### Production recovery and reliability (#101-#133)
+
+- Recorded the confirmed product invariants with contracts and merge rules
+  (#108, #109) and scoped CI runs (#115).
+- Douyin 原画 follows the configured service order with Native running from the
+  start (#104, #111-#114, #116).
+- Bilibili Native keeps its anonymous context, redirect cookies and WBI view
+  signing, with TianTian as the admitted fallback (#107, #110, #119-#121,
+  #124, #126).
+- Added bounded daily download smoke checks (#118, #122, #125, #127, #128).
+- Browser-first delivery of reviewed complete video files and authorized
+  attachment evidence (#129).
+- Trusted client identity and redirect boundaries (#102), bounded DNS retries
+  (#103), restored streaming for selected formats (#105), bounded TianTian
+  error codes (#123), separated work captions (#106, #131), Xiaohongshu work
+  identity and short-title filenames (#130), and download-stage audit events
+  (#132, #133).
+
+## Merged #96-#100 (in production since 2026-10-20)
+
+The entries below were merged in application snapshot
+`c2b8ac51cfb87d4c030d321bf763080708db9593` (#96-#100) and reached production
+with `5afbab0` (#107) on 2026-10-20.
 
 - Aligned shared yt-dlp execution with verified 2026.6.9 while retaining
   2026.3.17 offline compatibility, exact per-request Runtime identity, isolated
